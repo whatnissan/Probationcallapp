@@ -10,47 +10,85 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static('public'));
 
-// Twilio client
 const twilioClient = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
 );
 
-// Store active call sessions
 const activeCalls = new Map();
 const pendingCalls = new Map();
+const callLogs = new Map();
 
-// Store scheduled jobs
 let scheduledJobs = new Map();
 let savedScheduleConfig = null;
 
-// Keywords to detect in speech
+const wsClients = new Set();
+
+function broadcastToClients(data) {
+  wsClients.forEach(client => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(JSON.stringify(data));
+    }
+  });
+}
+
+function logToConsole(callId, message, type = 'info') {
+  const timestamp = new Date().toISOString();
+  const entry = { timestamp, callId, message, type };
+
+  if (callId) {
+    if (!callLogs.has(callId)) {
+      callLogs.set(callId, []);
+    }
+    callLogs.get(callId).push(entry);
+  }
+
+  const prefix = {
+    info: '📋',
+    success: '✅',
+    warning: '⚠️',
+    error: '❌'
+  }[type] || '📋';
+
+  console.log(`${prefix} [${callId || 'system'}] ${message}`);
+
+  if (callId) {
+    broadcastToClients({ type: 'log', callId, log: entry });
+  }
+}
+
 const KEYWORDS = {
   NO_TEST: ['do not test', 'not required', 'no need to test', 'you do not', 'do not need'],
   MUST_TEST: ['required to test', 'must test', 'you are required', 'report for testing']
 };
 
-// Serve main page
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Core function to initiate a call
+app.get('/api/logs/:callId', (req, res) => {
+  res.json({
+    callId: req.params.callId,
+    logs: callLogs.get(req.params.callId) || []
+  });
+});
+
 async function initiateCall(targetNumber, pin, notifyNumber, fromNumber) {
   const callId = `call_${Date.now()}`;
   const twilioNumber = fromNumber || process.env.TWILIO_PHONE_NUMBER;
   const baseUrl = process.env.BASE_URL;
 
-  console.log(`[${callId}] ========================================`);
-  console.log(`[${callId}] Initiating call to ${targetNumber}`);
-  console.log(`[${callId}] PIN: ${pin}, Notify: ${notifyNumber}`);
-  console.log(`[${callId}] Using Twilio number: ${twilioNumber}`);
-  console.log(`[${callId}] Base URL: ${baseUrl}`);
+  const log = (msg, type) => logToConsole(callId, msg, type);
+
+  log('========================================', 'info');
+  log(`Initiating call to ${targetNumber}`, 'info');
+  log(`PIN: ${pin}, Notify: ${notifyNumber}`, 'info');
+  log(`Using Twilio number: ${twilioNumber}`, 'info');
+  log(`Base URL: ${baseUrl}`, 'info');
 
   pendingCalls.set(callId, {
     targetNumber,
@@ -61,44 +99,49 @@ async function initiateCall(targetNumber, pin, notifyNumber, fromNumber) {
     startTime: new Date()
   });
 
-  // Build DTMF sequence with timing
-  // w = 0.5s pause, so wwwwwwwwww = 5 seconds
-  const waitForGreeting = 'wwwwwwwwww'; // 5 seconds for "press 1 for english"
-  const waitForPinPrompt = 'wwwwwwwwwwwwwwwwwwwwwwww'; // 12 seconds for spanish + pin prompt
-  const waitForLastName = 'wwwwwwwwwwwwwwww'; // 8 seconds for last name prompt
-  
+  const waitForGreeting = 'wwwwwwwwww';
+  const waitForPinPrompt = 'wwwwwwwwwwwwwwwwwwwwwwww';
+  const waitForLastName = 'wwwwwwwwwwwwwwww';
   const sendDigitsSequence = waitForGreeting + '1' + waitForPinPrompt + pin + waitForLastName + '1';
-  
-  console.log(`[${callId}] DTMF sequence length: ${sendDigitsSequence.length} chars`);
 
-  const call = await twilioClient.calls.create({
-    to: targetNumber,
-    from: twilioNumber,
-    url: `${baseUrl}/twiml/answer?callId=${callId}`,
-    statusCallback: `${baseUrl}/webhook/status?callId=${callId}`,
-    statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed'],
-    statusCallbackMethod: 'POST'
-  });
+  log(`DTMF sequence length: ${sendDigitsSequence.length} chars`, 'info');
 
-  const callConfig = pendingCalls.get(callId);
-  callConfig.twilioCallSid = call.sid;
-  callConfig.sendDigits = sendDigitsSequence;
-  activeCalls.set(call.sid, callConfig);
+  try {
+    const call = await twilioClient.calls.create({
+      to: targetNumber,
+      from: twilioNumber,
+      url: `${baseUrl}/twiml/answer?callId=${callId}`,
+      statusCallback: `${baseUrl}/webhook/status?callId=${callId}`,
+      statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed'],
+      statusCallbackMethod: 'POST'
+    });
 
-  console.log(`[${callId}] Call created with SID: ${call.sid}`);
+    const callConfig = pendingCalls.get(callId);
+    callConfig.twilioCallSid = call.sid;
+    callConfig.sendDigits = sendDigitsSequence;
+    activeCalls.set(call.sid, callConfig);
 
-  return { 
-    success: true, 
-    callId,
-    callSid: call.sid,
-    message: 'Call initiated successfully' 
-  };
+    log(`Call created with SID: ${call.sid}`, 'success');
+
+    return {
+      success: true,
+      callId,
+      callSid: call.sid,
+      message: 'Call initiated successfully'
+    };
+  } catch (error) {
+    log(`Error creating call: ${error.message}`, 'error');
+    throw error;
+  }
 }
 
-// API endpoint to initiate a call
+function isE164(num) {
+  return /^\+\d{10,15}$/.test(num);
+}
+
 app.post('/api/call', async (req, res) => {
   try {
-    const { targetNumber, pin, notifyNumber, fromNumber } = req.body;
+    let { targetNumber, pin, notifyNumber, fromNumber } = req.body;
 
     if (!targetNumber || !pin || !notifyNumber) {
       return res.status(400).json({ error: 'Missing required fields' });
@@ -108,21 +151,12 @@ app.post('/api/call', async (req, res) => {
       return res.status(400).json({ error: 'PIN must be exactly 6 digits' });
     }
 
-    const result = await initiateCall(targetNumber, pin, notifyNumber, fromNumber);
-    res.json(result);
-  } catch (error) {
-    console.error('Error initiating call:', error);
-    res.status(500).json({ error: 'Failed to initiate call', details: error.message });
-  }
-});
+    if (!isE164(targetNumber)) {
+      return res.status(400).json({ error: 'targetNumber must be in format +15551234567' });
+    }
 
-// Also keep the old endpoint for compatibility
-app.post('/api/call-auto', async (req, res) => {
-  try {
-    const { targetNumber, pin, notifyNumber, fromNumber } = req.body;
-
-    if (!targetNumber || !pin || !notifyNumber) {
-      return res.status(400).json({ error: 'Missing required fields' });
+    if (!isE164(notifyNumber)) {
+      return res.status(400).json({ error: 'notifyNumber must be in format +15551234567' });
     }
 
     const result = await initiateCall(targetNumber, pin, notifyNumber, fromNumber);
@@ -133,31 +167,50 @@ app.post('/api/call-auto', async (req, res) => {
   }
 });
 
-// TwiML - Initial answer
+app.post('/api/call-auto', async (req, res) => {
+  try {
+    let { targetNumber, pin, notifyNumber, fromNumber } = req.body;
+
+    if (!targetNumber || !pin || !notifyNumber) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    if (!isE164(targetNumber) || !isE164(notifyNumber)) {
+      return res.status(400).json({ error: 'Phone numbers must be in format +15551234567' });
+    }
+
+    const result = await initiateCall(targetNumber, pin, notifyNumber, fromNumber);
+    res.json(result);
+  } catch (error) {
+    console.error('Error initiating call:', error);
+    res.status(500).json({ error: 'Failed to initiate call', details: error.message });
+  }
+});
+
 app.post('/twiml/answer', (req, res) => {
   const { callId } = req.query;
   const callConfig = pendingCalls.get(callId);
   const baseUrl = process.env.BASE_URL;
+  const log = (msg, type) => logToConsole(callId, msg, type);
 
-  console.log(`[${callId}] Call answered, sending DTMF sequence`);
+  log('Call answered, sending DTMF sequence', 'success');
 
   const twiml = new twilio.twiml.VoiceResponse();
 
   if (!callConfig) {
+    log('Configuration not found', 'error');
     twiml.say('Configuration not found');
     twiml.hangup();
     res.type('text/xml');
     return res.send(twiml.toString());
   }
 
-  // Send all the button presses with timing built in
   twiml.play({ digits: callConfig.sendDigits });
-  
-  // After pressing all buttons, wait and listen for the result
   twiml.pause({ length: 2 });
-  
-  // Gather speech to detect result
-  const gather = twiml.gather({
+
+  log('DTMF sequence sent, now listening for result', 'info');
+
+  twiml.gather({
     input: 'speech',
     timeout: 12,
     speechTimeout: 3,
@@ -165,58 +218,77 @@ app.post('/twiml/answer', (req, res) => {
     hints: 'do not test today, do not test, you do not need to test, required to test, you are required to test today, must test'
   });
 
-  // If no speech detected, go to fallback
   twiml.redirect(`${baseUrl}/twiml/fallback?callId=${callId}`);
 
   res.type('text/xml');
   res.send(twiml.toString());
 });
 
-// TwiML - Process speech result
 app.post('/twiml/result', async (req, res) => {
   const { callId } = req.query;
   const speechResult = req.body.SpeechResult || '';
   const confidence = req.body.Confidence || 0;
   const callConfig = pendingCalls.get(callId);
+  const log = (msg, type) => logToConsole(callId, msg, type);
 
-  console.log(`[${callId}] Speech result: "${speechResult}" (confidence: ${confidence})`);
+  log(`Speech result: "${speechResult}" (confidence: ${confidence})`, 'info');
 
   const twiml = new twilio.twiml.VoiceResponse();
 
   if (callConfig) {
     callConfig.transcript.push({ text: speechResult, confidence });
-    const lowerSpeech = speechResult.toLowerCase();
 
+    const lowerSpeech = speechResult.toLowerCase();
     let detected = false;
 
     if (KEYWORDS.MUST_TEST.some(kw => lowerSpeech.includes(kw))) {
       callConfig.result = 'MUST_TEST';
-      console.log(`[${callId}] 🚨 DETECTED: TESTING REQUIRED`);
+      log('🚨 DETECTED: TESTING REQUIRED', 'warning');
       detected = true;
       try {
-        await sendSMS(callConfig.notifyNumber, 
-          `🚨 DRUG TEST ALERT: You ARE REQUIRED to test today! (PIN: ${callConfig.pin}) - ${getTimestamp()}`);
-      } catch (e) { console.error('SMS error:', e); }
+        await sendSMS(
+          callConfig.notifyNumber,
+          `TEST REQUIRED for PIN ${callConfig.pin}`,
+          callId
+        );
+      } catch (e) {
+        log(`SMS error: ${e.message}`, 'error');
+      }
     } else if (KEYWORDS.NO_TEST.some(kw => lowerSpeech.includes(kw))) {
       callConfig.result = 'NO_TEST';
-      console.log(`[${callId}] ✅ DETECTED: No test required`);
+      log('✅ DETECTED: No test required', 'success');
       detected = true;
       try {
-        await sendSMS(callConfig.notifyNumber,
-          `✅ NO TEST TODAY: You do NOT need to test today. (PIN: ${callConfig.pin}) - ${getTimestamp()}`);
-      } catch (e) { console.error('SMS error:', e); }
+        await sendSMS(
+          callConfig.notifyNumber,
+          `No test today for PIN ${callConfig.pin}`,
+          callId
+        );
+      } catch (e) {
+        log(`SMS error: ${e.message}`, 'error');
+      }
     }
 
     if (!detected) {
       callConfig.result = 'UNKNOWN';
-      console.log(`[${callId}] ⚠️ Could not match keywords in: "${speechResult}"`);
+      log(`⚠️ Could not match keywords in: "${speechResult}"`, 'warning');
       try {
-        await sendSMS(callConfig.notifyNumber,
-          `📞 Probation call completed. Heard: "${speechResult.substring(0, 100)}". Please verify manually if needed. (PIN: ${callConfig.pin}) - ${getTimestamp()}`);
-      } catch (e) { console.error('SMS error:', e); }
+        await sendSMS(
+          callConfig.notifyNumber,
+          `Call completed. Heard: "${speechResult.substring(0, 100)}". Verify manually.`,
+          callId
+        );
+      } catch (e) {
+        log(`SMS error: ${e.message}`, 'error');
+      }
     }
 
-    broadcastToClients({ type: 'result', callId, result: callConfig.result, speech: speechResult });
+    broadcastToClients({
+      type: 'result',
+      callId,
+      result: callConfig.result,
+      speech: speechResult
+    });
   }
 
   twiml.hangup();
@@ -224,19 +296,24 @@ app.post('/twiml/result', async (req, res) => {
   res.send(twiml.toString());
 });
 
-// TwiML - Fallback if no speech detected
 app.post('/twiml/fallback', async (req, res) => {
   const { callId } = req.query;
   const callConfig = pendingCalls.get(callId);
+  const log = (msg, type) => logToConsole(callId, msg, type);
 
-  console.log(`[${callId}] Fallback reached - no speech detected`);
+  log('Fallback reached - no speech detected', 'warning');
 
   if (callConfig && !callConfig.result) {
     callConfig.result = 'UNKNOWN';
     try {
-      await sendSMS(callConfig.notifyNumber,
-        `📞 Probation call completed but could not detect result. Please call manually to verify. (PIN: ${callConfig.pin}) - ${getTimestamp()}`);
-    } catch (e) { console.error('SMS error:', e); }
+      await sendSMS(
+        callConfig.notifyNumber,
+        'Call completed but no result detected. Please call manually to verify.',
+        callId
+      );
+    } catch (e) {
+      log(`SMS error: ${e.message}`, 'error');
+    }
   }
 
   const twiml = new twilio.twiml.VoiceResponse();
@@ -245,24 +322,28 @@ app.post('/twiml/fallback', async (req, res) => {
   res.send(twiml.toString());
 });
 
-// Status webhook
 app.post('/webhook/status', (req, res) => {
   const { callId } = req.query;
   const { CallStatus, CallDuration } = req.body;
+  const log = (msg, type) => logToConsole(callId, msg, type);
 
-  console.log(`[${callId}] Status: ${CallStatus}, Duration: ${CallDuration || 0}s`);
+  log(`Status: ${CallStatus}, Duration: ${CallDuration || 0}s`, 'info');
 
   const callConfig = pendingCalls.get(callId);
   if (callConfig) {
     callConfig.status = CallStatus;
     callConfig.duration = CallDuration;
-    broadcastToClients({ type: 'status', callId, status: CallStatus, result: callConfig.result });
+    broadcastToClients({
+      type: 'status',
+      callId,
+      status: CallStatus,
+      result: callConfig.result
+    });
   }
 
   res.sendStatus(200);
 });
 
-// Get call status
 app.get('/api/call/:callId', (req, res) => {
   const callConfig = pendingCalls.get(req.params.callId);
   if (!callConfig) {
@@ -273,11 +354,10 @@ app.get('/api/call/:callId', (req, res) => {
     result: callConfig.result,
     status: callConfig.status,
     duration: callConfig.duration,
-    transcript: callConfig.transcript
+    transcript: callConfig.transcript,
+    logs: callLogs.get(req.params.callId) || []
   });
 });
-
-// ============== SCHEDULING ==============
 
 app.get('/api/schedule', (req, res) => {
   res.json({
@@ -290,7 +370,6 @@ app.post('/api/schedule', (req, res) => {
   try {
     const { targetNumber, pin, notifyNumber, hour, minute, timezone, enabled } = req.body;
 
-    // Clear existing
     scheduledJobs.forEach(job => job.stop());
     scheduledJobs.clear();
 
@@ -308,23 +387,29 @@ app.post('/api/schedule', (req, res) => {
       const cronExpr = `${savedScheduleConfig.minute} ${savedScheduleConfig.hour} * * *`;
       console.log(`Creating schedule: ${cronExpr} (${savedScheduleConfig.timezone})`);
 
-      const job = cron.schedule(cronExpr, async () => {
-        console.log(`⏰ Scheduled call triggered at ${new Date().toISOString()}`);
-        try {
-          await initiateCall(
-            savedScheduleConfig.targetNumber,
-            savedScheduleConfig.pin,
-            savedScheduleConfig.notifyNumber
-          );
-        } catch (error) {
-          console.error('Scheduled call failed:', error);
+      const job = cron.schedule(
+        cronExpr,
+        async () => {
+          console.log(`⏰ Scheduled call triggered at ${new Date().toISOString()}`);
           try {
-            await sendSMS(savedScheduleConfig.notifyNumber,
-              `⚠️ Scheduled probation call FAILED. Please call manually. - ${getTimestamp()}`);
-          } catch (e) {}
-        }
-      }, { timezone: savedScheduleConfig.timezone });
-
+            await initiateCall(
+              savedScheduleConfig.targetNumber,
+              savedScheduleConfig.pin,
+              savedScheduleConfig.notifyNumber
+            );
+          } catch (error) {
+            console.error('Scheduled call failed:', error);
+            try {
+              await sendSMS(
+                savedScheduleConfig.notifyNumber,
+                'Scheduled probation call FAILED. Please call manually.',
+                'schedule'
+              );
+            } catch (e) {}
+          }
+        },
+        { timezone: savedScheduleConfig.timezone }
+      );
       scheduledJobs.set('daily', job);
     }
 
@@ -341,43 +426,52 @@ app.delete('/api/schedule', (req, res) => {
   res.json({ success: true });
 });
 
-// Test SMS endpoint
 app.post('/api/test-sms', async (req, res) => {
   try {
     const { notifyNumber } = req.body;
-    await sendSMS(notifyNumber, `✅ Test SMS from Probation Call App - ${getTimestamp()}`);
-    res.json({ success: true });
+
+    if (!notifyNumber || !isE164(notifyNumber)) {
+      return res.status(400).json({ error: 'notifyNumber must be in format +15551234567' });
+    }
+
+    const testCallId = `test_${Date.now()}`;
+    await sendSMS(notifyNumber, 'Test notification from Probation Call App', testCallId);
+
+    res.json({ success: true, logs: callLogs.get(testCallId) || [] });
   } catch (error) {
     res.status(500).json({ error: error.message, code: error.code });
   }
 });
 
-// ============== HELPERS ==============
+async function sendSMS(to, body, callId) {
+  const useVerify =
+    process.env.USE_VERIFY_API === 'true' &&
+    process.env.TWILIO_VERIFY_SERVICE_SID;
 
-async function sendSMS(to, body) {
-  console.log(`📱 Sending SMS to ${to}: ${body.substring(0, 50)}...`);
-  const message = await twilioClient.messages.create({
-    body,
-    from: process.env.TWILIO_PHONE_NUMBER,
-    to
-  });
-  console.log(`📱 SMS sent: ${message.sid}`);
-  return message;
-}
-
-function getTimestamp() {
-  return new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' });
-}
-
-// WebSocket
-const wsClients = new Set();
-
-function broadcastToClients(data) {
-  wsClients.forEach(client => {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(JSON.stringify(data));
-    }
-  });
+  if (useVerify) {
+    logToConsole(callId || 'verify', `Sending via Verify API to ${to}`, 'info');
+    const verification = await twilioClient.verify.v2
+      .services(process.env.TWILIO_VERIFY_SERVICE_SID)
+      .verifications.create({
+        to,
+        channel: 'sms'
+      });
+    logToConsole(callId || 'verify', `Verify SMS sent: ${verification.sid}`, 'success');
+    return verification;
+  } else {
+    logToConsole(
+      callId || 'sms',
+      `Sending SMS to ${to}: ${body.substring(0, 50)}...`,
+      'info'
+    );
+    const message = await twilioClient.messages.create({
+      body,
+      from: process.env.TWILIO_PHONE_NUMBER,
+      to
+    });
+    logToConsole(callId || 'sms', `SMS sent: ${message.sid}`, 'success');
+    return message;
+  }
 }
 
 wss.on('connection', (ws, req) => {
@@ -387,15 +481,15 @@ wss.on('connection', (ws, req) => {
   }
 });
 
-// Start server
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`
 ╔═══════════════════════════════════════════════════════════════╗
-║     Probation Drug Test Call App                              ║
+║                   Probation Drug Test Call App                ║
 ╠═══════════════════════════════════════════════════════════════╣
-║  Port: ${PORT}                                                    ║
-║  Twilio: ${process.env.TWILIO_PHONE_NUMBER || 'NOT SET'}
+║ Port: ${String(PORT).padEnd(56)}║
+║ Twilio: ${(process.env.TWILIO_PHONE_NUMBER || 'NOT SET').padEnd(52)}║
+║ Verify API: ${(process.env.USE_VERIFY_API === 'true' ? 'ENABLED' : 'DISABLED').padEnd(48)}║
 ╚═══════════════════════════════════════════════════════════════╝
   `);
 });
