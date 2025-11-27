@@ -426,7 +426,7 @@ app.delete('/api/schedule', (req, res) => {
   res.json({ success: true });
 });
 
-app.post('/api/test-sms', async (req, res) => {
+app.post(['/api/test-sms', '/api/test-notification'], async (req, res) => {
   try {
     const { notifyNumber } = req.body;
 
