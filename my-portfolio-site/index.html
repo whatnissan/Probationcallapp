@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhatNissan Apps | App Developer Portfolio</title>
+    <meta name="description" content="Professional app development services specializing in phone apps and restaurant apps that make people's lives easier.">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: #f8f9fa;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+
+        header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 80px 0;
+            text-align: center;
+        }
+
+        header h1 {
+            font-size: 3em;
+            margin-bottom: 20px;
+            font-weight: 700;
+        }
+
+        header p {
+            font-size: 1.3em;
+            opacity: 0.95;
+            max-width: 700px;
+            margin: 0 auto;
+        }
+
+        .tagline {
+            font-size: 1.5em;
+            margin-top: 15px;
+            font-weight: 300;
+        }
+
+        nav {
+            background: white;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        nav .container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px 20px;
+        }
+
+        nav .logo {
+            font-size: 1.5em;
+            font-weight: 700;
+            color: #667eea;
+        }
+
+        nav ul {
+            display: flex;
+            list-style: none;
+            gap: 30px;
+        }
+
+        nav a {
+            text-decoration: none;
+            color: #333;
+            font-weight: 500;
+            transition: color 0.3s;
+        }
+
+        nav a:hover {
+            color: #667eea;
+        }
+
+        section {
+            padding: 80px 0;
+        }
+
+        section h2 {
+            font-size: 2.5em;
+            text-align: center;
+            margin-bottom: 50px;
+            color: #2d3748;
+        }
+
+        .services {
+            background: white;
+        }
+
+        .service-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 30px;
+        }
+
+        .service-card {
+            background: #f8f9fa;
+            padding: 40px;
+            border-radius: 10px;
+            text-align: center;
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+
+        .service-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }
+
+        .service-card h3 {
+            font-size: 1.5em;
+            margin: 20px 0;
+            color: #667eea;
+        }
+
+        .service-icon {
+            font-size: 3em;
+            margin-bottom: 10px;
+        }
+
+        .apps {
+            background: #f8f9fa;
+        }
+
+        .app-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 30px;
+        }
+
+        .app-card {
+            background: white;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+            transition: transform 0.3s;
+        }
+
+        .app-card:hover {
+            transform: translateY(-5px);
+        }
+
+        .app-card-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .app-card-header h3 {
+            font-size: 1.5em;
+            margin-bottom: 10px;
+        }
+
+        .app-card-body {
+            padding: 25px;
+        }
+
+        .app-card-body p {
+            color: #666;
+            line-height: 1.8;
+        }
+
+        .tech-badge {
+            display: inline-block;
+            background: #e9ecef;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            margin: 5px 5px 0 0;
+            color: #495057;
+        }
+
+        .about {
+            background: white;
+        }
+
+        .about-content {
+            max-width: 800px;
+            margin: 0 auto;
+            text-align: center;
+            font-size: 1.1em;
+            line-height: 1.8;
+            color: #555;
+        }
+
+        .github-link {
+            display: inline-block;
+            margin-top: 30px;
+            padding: 15px 40px;
+            background: #24292e;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            font-weight: 600;
+            transition: background 0.3s;
+        }
+
+        .github-link:hover {
+            background: #000;
+        }
+
+        .contact {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            text-align: center;
+        }
+
+        .contact h2 {
+            color: white;
+        }
+
+        .contact-info {
+            max-width: 600px;
+            margin: 0 auto;
+            font-size: 1.2em;
+        }
+
+        .cta-button {
+            display: inline-block;
+            margin-top: 30px;
+            padding: 15px 50px;
+            background: white;
+            color: #667eea;
+            text-decoration: none;
+            border-radius: 50px;
+            font-weight: 700;
+            font-size: 1.1em;
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+
+        .cta-button:hover {
+            transform: scale(1.05);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+
+        footer {
+            background: #2d3748;
+            color: white;
+            text-align: center;
+            padding: 30px 0;
+        }
+
+        @media (max-width: 768px) {
+            header h1 {
+                font-size: 2em;
+            }
+
+            header p {
+                font-size: 1.1em;
+            }
+
+            nav ul {
+                gap: 15px;
+            }
+
+            section h2 {
+                font-size: 2em;
+            }
+
+            .service-grid,
+            .app-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>WhatNissan Apps</h1>
+            <p class="tagline">Building Apps That Make Life Easier</p>
+            <p>Professional app development services for phone apps, restaurant apps, and custom solutions</p>
+        </div>
+    </header>
+
+    <nav>
+        <div class="container">
+            <div class="logo">WhatNissan Apps</div>
+            <ul>
+                <li><a href="#services">Services</a></li>
+                <li><a href="#apps">My Apps</a></li>
+                <li><a href="#about">About</a></li>
+                <li><a href="#contact">Contact</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <section id="services" class="services">
+        <div class="container">
+            <h2>What I Do</h2>
+            <div class="service-grid">
+                <div class="service-card">
+                    <div class="service-icon">📱</div>
+                    <h3>Phone Apps</h3>
+                    <p>Custom mobile applications designed to solve real-world problems and enhance daily life. From entertainment to productivity, I build apps that users love.</p>
+                </div>
+                <div class="service-card">
+                    <div class="service-icon">🍽️</div>
+                    <h3>Restaurant Apps</h3>
+                    <p>Specialized solutions for the food industry including discovery apps, ordering systems, and customer engagement tools that help restaurants thrive.</p>
+                </div>
+                <div class="service-card">
+                    <div class="service-icon">⚡</div>
+                    <h3>Custom Solutions</h3>
+                    <p>Tailored app development to meet your specific needs. Whether it's automation, AI integration, or unique functionality, I bring your ideas to life.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="apps" class="apps">
+        <div class="container">
+            <h2>Featured Apps</h2>
+            <div class="app-grid">
+                <div class="app-card">
+                    <div class="app-card-header">
+                        <h3>🎬 Streaming Alerts</h3>
+                    </div>
+                    <div class="app-card-body">
+                        <p>Stay up-to-date with the latest shows and movies. Get notifications about new releases across all your favorite streaming platforms.</p>
+                        <div style="margin-top: 15px;">
+                            <span class="tech-badge">TypeScript</span>
+                            <span class="tech-badge">Entertainment</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="app-card">
+                    <div class="app-card-header">
+                        <h3>🍕 Roll & Dine</h3>
+                    </div>
+                    <div class="app-card-body">
+                        <p>Can't decide where to eat? Roll & Dine helps you discover restaurants near you. Set your radius, pick a cuisine, and roll the dice to find your next meal adventure!</p>
+                        <div style="margin-top: 15px;">
+                            <span class="tech-badge">HTML</span>
+                            <span class="tech-badge">Restaurant</span>
+                            <span class="tech-badge">Location-based</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="app-card">
+                    <div class="app-card-header">
+                        <h3>🚗 Car AI App</h3>
+                    </div>
+                    <div class="app-card-body">
+                        <p>AI-powered automotive application that leverages artificial intelligence to enhance your driving experience and vehicle management.</p>
+                        <div style="margin-top: 15px;">
+                            <span class="tech-badge">HTML</span>
+                            <span class="tech-badge">AI</span>
+                            <span class="tech-badge">Automotive</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="app-card">
+                    <div class="app-card-header">
+                        <h3>📞 Probation Call App</h3>
+                    </div>
+                    <div class="app-card-body">
+                        <p>Automated calling system that handles probation check-ins and sends confirmation messages. Simplifying compliance and reducing stress.</p>
+                        <div style="margin-top: 15px;">
+                            <span class="tech-badge">HTML</span>
+                            <span class="tech-badge">Automation</span>
+                            <span class="tech-badge">Utility</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="about" class="about">
+        <div class="container">
+            <h2>About This Developer</h2>
+            <div class="about-content">
+                <p>I focus on creating practical apps that make people's lives easier. Whether it's helping you find your next favorite restaurant, keeping track of new shows, or automating tedious tasks, these apps are built with real-world impact in mind.</p>
+                <p style="margin-top: 20px;">The goal is simple: identify problems, create elegant solutions, and deliver apps that people actually want to use — especially phone apps and restaurant-focused applications.</p>
+                <a href="https://github.com/whatnissan" target="_blank" class="github-link">View GitHub Profile →</a>
+            </div>
+        </div>
+    </section>
+
+    <section id="contact" class="contact">
+        <div class="container">
+            <h2>Work With This Developer</h2>
+            <div class="contact-info">
+                <p>Have an app idea? Need a custom solution? Get in touch to bring your vision to life.</p>
+                <p style="margin-top: 20px;">Perfect for restaurant owners, small businesses, or anyone looking to turn an idea into a working app.</p>
+                <a href="https://github.com/whatnissan" target="_blank" class="cta-button">Get In Touch</a>
+            </div>
+        </div>
+    </section>
+
+    <footer>
+        <div class="container">
+            <p>© 2024 WhatNissan Apps. All rights reserved.</p>
+            <p style="margin-top: 10px; opacity: 0.8;">Building apps that make life easier, one line of code at a time.</p>
+        </div>
+    </footer>
+</body>
+</html>
