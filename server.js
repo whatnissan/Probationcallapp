@@ -246,26 +246,26 @@ app.post('/twiml/result', async (req, res) => {
       log('🚨 DETECTED: TESTING REQUIRED', 'warning');
       detected = true;
       try {
-        await sendSMS(
+        await sendWhatsApp(
           callConfig.notifyNumber,
-          `TEST REQUIRED for PIN ${callConfig.pin}`,
+          `🚨 TEST REQUIRED for PIN ${callConfig.pin}`,
           callId
         );
       } catch (e) {
-        log(`SMS error: ${e.message}`, 'error');
+        log(`WhatsApp error: ${e.message}`, 'error');
       }
     } else if (KEYWORDS.NO_TEST.some(kw => lowerSpeech.includes(kw))) {
       callConfig.result = 'NO_TEST';
       log('✅ DETECTED: No test required', 'success');
       detected = true;
       try {
-        await sendSMS(
+        await sendWhatsApp(
           callConfig.notifyNumber,
-          `No test today for PIN ${callConfig.pin}`,
+          `✅ No test today for PIN ${callConfig.pin}`,
           callId
         );
       } catch (e) {
-        log(`SMS error: ${e.message}`, 'error');
+        log(`WhatsApp error: ${e.message}`, 'error');
       }
     }
 
@@ -273,13 +273,13 @@ app.post('/twiml/result', async (req, res) => {
       callConfig.result = 'UNKNOWN';
       log(`⚠️ Could not match keywords in: "${speechResult}"`, 'warning');
       try {
-        await sendSMS(
+        await sendWhatsApp(
           callConfig.notifyNumber,
-          `Call completed. Heard: "${speechResult.substring(0, 100)}". Verify manually.`,
+          `⚠️ Call completed. Heard: "${speechResult.substring(0, 100)}". Verify manually.`,
           callId
         );
       } catch (e) {
-        log(`SMS error: ${e.message}`, 'error');
+        log(`WhatsApp error: ${e.message}`, 'error');
       }
     }
 
@@ -306,13 +306,13 @@ app.post('/twiml/fallback', async (req, res) => {
   if (callConfig && !callConfig.result) {
     callConfig.result = 'UNKNOWN';
     try {
-      await sendSMS(
+      await sendWhatsApp(
         callConfig.notifyNumber,
-        'Call completed but no result detected. Please call manually to verify.',
+        '⚠️ Call completed but no result detected. Please call manually to verify.',
         callId
       );
     } catch (e) {
-      log(`SMS error: ${e.message}`, 'error');
+      log(`WhatsApp error: ${e.message}`, 'error');
     }
   }
 
@@ -400,9 +400,9 @@ app.post('/api/schedule', (req, res) => {
           } catch (error) {
             console.error('Scheduled call failed:', error);
             try {
-              await sendSMS(
+              await sendWhatsApp(
                 savedScheduleConfig.notifyNumber,
-                'Scheduled probation call FAILED. Please call manually.',
+                '❌ Scheduled probation call FAILED. Please call manually.',
                 'schedule'
               );
             } catch (e) {}
@@ -435,7 +435,7 @@ app.post('/api/test-sms', async (req, res) => {
     }
 
     const testCallId = `test_${Date.now()}`;
-    await sendSMS(notifyNumber, 'Test notification from Probation Call App', testCallId);
+    await sendWhatsApp(notifyNumber, '✅ Test notification from Probation Call App', testCallId);
 
     res.json({ success: true, logs: callLogs.get(testCallId) || [] });
   } catch (error) {
@@ -443,34 +443,20 @@ app.post('/api/test-sms', async (req, res) => {
   }
 });
 
-async function sendSMS(to, body, callId) {
-  const useVerify =
-    process.env.USE_VERIFY_API === 'true' &&
-    process.env.TWILIO_VERIFY_SERVICE_SID;
-
-  if (useVerify) {
-    logToConsole(callId || 'verify', `Sending via Verify API to ${to}`, 'info');
-    const verification = await twilioClient.verify.v2
-      .services(process.env.TWILIO_VERIFY_SERVICE_SID)
-      .verifications.create({
-        to,
-        channel: 'sms'
-      });
-    logToConsole(callId || 'verify', `Verify SMS sent: ${verification.sid}`, 'success');
-    return verification;
-  } else {
-    logToConsole(
-      callId || 'sms',
-      `Sending SMS to ${to}: ${body.substring(0, 50)}...`,
-      'info'
-    );
+async function sendWhatsApp(to, body, callId) {
+  logToConsole(callId || 'whatsapp', `Sending WhatsApp to ${to}: ${body.substring(0, 50)}...`, 'info');
+  
+  try {
     const message = await twilioClient.messages.create({
       body,
-      from: process.env.TWILIO_PHONE_NUMBER,
-      to
+      from: 'whatsapp:+14155238886',
+      to: `whatsapp:${to}`
     });
-    logToConsole(callId || 'sms', `SMS sent: ${message.sid}`, 'success');
+    logToConsole(callId || 'whatsapp', `WhatsApp sent: ${message.sid}`, 'success');
     return message;
+  } catch (error) {
+    logToConsole(callId || 'whatsapp', `WhatsApp failed: ${error.message}`, 'error');
+    throw error;
   }
 }
 
@@ -489,7 +475,7 @@ server.listen(PORT, () => {
 ╠═══════════════════════════════════════════════════════════════╣
 ║ Port: ${String(PORT).padEnd(56)}║
 ║ Twilio: ${(process.env.TWILIO_PHONE_NUMBER || 'NOT SET').padEnd(52)}║
-║ Verify API: ${(process.env.USE_VERIFY_API === 'true' ? 'ENABLED' : 'DISABLED').padEnd(48)}║
+║ WhatsApp: ENABLED (from whatsapp:+14155238886)                ║
 ╚═══════════════════════════════════════════════════════════════╝
   `);
 });
