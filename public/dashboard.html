@@ -5,350 +5,114 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Dashboard - ProbationCall</title>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <style>
-    *{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:-apple-system,sans-serif;background:#0a0a0f;color:#fff;min-height:100vh}
-    .container{max-width:900px;margin:0 auto;padding:20px}
-    nav{display:flex;justify-content:space-between;align-items:center;margin-bottom:30px;padding-bottom:20px;border-bottom:1px solid rgba(255,255,255,0.1)}
-    .logo{font-size:1.3rem;font-weight:700;color:#00d9ff}
-    .user-info{display:flex;align-items:center;gap:15px}
-    .user-email{color:#8892b0;font-size:0.9rem}
-    .logout-btn{background:rgba(255,255,255,0.1);border:none;color:#fff;padding:8px 16px;border-radius:6px;cursor:pointer}
-    
-    .credits-card{background:linear-gradient(135deg,#00d9ff,#00b4d8);border-radius:16px;padding:30px;margin-bottom:25px;display:flex;justify-content:space-between;align-items:center}
-    .credits-num{font-size:3rem;font-weight:700;color:#0a0a0f}
-    .credits-label{color:rgba(0,0,0,0.6);font-size:0.9rem}
-    .buy-btn{background:#0a0a0f;color:#fff;border:none;padding:12px 24px;border-radius:8px;font-weight:600;cursor:pointer}
-    .buy-btn:hover{background:#1a1a2e}
-    
-    .grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
-    @media(max-width:768px){.grid{grid-template-columns:1fr}}
-    
-    .card{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:25px}
-    .card h2{font-size:1.1rem;margin-bottom:20px;color:#00d9ff}
-    
-    .form-group{margin-bottom:15px}
-    label{display:block;margin-bottom:5px;color:#8892b0;font-size:0.85rem}
-    input{width:100%;padding:12px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#fff;font-size:1rem}
-    input:focus{outline:none;border-color:#00d9ff}
-    
-    .btn{width:100%;padding:14px;border-radius:8px;border:none;background:linear-gradient(135deg,#00d9ff,#00b4d8);color:#0a0a0f;font-size:1rem;font-weight:600;cursor:pointer;margin-top:10px}
-    .btn:disabled{opacity:0.5;cursor:not-allowed}
-    .btn-secondary{background:rgba(255,255,255,0.1);color:#fff}
-    
-    .history{max-height:300px;overflow-y:auto}
-    .history-item{display:flex;justify-content:space-between;padding:12px 0;border-bottom:1px solid rgba(255,255,255,0.05)}
-    .history-date{color:#8892b0;font-size:0.85rem}
-    .history-result{font-size:0.85rem;padding:4px 10px;border-radius:20px}
-    .history-result.NO_TEST{background:rgba(107,203,119,0.2);color:#6bcb77}
-    .history-result.MUST_TEST{background:rgba(255,107,107,0.2);color:#ff6b6b}
-    .history-result.UNKNOWN{background:rgba(255,217,61,0.2);color:#ffd93d}
-    
-    .modal{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);align-items:center;justify-content:center;z-index:100}
-    .modal.show{display:flex}
-    .modal-content{background:#1a1a2e;border-radius:20px;padding:30px;max-width:500px;width:90%}
-    .modal h2{margin-bottom:20px}
-    .plans{display:flex;flex-direction:column;gap:15px}
-    .plan-option{display:flex;justify-content:space-between;align-items:center;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:20px;cursor:pointer}
-    .plan-option:hover{border-color:#00d9ff}
-    .plan-option h3{font-size:1rem}
-    .plan-option p{color:#8892b0;font-size:0.85rem}
-    .plan-option .price{font-size:1.3rem;font-weight:700;color:#00d9ff}
-    .close-modal{background:rgba(255,255,255,0.1);border:none;color:#fff;padding:10px 20px;border-radius:8px;cursor:pointer;margin-top:20px;width:100%}
-    
-    .status{padding:15px;border-radius:8px;margin-top:15px;text-align:center}
-    .status.success{background:rgba(107,203,119,0.2);color:#6bcb77}
-    .status.error{background:rgba(255,107,107,0.2);color:#ff6b6b}
-    .status.calling{background:rgba(0,217,255,0.2);color:#00d9ff}
-    
-    .logs{background:#050508;border-radius:8px;padding:10px;max-height:200px;overflow-y:auto;font-family:monospace;font-size:0.75rem;margin-top:15px;display:none}
-    .logs.show{display:block}
-    .log-entry{padding:3px 0;color:#8892b0}
-  </style>
+  <style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,sans-serif;background:#0a0a0f;color:#fff;min-height:100vh}.loading{display:flex;align-items:center;justify-content:center;height:100vh;font-size:1.2rem;color:#8892b0}.container{max-width:900px;margin:0 auto;padding:20px;display:none}nav{display:flex;justify-content:space-between;align-items:center;margin-bottom:30px;padding-bottom:20px;border-bottom:1px solid rgba(255,255,255,0.1)}.logo{font-size:1.3rem;font-weight:700;color:#00d9ff}.logout-btn{background:rgba(255,255,255,0.1);border:none;color:#fff;padding:8px 16px;border-radius:6px;cursor:pointer}.credits-card{background:linear-gradient(135deg,#00d9ff,#00b4d8);border-radius:16px;padding:25px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:15px}.credits-num{font-size:2.5rem;font-weight:700;color:#0a0a0f}.credits-label{color:rgba(0,0,0,0.6)}.buy-btn{background:#0a0a0f;color:#fff;border:none;padding:10px 20px;border-radius:8px;font-weight:600;cursor:pointer}.card{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:25px;margin-bottom:20px}.card h2{margin-bottom:20px;color:#00d9ff}.form-group{margin-bottom:15px}label{display:block;margin-bottom:5px;color:#8892b0}input{width:100%;padding:12px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#fff;font-size:1rem}.btn{width:100%;padding:14px;border-radius:8px;border:none;background:linear-gradient(135deg,#00d9ff,#00b4d8);color:#0a0a0f;font-size:1rem;font-weight:600;cursor:pointer;margin-top:10px}.btn:disabled{opacity:0.5}.status{padding:15px;border-radius:8px;margin-top:15px;text-align:center}.status.success{background:rgba(107,203,119,0.2);color:#6bcb77}.status.error{background:rgba(255,107,107,0.2);color:#ff6b6b}.status.calling{background:rgba(0,217,255,0.2);color:#00d9ff}</style>
 </head>
 <body>
-  <div class="container">
-    <nav>
-      <div class="logo">📞 ProbationCall</div>
-      <div class="user-info">
-        <span class="user-email" id="userEmail">Loading...</span>
-        <button class="logout-btn" onclick="logout()">Sign Out</button>
-      </div>
-    </nav>
-
-    <div class="credits-card">
-      <div>
-        <div class="credits-num" id="creditsNum">-</div>
-        <div class="credits-label">Credits Remaining</div>
-      </div>
-      <button class="buy-btn" onclick="showBuyModal()">Buy Credits</button>
-    </div>
-
-    <div class="grid">
-      <div class="card">
-        <h2>📞 Make a Call</h2>
-        <form id="callForm">
-          <div class="form-group">
-            <label>Hotline Number</label>
-            <input type="tel" id="targetNumber" value="+19362834848" required>
-          </div>
-          <div class="form-group">
-            <label>Your 6-Digit PIN</label>
-            <input type="text" id="pin" placeholder="123456" maxlength="6" required>
-          </div>
-          <div class="form-group">
-            <label>WhatsApp Number (for notifications)</label>
-            <input type="tel" id="notifyNumber" placeholder="+15551234567" required>
-          </div>
-          <button type="submit" class="btn" id="callBtn">📞 Call Now (1 Credit)</button>
-          <button type="button" class="btn btn-secondary" onclick="testWhatsApp()">📱 Test WhatsApp</button>
-        </form>
-        <div id="callStatus" class="status" style="display:none"></div>
-        <div id="callLogs" class="logs"></div>
-      </div>
-
-      <div class="card">
-        <h2>📜 Recent Calls</h2>
-        <div class="history" id="historyList">
-          <p style="color:#555">No calls yet</p>
-        </div>
-      </div>
+  <div class="loading" id="loading">Loading...</div>
+  <div class="container" id="app">
+    <nav><div class="logo">📞 ProbationCall</div><button class="logout-btn" onclick="logout()">Sign Out (<span id="email"></span>)</button></nav>
+    <div class="credits-card"><div><div class="credits-num" id="credits">0</div><div class="credits-label">Credits</div></div><button class="buy-btn" onclick="alert('Coming soon!')">Buy Credits</button></div>
+    <div class="card">
+      <h2>Make a Call (1 Credit)</h2>
+      <form onsubmit="makeCall(event)">
+        <div class="form-group"><label>Hotline</label><input type="tel" id="target" value="+19362834848" required></div>
+        <div class="form-group"><label>6-Digit PIN</label><input type="text" id="pin" maxlength="6" placeholder="123456" required></div>
+        <div class="form-group"><label>Your WhatsApp</label><input type="tel" id="notify" placeholder="+1234567890" required></div>
+        <button type="submit" class="btn" id="callBtn">📞 Call Now</button>
+      </form>
+      <div id="status" class="status" style="display:none"></div>
     </div>
   </div>
+<script>
+var SUPA_URL = 'https://xvpuqeaowvlkcyywgaaq.supabase.co';
+var SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh2cHVxZWFvd3Zsa2N5eXdnYWFxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQyNzc1MjcsImV4cCI6MjA3OTg1MzUyN30.y90odNDSU0zZcVGMK9C39gSFDL9NJcy5E4yBkgcFc8w';
+var supabase = window.supabase.createClient(SUPA_URL, SUPA_KEY);
+var accessToken = null;
 
-  <!-- Buy Modal -->
-  <div class="modal" id="buyModal">
-    <div class="modal-content">
-      <h2>Buy Credits</h2>
-      <div class="plans">
-        <div class="plan-option" onclick="buyPlan('starter')">
-          <div><h3>Starter</h3><p>30 credits (~1 month)</p></div>
-          <div class="price">$9.99</div>
-        </div>
-        <div class="plan-option" onclick="buyPlan('standard')">
-          <div><h3>Standard</h3><p>90 credits (~3 months)</p></div>
-          <div class="price">$24.99</div>
-        </div>
-        <div class="plan-option" onclick="buyPlan('value')">
-          <div><h3>Value</h3><p>180 credits (~6 months)</p></div>
-          <div class="price">$39.99</div>
-        </div>
-      </div>
-      <button class="close-modal" onclick="closeBuyModal()">Cancel</button>
-    </div>
-  </div>
+async function checkAuth() {
+  // Wait for Supabase to process any OAuth tokens in URL
+  var hash = window.location.hash;
+  if (hash && hash.includes('access_token')) {
+    console.log('Found tokens in URL, waiting for Supabase...');
+    // Clear hash from URL
+    history.replaceState(null, '', window.location.pathname);
+    // Wait for Supabase to process
+    await new Promise(function(r) { setTimeout(r, 1000); });
+  }
+  
+  var result = await supabase.auth.getSession();
+  console.log('Session check:', result.data.session ? 'FOUND' : 'NONE');
+  
+  if (result.data.session) {
+    accessToken = result.data.session.access_token;
+    showApp(result.data.session.user);
+  } else {
+    console.log('No session, redirecting to login');
+    window.location.href = '/login';
+  }
+}
 
-  <script>
-    const SUPABASE_URL = 'https://xvpuqeaowvlkcyywgaaq.supabase.co';
-    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh2cHVxZWFvd3Zsa2N5eXdnYWFxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQyNzc1MjcsImV4cCI6MjA3OTg1MzUyN30.y90odNDSU0zZcVGMK9C39gSFDL9NJcy5E4yBkgcFc8w';
-    
-    const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-    let accessToken = null;
+function showApp(user) {
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  document.getElementById('email').textContent = user.email;
+  loadCredits();
+}
 
-    // Check auth
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!session) {
-        window.location.href = '/login';
-        return;
-      }
-      accessToken = session.access_token;
-      loadUserData();
+async function loadCredits() {
+  try {
+    var r = await fetch('/api/user', { headers: { 'Authorization': 'Bearer ' + accessToken } });
+    var d = await r.json();
+    document.getElementById('credits').textContent = d.profile ? d.profile.credits : 0;
+  } catch(e) {
+    console.error('Load error:', e);
+  }
+}
+
+async function makeCall(e) {
+  e.preventDefault();
+  var btn = document.getElementById('callBtn');
+  var st = document.getElementById('status');
+  btn.disabled = true;
+  btn.textContent = 'Calling...';
+  st.style.display = 'block';
+  st.className = 'status calling';
+  st.textContent = 'Calling hotline...';
+  
+  try {
+    var r = await fetch('/api/call', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + accessToken },
+      body: JSON.stringify({
+        targetNumber: document.getElementById('target').value,
+        pin: document.getElementById('pin').value,
+        notifyNumber: document.getElementById('notify').value
+      })
     });
-
-    // Handle OAuth redirect
-    supabase.auth.onAuthStateChange((event, session) => {
-      if (session) {
-        accessToken = session.access_token;
-        loadUserData();
-      }
-    });
-
-    async function loadUserData() {
-      try {
-        const res = await fetch('/api/user', {
-          headers: { 'Authorization': `Bearer ${accessToken}` }
-        });
-        const data = await res.json();
-        
-        document.getElementById('userEmail').textContent = data.user?.email || 'User';
-        document.getElementById('creditsNum').textContent = data.profile?.credits || 0;
-        
-        renderHistory(data.history);
-      } catch (e) {
-        console.error(e);
-      }
+    var d = await r.json();
+    if (d.error) {
+      st.className = 'status error';
+      st.textContent = 'Error: ' + d.error;
+    } else {
+      st.className = 'status success';
+      st.textContent = 'Call started! Check WhatsApp for results.';
+      loadCredits();
     }
+  } catch(err) {
+    st.className = 'status error';
+    st.textContent = 'Error: ' + err.message;
+  }
+  btn.disabled = false;
+  btn.textContent = '📞 Call Now';
+}
 
-    function renderHistory(history) {
-      const el = document.getElementById('historyList');
-      if (!history || history.length === 0) {
-        el.innerHTML = '<p style="color:#555">No calls yet</p>';
-        return;
-      }
-      el.innerHTML = history.map(h => `
-        <div class="history-item">
-          <div>
-            <div>${new Date(h.created_at).toLocaleDateString()}</div>
-            <div class="history-date">PIN: ${h.pin_used}</div>
-          </div>
-          <span class="history-result ${h.result}">${h.result === 'NO_TEST' ? '✅ No Test' : h.result === 'MUST_TEST' ? '🚨 Test Required' : '⚠️ Unknown'}</span>
-        </div>
-      `).join('');
-    }
+async function logout() {
+  await supabase.auth.signOut();
+  window.location.href = '/';
+}
 
-    // Phone formatting
-    document.querySelectorAll('input[type="tel"]').forEach(el => {
-      el.oninput = e => {
-        let v = e.target.value.replace(/[^\d+]/g, '');
-        if (v && !v.startsWith('+')) v = '+' + v.replace(/\+/g, '');
-        e.target.value = v;
-      };
-    });
-
-    document.getElementById('pin').oninput = e => {
-      e.target.value = e.target.value.replace(/\D/g, '').slice(0, 6);
-    };
-
-    // WebSocket
-    let ws;
-    function connectWS() {
-      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      ws = new WebSocket(`${proto}//${location.host}/ws`);
-      ws.onmessage = e => {
-        const d = JSON.parse(e.data);
-        if (d.type === 'log') {
-          const logs = document.getElementById('callLogs');
-          logs.classList.add('show');
-          logs.innerHTML += `<div class="log-entry">${d.log.message}</div>`;
-          logs.scrollTop = 99999;
-        }
-        if (d.type === 'result') {
-          const status = document.getElementById('callStatus');
-          if (d.result === 'NO_TEST') {
-            status.className = 'status success';
-            status.innerHTML = '✅ No test required today!';
-          } else if (d.result === 'MUST_TEST') {
-            status.className = 'status error';
-            status.innerHTML = '🚨 You ARE REQUIRED to test today!';
-          } else {
-            status.className = 'status';
-            status.innerHTML = '⚠️ Could not determine. Check WhatsApp.';
-          }
-          loadUserData();
-        }
-      };
-      ws.onclose = () => setTimeout(connectWS, 3000);
-    }
-    connectWS();
-
-    // Call form
-    document.getElementById('callForm').onsubmit = async e => {
-      e.preventDefault();
-      const btn = document.getElementById('callBtn');
-      const status = document.getElementById('callStatus');
-      
-      btn.disabled = true;
-      btn.textContent = 'Calling...';
-      status.style.display = 'block';
-      status.className = 'status calling';
-      status.innerHTML = '📞 Initiating call...';
-      document.getElementById('callLogs').innerHTML = '';
-
-      try {
-        const res = await fetch('/api/call', {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${accessToken}`
-          },
-          body: JSON.stringify({
-            targetNumber: document.getElementById('targetNumber').value,
-            pin: document.getElementById('pin').value,
-            notifyNumber: document.getElementById('notifyNumber').value
-          })
-        });
-        const data = await res.json();
-        
-        if (!res.ok) {
-          status.className = 'status error';
-          status.innerHTML = '❌ ' + (data.error || 'Failed');
-          if (data.error?.includes('credits')) {
-            showBuyModal();
-          }
-        }
-      } catch (err) {
-        status.className = 'status error';
-        status.innerHTML = '❌ ' + err.message;
-      }
-      
-      btn.disabled = false;
-      btn.textContent = '📞 Call Now (1 Credit)';
-    };
-
-    async function testWhatsApp() {
-      const num = document.getElementById('notifyNumber').value;
-      if (!num) return alert('Enter a notification number first');
-      
-      try {
-        const res = await fetch('/api/test-sms', {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${accessToken}`
-          },
-          body: JSON.stringify({ notifyNumber: num })
-        });
-        const data = await res.json();
-        alert(data.success ? '✅ WhatsApp sent!' : '❌ ' + data.error);
-      } catch (e) {
-        alert('Error: ' + e.message);
-      }
-    }
-
-    // Buy modal
-    function showBuyModal() {
-      document.getElementById('buyModal').classList.add('show');
-    }
-    function closeBuyModal() {
-      document.getElementById('buyModal').classList.remove('show');
-    }
-
-    async function buyPlan(packageId) {
-      try {
-        const res = await fetch('/api/checkout', {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${accessToken}`
-          },
-          body: JSON.stringify({ packageId })
-        });
-        const data = await res.json();
-        if (data.url) {
-          window.location.href = data.url;
-        } else {
-          alert('Error: ' + (data.error || 'Failed'));
-        }
-      } catch (e) {
-        alert('Error: ' + e.message);
-      }
-    }
-
-    async function logout() {
-      await supabase.auth.signOut();
-      window.location.href = '/';
-    }
-
-    // Check for success/cancel from Stripe
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('success')) {
-      alert('✅ Payment successful! Credits have been added.');
-      window.history.replaceState({}, '', '/dashboard');
-    }
-    if (params.get('canceled')) {
-      alert('Payment was canceled.');
-      window.history.replaceState({}, '', '/dashboard');
-    }
-  </script>
+// Start auth check
+checkAuth();
+</script>
 </body>
 </html>
