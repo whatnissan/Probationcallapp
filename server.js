@@ -444,18 +444,25 @@ app.post('/api/test-sms', async (req, res) => {
 });
 
 async function sendWhatsApp(to, body, callId) {
-  logToConsole(callId || 'whatsapp', `Sending WhatsApp to ${to}: ${body.substring(0, 50)}...`, 'info');
-  
+  const fromNumber = 'whatsapp:+14155238886';
+  const toNumber = to.startsWith('whatsapp:') ? to : `whatsapp:${to}`;
+
+  logToConsole(
+    callId || 'whatsapp',
+    `Sending WhatsApp: from ${fromNumber} to ${toNumber} -> "${body}"`,
+    'info'
+  );
+
   try {
     const message = await twilioClient.messages.create({
-      body,
-      from: 'whatsapp:+14155238886',
-      to: `whatsapp:${to}`
+      from: fromNumber,
+      to: toNumber,
+      body
     });
-    logToConsole(callId || 'whatsapp', `WhatsApp sent: ${message.sid}`, 'success');
+    logToConsole(callId || 'whatsapp', `WhatsApp sent SID: ${message.sid}`, 'success');
     return message;
   } catch (error) {
-    logToConsole(callId || 'whatsapp', `WhatsApp failed: ${error.message}`, 'error');
+    logToConsole(callId || 'whatsapp', `WhatsApp failed: ${error.code || ''} ${error.message}`, 'error');
     throw error;
   }
 }
@@ -474,7 +481,6 @@ server.listen(PORT, () => {
 ║                   Probation Drug Test Call App                ║
 ╠═══════════════════════════════════════════════════════════════╣
 ║ Port: ${String(PORT).padEnd(56)}║
-║ Twilio: ${(process.env.TWILIO_PHONE_NUMBER || 'NOT SET').padEnd(52)}║
 ║ WhatsApp: ENABLED (from whatsapp:+14155238886)                ║
 ╚═══════════════════════════════════════════════════════════════╝
   `);
