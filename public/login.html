@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign In - ProbationCall</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:-apple-system,sans-serif;background:linear-gradient(135deg,#0a0a0f,#1a1a2e);min-height:100vh;display:flex;align-items:center;justify-content:center;color:#fff}
+    .card{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:40px;width:100%;max-width:400px;text-align:center}
+    .logo{font-size:2rem;margin-bottom:10px}
+    h1{font-size:1.5rem;margin-bottom:8px}
+    p{color:#8892b0;margin-bottom:30px}
+    .btn{display:flex;align-items:center;justify-content:center;gap:12px;width:100%;padding:14px;border-radius:10px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.05);color:#fff;font-size:1rem;cursor:pointer;margin-bottom:15px;transition:all 0.2s}
+    .btn:hover{background:rgba(255,255,255,0.1);border-color:rgba(255,255,255,0.3)}
+    .btn img{width:20px;height:20px}
+    .divider{color:#555;margin:20px 0;font-size:0.85rem}
+    .back{color:#8892b0;text-decoration:none;font-size:0.9rem}
+    .back:hover{color:#00d9ff}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">📞</div>
+    <h1>Welcome to ProbationCall</h1>
+    <p>Sign in to manage your automated check-ins</p>
+    
+    <button class="btn" onclick="signInWithGoogle()">
+      <img src="https://www.google.com/favicon.ico" alt="Google">
+      Continue with Google
+    </button>
+    
+    <p class="divider">New users get 1 free credit to try!</p>
+    
+    <a href="/" class="back">← Back to Home</a>
+  </div>
+
+  <script>
+    const SUPABASE_URL = 'https://xvpuqeaowvlkcyywgaaq.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh2cHVxZWFvd3Zsa2N5eXdnYWFxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQyNzc1MjcsImV4cCI6MjA3OTg1MzUyN30.y90odNDSU0zZcVGMK9C39gSFDL9NJcy5E4yBkgcFc8w';
+    
+    const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    // Check if already logged in
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) window.location.href = '/dashboard';
+    });
+
+    async function signInWithGoogle() {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: { redirectTo: window.location.origin + '/dashboard' }
+      });
+      if (error) alert('Error: ' + error.message);
+    }
+  </script>
+</body>
+</html>
