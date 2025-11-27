@@ -1,14 +1,7 @@
 {
-  "name": "probation-call-app",
-  "version": "2.0.0",
-  "main": "server.js",
-  "scripts": { "start": "node server.js" },
-  "dependencies": {
-    "express": "^4.18.2",
-    "twilio": "^4.20.0",
-    "ws": "^8.16.0",
-    "dotenv": "^16.3.1",
-    "node-cron": "^3.0.3"
-  },
-  "engines": { "node": ">=18.0.0" }
+  "name": "probation-call-website",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "npx serve -s . -l ${PORT:-3000}"
+  }
 }
