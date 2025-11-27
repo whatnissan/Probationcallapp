@@ -1,204 +1,63 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Probation Call App - Console</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
-        .container { max-width: 1200px; margin: 0 auto; }
-        .header { text-align: center; color: white; margin-bottom: 30px; }
-        .header h1 { font-size: 2.5em; margin-bottom: 10px; }
-        .card {
-            background: white;
-            border-radius: 15px;
-            padding: 30px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-            margin-bottom: 20px;
-        }
-        .form-group { margin-bottom: 20px; }
-        label { display: block; margin-bottom: 8px; font-weight: 600; color: #333; }
-        input, select {
-            width: 100%;
-            padding: 12px;
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
-            font-size: 16px;
-            transition: border-color 0.3s;
-        }
-        input:focus, select:focus { outline: none; border-color: #667eea; }
-        .btn {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            padding: 15px 30px;
-            border-radius: 8px;
-            font-size: 16px;
-            font-weight: 600;
-            cursor: pointer;
-            width: 100%;
-            transition: transform 0.2s, box-shadow 0.2s;
-        }
-        .btn:hover { transform: translateY(-2px); box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4); }
-        .btn:active { transform: translateY(0); }
-        .btn:disabled { opacity: 0.6; cursor: not-allowed; }
-        .console {
-            background: #1e1e1e;
-            color: #d4d4d4;
-            border-radius: 8px;
-            padding: 20px;
-            font-family: 'Courier New', monospace;
-            font-size: 14px;
-            max-height: 500px;
-            overflow-y: auto;
-            margin-top: 20px;
-        }
-        .console-entry { margin-bottom: 8px; padding: 5px; border-left: 3px solid transparent; }
-        .console-entry.info { border-left-color: #4a9eff; }
-        .console-entry.success { border-left-color: #4caf50; }
-        .console-entry.warning { border-left-color: #ff9800; }
-        .console-entry.error { border-left-color: #f44336; }
-        .timestamp { color: #858585; margin-right: 10px; }
-        .callId { color: #9cdcfe; margin-right: 10px; }
-        .status-badge {
-            display: inline-block;
-            padding: 5px 15px;
-            border-radius: 20px;
-            font-size: 14px;
-            font-weight: 600;
-            margin-top: 10px;
-        }
-        .status-badge.success { background: #4caf50; color: white; }
-        .status-badge.warning { background: #ff9800; color: white; }
-        .status-badge.error { background: #f44336; color: white; }
-        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-        @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Probation Call App</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,sans-serif;background:linear-gradient(135deg,#1a1a2e,#16213e);min-height:100vh;color:#fff;padding:20px}.container{max-width:600px;margin:0 auto}.header{text-align:center;margin-bottom:20px}.header h1{font-size:1.6rem;color:#00d9ff}.header p{color:#8892b0;font-size:.85rem}.card{background:rgba(255,255,255,.05);border-radius:12px;padding:20px;border:1px solid rgba(255,255,255,.1);margin-bottom:15px}.tabs{display:flex;margin-bottom:15px;background:rgba(0,0,0,.2);border-radius:8px}.tab{flex:1;padding:10px;text-align:center;cursor:pointer;border:none;background:0 0;color:#8892b0;font-size:.9rem}.tab.active{background:#00d9ff;color:#1a1a2e;font-weight:600;border-radius:8px}.tab-content{display:none}.tab-content.active{display:block}.form-group{margin-bottom:15px}label{display:block;margin-bottom:5px;color:#ccd6f6;font-size:.85rem}input,select{width:100%;padding:12px;border-radius:8px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.05);color:#fff;font-size:1rem}input:focus,select:focus{outline:none;border-color:#00d9ff}.time-row{display:flex;gap:10px}.time-row input,.time-row select{flex:1}.btn{width:100%;padding:14px;border-radius:8px;border:none;background:linear-gradient(135deg,#00d9ff,#00b4d8);color:#1a1a2e;font-size:1rem;font-weight:600;cursor:pointer;margin-top:10px}.btn:hover{opacity:.9}.btn:disabled{opacity:.5}.btn-secondary{background:rgba(255,255,255,.1);color:#fff}.btn-danger{background:#ff6b6b;color:#fff}.status-box{padding:15px;border-radius:8px;text-align:center;margin:15px 0}.status-box.success{background:rgba(107,203,119,.2);border:1px solid rgba(107,203,119,.4)}.status-box.success h3{color:#6bcb77}.status-box.warning{background:rgba(255,107,107,.2);border:1px solid rgba(255,107,107,.4)}.status-box.warning h3{color:#ff6b6b}.status-box.unknown{background:rgba(255,217,61,.2);border:1px solid rgba(255,217,61,.4)}.status-box.unknown h3{color:#ffd93d}.logs{background:#0a0a14;border-radius:8px;padding:10px;max-height:300px;overflow-y:auto;font-family:monospace;font-size:.75rem}.log-entry{padding:4px 0;border-bottom:1px solid rgba(255,255,255,.05)}.log-entry.success{color:#6bcb77}.log-entry.warning{color:#ffd93d}.log-entry.error{color:#ff6b6b}.log-entry.info{color:#8892b0}.schedule-badge{background:rgba(107,203,119,.2);border:1px solid rgba(107,203,119,.3);border-radius:8px;padding:12px;margin-bottom:15px}.schedule-badge h4{color:#6bcb77;margin-bottom:5px}.schedule-badge p{color:#ccd6f6;font-size:.9rem}small{color:#666;font-size:.75rem;display:block;margin-top:4px}.hidden{display:none}.loader{display:inline-block;width:16px;height:16px;border:2px solid #fff;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}.indicator{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:8px}.indicator.active{background:#ffd93d;animation:pulse 1.5s infinite}.indicator.success{background:#6bcb77}.indicator.error{background:#ff6b6b}@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>📞 Probation Call App</h1>
-            <p>Automated Drug Test Hotline with Live Console</p>
-        </div>
-        <div class="grid">
-            <div class="card">
-                <h2>Make a Call</h2>
-                <form id="callForm">
-                    <div class="form-group">
-                        <label for="targetNumber">Hotline Number</label>
-                        <input type="tel" id="targetNumber" value="+19152656476" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="pin">Your 6-Digit PIN</label>
-                        <input type="text" id="pin" maxlength="6" pattern="\d{6}" placeholder="123456" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="notifyNumber">Your Phone Number (for notifications)</label>
-                        <input type="tel" id="notifyNumber" placeholder="+1234567890" required>
-                    </div>
-                    <button type="submit" class="btn" id="callBtn">📞 Start Call</button>
-                </form>
-                <div id="status"></div>
-            </div>
-            <div class="card">
-                <h2>Test Notification</h2>
-                <p style="margin-bottom: 15px; color: #666;">Test if notifications are working</p>
-                <button class="btn" id="testBtn" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">📱 Send Test Notification</button>
-            </div>
-        </div>
-        <div class="card">
-            <h2>Live Console</h2>
-            <div class="console" id="console">
-                <div class="console-entry info">
-                    <span class="timestamp">[Ready]</span>
-                    <span>Waiting for call to start...</span>
-                </div>
-            </div>
-        </div>
+  <div class="container">
+    <div class="header"><h1>📞 Probation Call App</h1><p>Automated drug testing notification</p></div>
+    <div class="card" id="mainCard">
+      <div class="tabs">
+        <button class="tab active" data-tab="call">📞 Call Now</button>
+        <button class="tab" data-tab="schedule">⏰ Schedule</button>
+      </div>
+      <div class="tab-content active" id="callTab">
+        <form id="callForm">
+          <div class="form-group"><label>Hotline</label><input type="tel" id="targetNumber" value="+19362834848" required></div>
+          <div class="form-group"><label>6-Digit PIN</label><input type="text" id="pin" placeholder="123456" maxlength="6" required></div>
+          <div class="form-group"><label>WhatsApp Number</label><input type="tel" id="notifyNumber" placeholder="+15551234567" required><small>Must join Twilio sandbox first</small></div>
+          <button type="submit" class="btn" id="callBtn">📞 Start Call</button>
+          <button type="button" class="btn btn-secondary" id="testBtn">📱 Test WhatsApp</button>
+        </form>
+      </div>
+      <div class="tab-content" id="scheduleTab">
+        <div class="schedule-badge hidden" id="scheduleActive"><h4>✅ Schedule Active</h4><p id="scheduleInfo"></p></div>
+        <form id="scheduleForm">
+          <div class="form-group"><label>Hotline</label><input type="tel" id="schedTarget" value="+19362834848" required></div>
+          <div class="form-group"><label>6-Digit PIN</label><input type="text" id="schedPin" placeholder="123456" maxlength="6" required></div>
+          <div class="form-group"><label>WhatsApp Number</label><input type="tel" id="schedNotify" placeholder="+15551234567" required></div>
+          <div class="form-group"><label>Daily Time</label><div class="time-row"><input type="number" id="schedHour" min="0" max="23" value="6"><input type="number" id="schedMin" min="0" max="59" value="0"><select id="schedTZ"><option value="America/Chicago">Central</option><option value="America/New_York">Eastern</option><option value="America/Denver">Mountain</option><option value="America/Los_Angeles">Pacific</option></select></div><small>24h format (6=6AM, 18=6PM)</small></div>
+          <button type="submit" class="btn">💾 Save Schedule</button>
+          <button type="button" class="btn btn-danger hidden" id="deleteScheduleBtn">🗑️ Delete</button>
+        </form>
+      </div>
     </div>
-    <script>
-        const console_div = document.getElementById('console');
-        const callForm = document.getElementById('callForm');
-        const callBtn = document.getElementById('callBtn');
-        const testBtn = document.getElementById('testBtn');
-        const statusDiv = document.getElementById('status');
-        const ws = new WebSocket(`${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`);
-        ws.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            if (data.type === 'log') { addConsoleEntry(data.log); }
-            else if (data.type === 'result') { showStatus(data.result, data.speech); }
-        };
-        function addConsoleEntry(log) {
-            const entry = document.createElement('div');
-            entry.className = `console-entry ${log.type}`;
-            const time = new Date(log.timestamp).toLocaleTimeString();
-            entry.innerHTML = `<span class="timestamp">[${time}]</span><span class="callId">[${log.callId}]</span><span>${log.message}</span>`;
-            console_div.appendChild(entry);
-            console_div.scrollTop = console_div.scrollHeight;
-        }
-        function showStatus(result, speech) {
-            let badgeClass = 'success', message = '';
-            if (result === 'MUST_TEST') { badgeClass = 'error'; message = '🚨 TEST REQUIRED TODAY'; }
-            else if (result === 'NO_TEST') { badgeClass = 'success'; message = '✅ NO TEST REQUIRED'; }
-            else { badgeClass = 'warning'; message = '⚠️ RESULT UNCLEAR'; }
-            statusDiv.innerHTML = `<div class="status-badge ${badgeClass}">${message}</div><p style="margin-top: 10px; color: #666;">Heard: "${speech}"</p>`;
-        }
-        callForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            callBtn.disabled = true;
-            callBtn.textContent = '📞 Calling...';
-            statusDiv.innerHTML = '';
-            console_div.innerHTML = '';
-            try {
-                const response = await fetch('/api/call', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        targetNumber: document.getElementById('targetNumber').value,
-                        pin: document.getElementById('pin').value,
-                        notifyNumber: document.getElementById('notifyNumber').value
-                    })
-                });
-                const data = await response.json();
-                if (data.success) {
-                    addConsoleEntry({ timestamp: new Date().toISOString(), callId: data.callId, message: 'Call initiated successfully!', type: 'success' });
-                } else { throw new Error(data.error || 'Failed to initiate call'); }
-            } catch (error) {
-                addConsoleEntry({ timestamp: new Date().toISOString(), callId: 'error', message: `Error: ${error.message}`, type: 'error' });
-            } finally {
-                callBtn.disabled = false;
-                callBtn.textContent = '📞 Start Call';
-            }
-        });
-        testBtn.addEventListener('click', async () => {
-            const notifyNumber = document.getElementById('notifyNumber').value;
-            if (!notifyNumber) { alert('Please enter your phone number first'); return; }
-            testBtn.disabled = true;
-            testBtn.textContent = '📱 Sending...';
-            try {
-                const response = await fetch('/api/test-notification', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ notifyNumber })
-                });
-                const data = await response.json();
-                if (data.success) {
-                    alert('✅ Test notification sent! Check your phone.');
-                    if (data.logs) { data.logs.forEach(log => addConsoleEntry(log)); }
-                } else { throw new Error(data.error || 'Failed to send test'); }
-            } catch (error) { alert(`❌ Error: ${error.message}`); }
-            finally {
-                testBtn.disabled = false;
-                testBtn.textContent = '📱 Send Test Notification';
-            }
-        });
-    </script>
+    <div class="card hidden" id="statusCard">
+      <div style="display:flex;align-items:center;margin-bottom:15px"><span class="indicator active" id="statusIndicator"></span><span id="statusText">Calling...</span></div>
+      <div id="resultBox" class="hidden"></div>
+      <div class="logs" id="logsBox"><div id="logEntries"></div></div>
+      <button class="btn btn-secondary" id="newCallBtn" style="margin-top:15px">← New Call</button>
+    </div>
+  </div>
+  <script>
+    document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.tab-content').forEach(x=>x.classList.remove('active'));t.classList.add('active');document.getElementById(t.dataset.tab+'Tab').classList.add('active')});
+    document.querySelectorAll('input[type="tel"]').forEach(e=>e.oninput=x=>{let v=x.target.value.replace(/[^\d+]/g,'');if(v.length>1&&!v.startsWith('+'))v='+'+v.replace(/\+/g,'');x.target.value=v});
+    ['pin','schedPin'].forEach(id=>document.getElementById(id).oninput=e=>e.target.value=e.target.value.replace(/\D/g,'').slice(0,6));
+    let currentCallId=null,ws=null;
+    function connectWS(){const p=location.protocol==='https:'?'wss:':'ws:';ws=new WebSocket(`${p}//${location.host}/ws`);ws.onmessage=e=>{const d=JSON.parse(e.data);if(d.type==='log'&&d.callId===currentCallId)addLog(d.log);if(d.type==='status'&&d.callId===currentCallId){document.getElementById('statusText').textContent='Status: '+d.status;if(d.status==='completed'){document.getElementById('statusIndicator').classList.remove('active');document.getElementById('statusIndicator').classList.add(d.result==='NO_TEST'?'success':'error')}}if(d.type==='result'&&d.callId===currentCallId)showResult(d.result,d.speech)};ws.onclose=()=>setTimeout(connectWS,3000)}connectWS();
+    function addLog(l){const d=document.createElement('div');d.className='log-entry '+l.type;d.textContent='['+new Date(l.timestamp).toLocaleTimeString()+'] '+l.message;document.getElementById('logEntries').appendChild(d);document.getElementById('logsBox').scrollTop=99999}
+    function showResult(r,s){const b=document.getElementById('resultBox'),i=document.getElementById('statusIndicator');i.classList.remove('active');if(r==='NO_TEST'){i.classList.add('success');b.innerHTML='<div class="status-box success"><h3>✅ No Test Required</h3></div>'}else if(r==='MUST_TEST'){i.classList.add('error');b.innerHTML='<div class="status-box warning"><h3>🚨 TESTING REQUIRED</h3></div>'}else{i.classList.add('error');b.innerHTML='<div class="status-box unknown"><h3>⚠️ Check WhatsApp</h3><p>'+(s?'Heard: "'+s.slice(0,60)+'..."':'')+'</p></div>'}b.classList.remove('hidden')}
+    document.getElementById('callForm').onsubmit=async e=>{e.preventDefault();const btn=document.getElementById('callBtn');btn.disabled=true;btn.innerHTML='<span class="loader"></span> Calling...';try{const r=await fetch('/api/call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({targetNumber:document.getElementById('targetNumber').value,pin:document.getElementById('pin').value,notifyNumber:document.getElementById('notifyNumber').value})});const d=await r.json();if(d.success){currentCallId=d.callId;document.getElementById('mainCard').classList.add('hidden');document.getElementById('statusCard').classList.remove('hidden');document.getElementById('statusIndicator').className='indicator active';document.getElementById('statusText').textContent='Call initiated...';document.getElementById('resultBox').classList.add('hidden');document.getElementById('logEntries').innerHTML=''}else alert('Error: '+(d.error||'Unknown'))}catch(x){alert('Error: '+x.message)}btn.disabled=false;btn.innerHTML='📞 Start Call'};
+    document.getElementById('newCallBtn').onclick=()=>{currentCallId=null;document.getElementById('mainCard').classList.remove('hidden');document.getElementById('statusCard').classList.add('hidden')};
+    document.getElementById('testBtn').onclick=async()=>{const n=document.getElementById('notifyNumber').value;if(!n)return alert('Enter number first');try{const r=await fetch('/api/test-sms',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({notifyNumber:n})});const d=await r.json();alert(d.success?'✅ WhatsApp sent!':'❌ Failed: '+d.error)}catch(x){alert('Error: '+x.message)}};
+    document.getElementById('scheduleForm').onsubmit=async e=>{e.preventDefault();try{const r=await fetch('/api/schedule',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({targetNumber:document.getElementById('schedTarget').value,pin:document.getElementById('schedPin').value,notifyNumber:document.getElementById('schedNotify').value,hour:document.getElementById('schedHour').value,minute:document.getElementById('schedMin').value,timezone:document.getElementById('schedTZ').value,enabled:true})});const d=await r.json();if(d.success){alert('✅ Schedule saved!');loadSchedule()}else alert('Error: '+d.error)}catch(x){alert('Error: '+x.message)}};
+    document.getElementById('deleteScheduleBtn').onclick=async()=>{if(!confirm('Delete?'))return;await fetch('/api/schedule',{method:'DELETE'});loadSchedule()};
+    async function loadSchedule(){try{const r=await fetch('/api/schedule');const d=await r.json();const b=document.getElementById('scheduleActive'),del=document.getElementById('deleteScheduleBtn');if(d.hasSchedule&&d.schedule){const s=d.schedule;document.getElementById('schedTarget').value=s.targetNumber||'';document.getElementById('schedPin').value=s.pin||'';document.getElementById('schedNotify').value=s.notifyNumber||'';document.getElementById('schedHour').value=s.hour||6;document.getElementById('schedMin').value=s.minute||0;document.getElementById('schedTZ').value=s.timezone||'America/Chicago';const h=s.hour%12||12,ap=s.hour>=12?'PM':'AM';document.getElementById('scheduleInfo').textContent=`Daily at ${h}:${String(s.minute).padStart(2,'0')} ${ap}`;b.classList.remove('hidden');del.classList.remove('hidden')}else{b.classList.add('hidden');del.classList.add('hidden')}}catch(x){}}loadSchedule();
+  </script>
 </body>
 </html>
