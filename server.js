@@ -435,11 +435,19 @@ app.post('/api/test-sms', async (req, res) => {
     }
 
     const testCallId = `test_${Date.now()}`;
-    await sendWhatsApp(notifyNumber, '✅ Test notification from Probation Call App', testCallId);
+    const body = 'Your appointment is coming up on July 21 at 3PM';
 
-    res.json({ success: true, logs: callLogs.get(testCallId) || [] });
+    await sendWhatsApp(notifyNumber, body, testCallId);
+
+    res.json({
+      success: true,
+      logs: callLogs.get(testCallId) || []
+    });
   } catch (error) {
-    res.status(500).json({ error: error.message, code: error.code });
+    res.status(500).json({
+      error: error.message,
+      code: error.code
+    });
   }
 });
 
@@ -462,7 +470,11 @@ async function sendWhatsApp(to, body, callId) {
     logToConsole(callId || 'whatsapp', `WhatsApp sent SID: ${message.sid}`, 'success');
     return message;
   } catch (error) {
-    logToConsole(callId || 'whatsapp', `WhatsApp failed: ${error.code || ''} ${error.message}`, 'error');
+    logToConsole(
+      callId || 'whatsapp',
+      `WhatsApp failed: ${error.code || ''} ${error.message}`,
+      'error'
+    );
     throw error;
   }
 }
