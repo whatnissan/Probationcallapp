@@ -426,6 +426,8 @@ app.delete('/api/schedule', (req, res) => {
   res.json({ success: true });
 });
 
+// Test notification endpoint (used by the button in the UI)
+// Sends a simple "Test message" via WhatsApp
 app.post(['/api/test-sms', '/api/test-notification'], async (req, res) => {
   try {
     const { notifyNumber } = req.body;
@@ -435,7 +437,7 @@ app.post(['/api/test-sms', '/api/test-notification'], async (req, res) => {
     }
 
     const testCallId = `test_${Date.now()}`;
-    const body = 'Your appointment is coming up on July 21 at 3PM';
+    const body = 'Test message';
 
     await sendWhatsApp(notifyNumber, body, testCallId);
 
