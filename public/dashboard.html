@@ -5,10 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Dashboard - ProbationCall</title>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,sans-serif;background:#0a0a0f;color:#fff;min-height:100vh}.loading{display:flex;align-items:center;justify-content:center;height:100vh;font-size:1.2rem;color:#8892b0}.container{max-width:900px;margin:0 auto;padding:20px;display:none}nav{display:flex;justify-content:space-between;align-items:center;margin-bottom:30px;padding-bottom:20px;border-bottom:1px solid rgba(255,255,255,0.1)}.logo{font-size:1.3rem;font-weight:700;color:#00d9ff}.logout-btn{background:rgba(255,255,255,0.1);border:none;color:#fff;padding:8px 16px;border-radius:6px;cursor:pointer}.credits-card{background:linear-gradient(135deg,#00d9ff,#00b4d8);border-radius:16px;padding:25px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:15px}.credits-num{font-size:2.5rem;font-weight:700;color:#0a0a0f}.credits-label{color:rgba(0,0,0,0.6)}.buy-btn{background:#0a0a0f;color:#fff;border:none;padding:10px 20px;border-radius:8px;font-weight:600;cursor:pointer}.card{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:25px;margin-bottom:20px}.card h2{margin-bottom:20px;color:#00d9ff}.form-group{margin-bottom:15px}label{display:block;margin-bottom:5px;color:#8892b0}input{width:100%;padding:12px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#fff;font-size:1rem}.btn{width:100%;padding:14px;border-radius:8px;border:none;background:linear-gradient(135deg,#00d9ff,#00b4d8);color:#0a0a0f;font-size:1rem;font-weight:600;cursor:pointer;margin-top:10px}.btn:disabled{opacity:0.5}.status{padding:15px;border-radius:8px;margin-top:15px;text-align:center}.status.success{background:rgba(107,203,119,0.2);color:#6bcb77}.status.error{background:rgba(255,107,107,0.2);color:#ff6b6b}.status.calling{background:rgba(0,217,255,0.2);color:#00d9ff}</style>
+  <style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,sans-serif;background:#0a0a0f;color:#fff;min-height:100vh}.loading{display:flex;align-items:center;justify-content:center;height:100vh;font-size:1.2rem;color:#8892b0}.container{max-width:900px;margin:0 auto;padding:20px;display:none}nav{display:flex;justify-content:space-between;align-items:center;margin-bottom:30px;padding-bottom:20px;border-bottom:1px solid rgba(255,255,255,0.1)}.logo{font-size:1.3rem;font-weight:700;color:#00d9ff}.logout-btn{background:rgba(255,255,255,0.1);border:none;color:#fff;padding:8px 16px;border-radius:6px;cursor:pointer}.credits-card{background:linear-gradient(135deg,#00d9ff,#00b4d8);border-radius:16px;padding:25px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:15px}.credits-num{font-size:2.5rem;font-weight:700;color:#0a0a0f}.credits-label{color:rgba(0,0,0,0.6)}.buy-btn{background:#0a0a0f;color:#fff;border:none;padding:10px 20px;border-radius:8px;font-weight:600;cursor:pointer}.card{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:25px;margin-bottom:20px}.card h2{margin-bottom:20px;color:#00d9ff}.form-group{margin-bottom:15px}label{display:block;margin-bottom:5px;color:#8892b0}input{width:100%;padding:12px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#fff;font-size:1rem}.btn{width:100%;padding:14px;border-radius:8px;border:none;background:linear-gradient(135deg,#00d9ff,#00b4d8);color:#0a0a0f;font-size:1rem;font-weight:600;cursor:pointer;margin-top:10px}.btn:disabled{opacity:0.5}.status{padding:15px;border-radius:8px;margin-top:15px;text-align:center}.status.success{background:rgba(107,203,119,0.2);color:#6bcb77}.status.error{background:rgba(255,107,107,0.2);color:#ff6b6b}.status.calling{background:rgba(0,217,255,0.2);color:#00d9ff}.debug{position:fixed;top:10px;right:10px;background:rgba(255,0,0,0.8);color:#fff;padding:10px;border-radius:5px;font-size:12px;max-width:300px;z-index:9999}</style>
 </head>
 <body>
   <div class="loading" id="loading">Loading...</div>
+  <div class="debug" id="debug">Checking auth...</div>
   <div class="container" id="app">
     <nav><div class="logo">📞 ProbationCall</div><button class="logout-btn" onclick="logout()">Sign Out (<span id="email"></span>)</button></nav>
     <div class="credits-card"><div><div class="credits-num" id="credits">0</div><div class="credits-label">Credits</div></div><button class="buy-btn" onclick="alert('Coming soon!')">Buy Credits</button></div>
@@ -24,15 +25,107 @@
     </div>
   </div>
 <script>
+console.log('=== DASHBOARD LOADED ===');
 var SUPA_URL='https://xvpuqeaowvlkcyywgaaq.supabase.co';
 var SUPA_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh2cHVxZWFvd3Zsa2N5eXdnYWFxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQyNzc1MjcsImV4cCI6MjA3OTg1MzUyN30.y90odNDSU0zZcVGMK9C39gSFDL9NJcy5E4yBkgcFc8w';
 var supabase=window.supabase.createClient(SUPA_URL,SUPA_KEY);
 var accessToken=null;
-async function checkAuth(){var hash=window.location.hash;var hasTokens=hash&&(hash.includes('access_token')||hash.includes('code='));if(hasTokens){console.log('OAuth callback detected');for(var i=0;i<6;i++){await new Promise(function(r){setTimeout(r,500);});var result=await supabase.auth.getSession();if(result.data.session){console.log('Session ready');history.replaceState(null,'',window.location.pathname);accessToken=result.data.session.access_token;showApp(result.data.session.user);return;}}}var result=await supabase.auth.getSession();if(result.data.session){accessToken=result.data.session.access_token;showApp(result.data.session.user);}else{window.location.href='/login';}}
-function showApp(user){document.getElementById('loading').style.display='none';document.getElementById('app').style.display='block';document.getElementById('email').textContent=user.email;loadCredits();}
-async function loadCredits(){try{var r=await fetch('/api/user',{headers:{'Authorization':'Bearer '+accessToken}});var d=await r.json();document.getElementById('credits').textContent=d.profile?d.profile.credits:0;}catch(e){console.error(e);}}
-async function makeCall(e){e.preventDefault();var btn=document.getElementById('callBtn');var st=document.getElementById('status');btn.disabled=true;btn.textContent='Calling...';st.style.display='block';st.className='status calling';st.textContent='Calling hotline...';try{var r=await fetch('/api/call',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+accessToken},body:JSON.stringify({targetNumber:document.getElementById('target').value,pin:document.getElementById('pin').value,notifyNumber:document.getElementById('notify').value})});var d=await r.json();if(d.error){st.className='status error';st.textContent='Error: '+d.error;}else{st.className='status success';st.textContent='Call started! Check WhatsApp for results.';loadCredits();}}catch(err){st.className='status error';st.textContent='Error: '+err.message;}btn.disabled=false;btn.textContent='📞 Call Now';}
-async function logout(){await supabase.auth.signOut();window.location.href='/';}
+var debugEl=document.getElementById('debug');
+
+function debug(msg){
+  console.log(msg);
+  debugEl.textContent=msg;
+}
+
+async function checkAuth(){
+  debug('Step 1: Checking URL hash...');
+  var hash=window.location.hash;
+  debug('Hash: '+(hash||'NONE'));
+  
+  var hasTokens=hash&&(hash.includes('access_token')||hash.includes('code='));
+  
+  if(hasTokens){
+    debug('Step 2: OAuth tokens found! Waiting for session...');
+    for(var i=0;i<6;i++){
+      debug('Attempt '+(i+1)+'/6...');
+      await new Promise(function(r){setTimeout(r,500);});
+      var result=await supabase.auth.getSession();
+      if(result.data.session){
+        debug('SUCCESS! Session ready');
+        history.replaceState(null,'',window.location.pathname);
+        accessToken=result.data.session.access_token;
+        showApp(result.data.session.user);
+        return;
+      }
+    }
+    debug('TIMEOUT: No session after 3 seconds');
+  }
+  
+  debug('Step 3: Normal session check...');
+  var result=await supabase.auth.getSession();
+  debug('Session: '+(result.data.session?'FOUND':'NONE'));
+  
+  if(result.data.session){
+    accessToken=result.data.session.access_token;
+    showApp(result.data.session.user);
+  }else{
+    debug('REDIRECTING to /login in 2 seconds...');
+    setTimeout(function(){window.location.href='/login';},2000);
+  }
+}
+
+function showApp(user){
+  debug('Showing app for: '+user.email);
+  document.getElementById('loading').style.display='none';
+  document.getElementById('app').style.display='block';
+  document.getElementById('email').textContent=user.email;
+  debugEl.style.display='none';
+  loadCredits();
+}
+
+async function loadCredits(){
+  try{
+    var r=await fetch('/api/user',{headers:{'Authorization':'Bearer '+accessToken}});
+    var d=await r.json();
+    document.getElementById('credits').textContent=d.profile?d.profile.credits:0;
+  }catch(e){
+    console.error(e);
+  }
+}
+
+async function makeCall(e){
+  e.preventDefault();
+  var btn=document.getElementById('callBtn');
+  var st=document.getElementById('status');
+  btn.disabled=true;
+  btn.textContent='Calling...';
+  st.style.display='block';
+  st.className='status calling';
+  st.textContent='Calling hotline...';
+  try{
+    var r=await fetch('/api/call',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+accessToken},body:JSON.stringify({targetNumber:document.getElementById('target').value,pin:document.getElementById('pin').value,notifyNumber:document.getElementById('notify').value})});
+    var d=await r.json();
+    if(d.error){
+      st.className='status error';
+      st.textContent='Error: '+d.error;
+    }else{
+      st.className='status success';
+      st.textContent='Call started! Check WhatsApp for results.';
+      loadCredits();
+    }
+  }catch(err){
+    st.className='status error';
+    st.textContent='Error: '+err.message;
+  }
+  btn.disabled=false;
+  btn.textContent='📞 Call Now';
+}
+
+async function logout(){
+  await supabase.auth.signOut();
+  window.location.href='/';
+}
+
 checkAuth();
 </script>
 </body>
