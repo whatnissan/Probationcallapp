@@ -31,7 +31,7 @@ const scheduledJobs = new Map();
 // Phone numbers
 const TWILIO_VOICE_NUMBER = process.env.TWILIO_PHONE_NUMBER; // For calls
 const TWILIO_SMS_NUMBER = process.env.TWILIO_SMS_NUMBER || process.env.TWILIO_PHONE_NUMBER; // For SMS
-const WHATSAPP_SANDBOX = 'whatsapp:+15558965863';
+const WHATSAPP_NUMBER = 'whatsapp:+15558965863';
 
 const PACKAGES = {
   starter: { name: 'Starter', credits: 30, price: 999 },
@@ -489,7 +489,7 @@ async function notify(to, method, body, callId) {
       // WhatsApp (default)
       var toWA = to.indexOf('whatsapp:') === 0 ? to : 'whatsapp:' + to;
       messageParams = {
-        from: WHATSAPP_SANDBOX,
+        from: WHATSAPP_NUMBER,
         to: toWA,
         body: body
       };
