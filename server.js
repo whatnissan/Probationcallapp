@@ -12,7 +12,6 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// DEV ACCOUNTS - these emails get unlimited credits
 const DEV_EMAILS = ['whatnissan@gmail.com', 'whatnissan@protonmail.com'];
 
 app.use('/webhook/stripe', express.raw({ type: 'application/json' }));
@@ -28,9 +27,8 @@ const pendingCalls = new Map();
 const wsClients = new Set();
 const scheduledJobs = new Map();
 
-// Phone numbers
-const TWILIO_VOICE_NUMBER = process.env.TWILIO_PHONE_NUMBER; // For calls
-const TWILIO_SMS_NUMBER = process.env.TWILIO_SMS_NUMBER || process.env.TWILIO_PHONE_NUMBER; // For SMS
+const TWILIO_VOICE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
+const TWILIO_SMS_NUMBER = process.env.TWILIO_SMS_NUMBER || process.env.TWILIO_PHONE_NUMBER;
 const WHATSAPP_NUMBER = 'whatsapp:+15558965863';
 
 const PACKAGES = {
@@ -79,7 +77,6 @@ async function auth(req, res, next) {
       profile = { id: user.id, email: user.email, credits: startCredits };
     }
     
-    // Dev accounts always have unlimited credits
     if (isDev(user.email)) {
       profile.credits = 9999;
       profile.isDev = true;
@@ -101,13 +98,15 @@ app.get('/health', function(req, res) { res.json({ status: 'ok', time: new Date(
 
 app.get('/api/user', auth, async function(req, res) {
   var historyResult = await supabase.from('call_history').select('*').eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(30);
-  var scheduleResult = await supabase.from('user_schedules').select('*').eq('user_id', req.user.id).maybeSingle();
-  var schedule = (scheduleResult.error || !scheduleResult.data) ? null : scheduleResult.data;
+  var scheduleResult = await supabase.from('user_schedules').select('*').eq('user_id', req.user.id).single();
+  
+  console.log('[API] User schedule:', scheduleResult.data ? 'FOUND' : 'NONE');
+  
   res.json({ 
     user: req.user, 
     profile: req.profile, 
     history: historyResult.data || [], 
-    schedule: scheduleResult.data || null,
+    schedule: scheduleResult.data,
     isDev: isDev(req.user.email)
   });
 });
@@ -132,29 +131,45 @@ app.post('/api/redeem', auth, async function(req, res) {
 });
 
 app.post('/api/schedule', auth, async function(req, res) {
+  console.log('[API] Saving schedule for user:', req.user.id);
+  console.log('[API] Schedule data:', req.body);
+  
   var data = {
     user_id: req.user.id,
     target_number: req.body.targetNumber,
     pin: req.body.pin,
     notify_number: req.body.notifyNumber,
-    notify_method: req.body.notifyMethod || 'whatsapp',
     hour: parseInt(req.body.hour) || 6,
     minute: parseInt(req.body.minute) || 0,
     timezone: req.body.timezone || 'America/Chicago',
-    enabled: req.body.enabled !== false,
+    enabled: true,
     updated_at: new Date().toISOString()
   };
   
-  var existingResult = await supabase.from('user_schedules').select('id').eq('user_id', req.user.id).single();
-  
-  if (existingResult.data) {
-    await supabase.from('user_schedules').update(data).eq('user_id', req.user.id);
-  } else {
-    await supabase.from('user_schedules').insert(data);
+  try {
+    var existingResult = await supabase.from('user_schedules').select('id').eq('user_id', req.user.id).single();
+    
+    var result;
+    if (existingResult.data) {
+      console.log('[API] Updating existing schedule');
+      result = await supabase.from('user_schedules').update(data).eq('user_id', req.user.id);
+    } else {
+      console.log('[API] Creating new schedule');
+      result = await supabase.from('user_schedules').insert(data);
+    }
+    
+    if (result.error) {
+      console.error('[API] Schedule save error:', result.error);
+      return res.status(500).json({ success: false, error: result.error.message });
+    }
+    
+    console.log('[API] Schedule saved successfully');
+    rescheduleUser(req.user.id, data);
+    res.json({ success: true });
+  } catch(e) {
+    console.error('[API] Schedule error:', e);
+    res.status(500).json({ success: false, error: e.message });
   }
-  
-  rescheduleUser(req.user.id, data);
-  res.json({ success: true });
 });
 
 app.delete('/api/schedule', auth, async function(req, res) {
@@ -182,7 +197,6 @@ function rescheduleUser(userId, sched) {
       var profileResult = await supabase.from('profiles').select('credits, email').eq('id', userId).single();
       var profile = profileResult.data;
       
-      // Check credits (skip for dev accounts)
       if (!profile) {
         console.log('[SCHED] No profile for ' + userId);
         return;
@@ -192,20 +206,19 @@ function rescheduleUser(userId, sched) {
       
       if (!isDevUser && profile.credits < 1) {
         console.log('[SCHED] No credits for ' + userId);
-        await notify(sched.notify_number, sched.notify_method || 'whatsapp', 'ProbationCall: Scheduled call skipped - no credits remaining!', 'sched');
+        await notify(sched.notify_number, 'ProbationCall: Scheduled call skipped - no credits remaining!', 'sched');
         return;
       }
       
-      await initiateCall(sched.target_number, sched.pin, sched.notify_number, sched.notify_method || 'whatsapp', userId);
+      await initiateCall(sched.target_number, sched.pin, sched.notify_number, userId);
       
-      // Only deduct credits for non-dev users
       if (!isDevUser) {
         await supabase.from('profiles').update({ credits: profile.credits - 1 }).eq('id', userId);
       }
-      console.log('[SCHED] Call initiated for ' + userId + (isDevUser ? ' (DEV - no credit deduction)' : ''));
+      console.log('[SCHED] Call initiated for ' + userId);
     } catch (e) {
       console.error('[SCHED] Error for ' + userId + ':', e);
-      await notify(sched.notify_number, sched.notify_method || 'whatsapp', 'ProbationCall: Scheduled call failed! Please call manually.', 'sched');
+      await notify(sched.notify_number, 'ProbationCall: Scheduled call failed! Please call manually.', 'sched');
     }
   }, { timezone: sched.timezone });
   
@@ -272,38 +285,31 @@ app.post('/webhook/stripe', async function(req, res) {
       credits_purchased: parseInt(s.metadata.credits), 
       amount_cents: s.amount_total 
     });
-    console.log('[STRIPE] Added ' + s.metadata.credits + ' credits to ' + s.metadata.user_id);
+    console.log('[STRIPE] Added ' + s.metadata.credits + ' credits');
   }
   res.json({ received: true });
 });
 
 app.post('/api/call', auth, async function(req, res) {
-  console.log('[API] Call request from ' + req.user.email + (req.profile.isDev ? ' (DEV)' : ''));
+  console.log('[API] Call request from ' + req.user.email);
   
-  // Check credits (skip for dev accounts)
   if (!req.profile.isDev && req.profile.credits < 1) {
-    console.log('[API] No credits for ' + req.user.email);
     return res.status(402).json({ error: 'No credits. Please purchase more.' });
   }
   
   var targetNumber = req.body.targetNumber;
   var pin = req.body.pin;
   var notifyNumber = req.body.notifyNumber;
-  var notifyMethod = req.body.notifyMethod || 'whatsapp';
   
   if (!targetNumber || !pin || !notifyNumber) return res.status(400).json({ error: 'Missing fields' });
   if (!/^\+\d{10,15}$/.test(targetNumber) || !/^\+\d{10,15}$/.test(notifyNumber)) return res.status(400).json({ error: 'Use E.164 format (+1234567890)' });
   if (pin.length !== 6 || !/^\d+$/.test(pin)) return res.status(400).json({ error: 'PIN must be 6 digits' });
   
   try {
-    var result = await initiateCall(targetNumber, pin, notifyNumber, notifyMethod, req.user.id);
+    var result = await initiateCall(targetNumber, pin, notifyNumber, req.user.id);
     
-    // Only deduct credits for non-dev users
     if (!req.profile.isDev) {
       await supabase.from('profiles').update({ credits: req.profile.credits - 1 }).eq('id', req.user.id);
-      console.log('[API] Credit deducted');
-    } else {
-      console.log('[API] DEV account - no credit deducted');
     }
     
     res.json(result);
@@ -313,17 +319,16 @@ app.post('/api/call', auth, async function(req, res) {
   }
 });
 
-async function initiateCall(targetNumber, pin, notifyNumber, notifyMethod, userId) {
+async function initiateCall(targetNumber, pin, notifyNumber, userId) {
   var callId = 'call_' + Date.now();
   log(callId, 'Starting call to ' + targetNumber, 'info');
   log(callId, 'PIN: ' + pin, 'info');
-  log(callId, 'Notify: ' + notifyNumber + ' via ' + notifyMethod, 'info');
+  log(callId, 'Notify: ' + notifyNumber, 'info');
   
   pendingCalls.set(callId, { 
     targetNumber: targetNumber, 
     pin: pin, 
     notifyNumber: notifyNumber,
-    notifyMethod: notifyMethod,
     userId: userId, 
     result: null,
     startTime: Date.now()
@@ -349,12 +354,11 @@ app.post('/twiml/answer', function(req, res) {
   var twiml = new twilio.twiml.VoiceResponse();
   
   if (!config) { 
-    log(callId, 'No config found, hanging up', 'error');
     twiml.hangup(); 
     return res.type('text/xml').send(twiml.toString()); 
   }
   
-  log(callId, 'Call answered, sending DTMF sequence', 'success');
+  log(callId, 'Call answered, sending DTMF', 'success');
   
   twiml.play({ digits: 'wwwwwwwwww1wwwwwwwwwwwwwwwwwwww' + config.pin + 'wwwwwwwwwwwwwwwwwwww1' });
   twiml.pause({ length: 2 });
@@ -387,12 +391,12 @@ app.post('/twiml/result', async function(req, res) {
     
     if (KEYWORDS.MUST_TEST.some(function(k) { return lower.indexOf(k) >= 0; })) {
       result = 'MUST_TEST';
-      log(callId, '🚨 RESULT: TEST REQUIRED!', 'warning');
+      log(callId, 'RESULT: TEST REQUIRED!', 'warning');
     } else if (KEYWORDS.NO_TEST.some(function(k) { return lower.indexOf(k) >= 0; })) {
       result = 'NO_TEST';
-      log(callId, '✅ RESULT: No test today', 'success');
+      log(callId, 'RESULT: No test today', 'success');
     } else {
-      log(callId, '⚠️ RESULT: Unknown', 'warning');
+      log(callId, 'RESULT: Unknown', 'warning');
     }
     
     config.result = result;
@@ -406,7 +410,7 @@ app.post('/twiml/result', async function(req, res) {
       message = '⚠️ Could not determine result.\n\nHeard: "' + speech.slice(0, 100) + '"\n\nPlease verify manually.\nPIN: ' + config.pin;
     }
     
-    await notify(config.notifyNumber, config.notifyMethod, message, callId);
+    await notify(config.notifyNumber, message, callId);
     
     if (config.userId) {
       await supabase.from('call_history').insert({ 
@@ -416,7 +420,6 @@ app.post('/twiml/result', async function(req, res) {
         pin_used: config.pin, 
         result: result 
       });
-      log(callId, 'Saved to history', 'info');
     }
     
     broadcastToClients({ type: 'result', callId: callId, result: result, speech: speech });
@@ -436,7 +439,7 @@ app.post('/twiml/fallback', async function(req, res) {
     config.result = 'UNKNOWN';
     
     var message = '⚠️ Call completed but no result detected.\n\nPlease call manually to verify.\nPIN: ' + config.pin;
-    await notify(config.notifyNumber, config.notifyMethod, message, callId);
+    await notify(config.notifyNumber, message, callId);
     
     if (config.userId) {
       await supabase.from('call_history').insert({ 
@@ -471,53 +474,49 @@ app.post('/webhook/status', function(req, res) {
   res.sendStatus(200);
 });
 
-// NOTIFICATION FUNCTION - supports both WhatsApp and SMS
-async function notify(to, method, body, callId) {
-  log(callId, 'Sending ' + method + ' to ' + to, 'info');
+async function notify(to, body, callId) {
+  var toWA = to.indexOf('whatsapp:') === 0 ? to : 'whatsapp:' + to;
+  
+  log(callId, 'Sending WhatsApp to ' + toWA, 'info');
   
   try {
-    var messageParams;
-    
-    if (method === 'sms') {
-      // Regular SMS
-      messageParams = {
-        from: TWILIO_SMS_NUMBER,
-        to: to,
-        body: body
-      };
-    } else {
-      // WhatsApp (default)
-      var toWA = to.indexOf('whatsapp:') === 0 ? to : 'whatsapp:' + to;
-      messageParams = {
-        from: WHATSAPP_NUMBER,
-        to: toWA,
-        body: body
-      };
-    }
-    
-    var msg = await twilioClient.messages.create(messageParams);
-    log(callId, method.toUpperCase() + ' sent! SID: ' + msg.sid, 'success');
+    var msg = await twilioClient.messages.create({ 
+      from: WHATSAPP_NUMBER,
+      to: toWA, 
+      body: body 
+    });
+    log(callId, 'WhatsApp sent! SID: ' + msg.sid, 'success');
     return { success: true, sid: msg.sid };
   } catch (e) {
-    log(callId, method.toUpperCase() + ' FAILED: ' + e.message, 'error');
-    console.error('Notification error:', e);
+    log(callId, 'WhatsApp FAILED: ' + e.message, 'error');
+    console.error('WhatsApp error:', e);
     return { success: false, error: e.message };
   }
 }
 
-// TEST ENDPOINTS
 app.post('/api/test-whatsapp', auth, async function(req, res) {
   var num = req.body.notifyNumber;
   log('test', 'Testing WhatsApp to ' + num, 'info');
-  var result = await notify(num, 'whatsapp', '✅ WhatsApp test from ProbationCall!\n\nIf you see this, WhatsApp is working.', 'test');
+  var result = await notify(num, '✅ WhatsApp test from ProbationCall!\n\nIf you see this, WhatsApp is working.', 'test');
   res.json(result);
 });
 
 app.post('/api/test-sms', auth, async function(req, res) {
   var num = req.body.notifyNumber;
   log('test', 'Testing SMS to ' + num, 'info');
-  var result = await notify(num, 'sms', 'SMS test from ProbationCall! If you see this, SMS is working.', 'test');
-  res.json(result);
+  
+  try {
+    var msg = await twilioClient.messages.create({ 
+      from: TWILIO_SMS_NUMBER,
+      to: num, 
+      body: 'SMS test from ProbationCall! If you see this, SMS is working.' 
+    });
+    log('test', 'SMS sent! SID: ' + msg.sid, 'success');
+    res.json({ success: true, sid: msg.sid });
+  } catch (e) {
+    log('test', 'SMS FAILED: ' + e.message, 'error');
+    res.json({ success: false, error: e.message });
+  }
 });
 
 wss.on('connection', function(ws, req) {
@@ -525,7 +524,6 @@ wss.on('connection', function(ws, req) {
     console.log('[WS] Client connected');
     wsClients.add(ws);
     ws.on('close', function() { 
-      console.log('[WS] Client disconnected');
       wsClients.delete(ws); 
     });
   }
@@ -537,41 +535,11 @@ server.listen(PORT, function() {
   console.log('ProbationCall Server Started');
   console.log('Port: ' + PORT);
   console.log('Base URL: ' + process.env.BASE_URL);
-  console.log('Voice Number: ' + TWILIO_VOICE_NUMBER);
-  console.log('SMS Number: ' + TWILIO_SMS_NUMBER);
-  console.log('Dev Accounts: ' + DEV_EMAILS.join(', '));
+  console.log('Voice: ' + TWILIO_VOICE_NUMBER);
+  console.log('WhatsApp: ' + WHATSAPP_NUMBER);
+  console.log('Dev accounts: ' + DEV_EMAILS.join(', '));
   console.log('========================================');
   loadAllSchedules();
 });
 
 module.exports = app;
-
-// Email notification fallback (using nodemailer)
-const nodemailer = require('nodemailer');
-const emailTransporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
-  }
-});
-
-async function sendEmailNotification(email, result, pin) {
-  try {
-    var emoji = result === 'NO_TEST' ? '✅' : '🚨';
-    var subject = emoji + ' Probation Call Result';
-    var text = result === 'NO_TEST' 
-      ? 'Good news! No test required today. PIN used: ' + pin
-      : 'ALERT: Test required today! PIN used: ' + pin;
-    
-    await emailTransporter.sendMail({
-      from: process.env.EMAIL_USER,
-      to: email,
-      subject: subject,
-      text: text
-    });
-    console.log('Email sent to ' + email);
-  } catch (err) {
-    console.error('Email send failed:', err.message);
-  }
-}
