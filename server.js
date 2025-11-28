@@ -31,7 +31,7 @@ const scheduledJobs = new Map();
 // Phone numbers
 const TWILIO_VOICE_NUMBER = process.env.TWILIO_PHONE_NUMBER; // For calls
 const TWILIO_SMS_NUMBER = process.env.TWILIO_SMS_NUMBER || process.env.TWILIO_PHONE_NUMBER; // For SMS
-const WHATSAPP_SANDBOX = 'whatsapp:+14155238886';
+const WHATSAPP_SANDBOX = 'whatsapp:+15558965863';
 
 const PACKAGES = {
   starter: { name: 'Starter', credits: 30, price: 999 },
