@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Auth Debug</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    body{background:#000;color:#0f0;font-family:monospace;padding:20px}
+    #log{white-space:pre-wrap;font-size:14px}
+    button{padding:10px 20px;font-size:16px;margin:10px 0}
+  </style>
+</head>
+<body>
+  <h1>Auth Debugger</h1>
+  <button onclick="testLogin()">Test Google Login</button>
+  <button onclick="checkSession()">Check Session</button>
+  <button onclick="clearLog()">Clear Log</button>
+  <div id="log"></div>
+  <script>
+    const SUPA_URL='https://xvpuqeaowvlkcyywgaaq.supabase.co';
+    const SUPA_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh2cHVxZWFvd3Zsa2N5eXdnYWFxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQyNzc1MjcsImV4cCI6MjA3OTg1MzUyN30.y90odNDSU0zZcVGMK9C39gSFDL9NJcy5E4yBkgcFc8w';
+    const supabase=window.supabase.createClient(SUPA_URL,SUPA_KEY);
+    const logEl=document.getElementById('log');
+    
+    function log(msg){
+      const time=new Date().toLocaleTimeString();
+      logEl.textContent+=`[${time}] ${msg}\n`;
+      console.log(msg);
+    }
+    
+    function clearLog(){logEl.textContent='';}
+    
+    async function testLogin(){
+      log('Starting Google OAuth...');
+      const {error}=await supabase.auth.signInWithOAuth({
+        provider:'google',
+        options:{redirectTo:window.location.origin+'/test-auth.html'}
+      });
+      if(error)log('ERROR: '+error.message);
+      else log('Redirecting to Google...');
+    }
+    
+    async function checkSession(){
+      log('Checking session...');
+      const {data,error}=await supabase.auth.getSession();
+      if(error){
+        log('ERROR: '+error.message);
+      }else if(data.session){
+        log('SESSION FOUND!');
+        log('User: '+data.session.user.email);
+        log('Token: '+data.session.access_token.substring(0,20)+'...');
+      }else{
+        log('NO SESSION');
+      }
+    }
+    
+    window.onload=async function(){
+      log('=== PAGE LOADED ===');
+      log('URL: '+window.location.href);
+      log('Hash: '+(window.location.hash||'NONE'));
+      
+      if(window.location.hash){
+        log('Waiting 2 seconds for Supabase to process hash...');
+        await new Promise(r=>setTimeout(r,2000));
+        await checkSession();
+      }else{
+        await checkSession();
+      }
+    };
+  </script>
+</body>
+</html>
