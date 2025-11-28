@@ -7,6 +7,7 @@ const path = require('path');
 const cron = require('node-cron');
 const Stripe = require('stripe');
 const { createClient } = require('@supabase/supabase-js');
+const sgMail = require('@sendgrid/mail');
 
 const app = express();
 const server = http.createServer(app);
@@ -23,13 +24,20 @@ const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_A
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
+// SendGrid setup
+if (process.env.SENDGRID_API_KEY) {
+  sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+  console.log('[EMAIL] SendGrid configured');
+}
+
 const pendingCalls = new Map();
 const wsClients = new Set();
 const scheduledJobs = new Map();
 
 const TWILIO_VOICE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
-const TWILIO_SMS_NUMBER = process.env.TWILIO_SMS_NUMBER || process.env.TWILIO_PHONE_NUMBER;
-const WHATSAPP_NUMBER = 'whatsapp:+15558965863';
+const TWILIO_SMS_NUMBER = process.env.TWILIO_SMS_NUMBER || '+16315267507';
+const WHATSAPP_NUMBER = 'whatsapp:+14155238886';
+const FROM_EMAIL = 'whatnissan@protonmail.com';
 
 const PACKAGES = {
   starter: { name: 'Starter', credits: 30, price: 999 },
@@ -47,9 +55,8 @@ function isDev(email) {
 }
 
 function log(callId, msg, type) {
-  var entry = { timestamp: new Date().toISOString(), message: msg, type: type || 'info' };
   console.log('[' + (callId || 'SYS') + '] ' + msg);
-  broadcastToClients({ type: 'log', callId: callId, log: entry });
+  broadcastToClients({ type: 'log', callId: callId, log: { message: msg, type: type || 'info' } });
 }
 
 function broadcastToClients(data) {
@@ -94,14 +101,11 @@ async function auth(req, res, next) {
 app.get('/', function(req, res) { res.sendFile(path.join(__dirname, 'public', 'index.html')); });
 app.get('/login', function(req, res) { res.sendFile(path.join(__dirname, 'public', 'login.html')); });
 app.get('/dashboard', function(req, res) { res.sendFile(path.join(__dirname, 'public', 'dashboard.html')); });
-app.get('/health', function(req, res) { res.json({ status: 'ok', time: new Date().toISOString() }); });
+app.get('/health', function(req, res) { res.json({ status: 'ok' }); });
 
 app.get('/api/user', auth, async function(req, res) {
   var historyResult = await supabase.from('call_history').select('*').eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(30);
   var scheduleResult = await supabase.from('user_schedules').select('*').eq('user_id', req.user.id).single();
-  
-  console.log('[API] User schedule:', scheduleResult.data ? 'FOUND' : 'NONE');
-  
   res.json({ 
     user: req.user, 
     profile: req.profile, 
@@ -113,15 +117,15 @@ app.get('/api/user', auth, async function(req, res) {
 
 app.post('/api/redeem', auth, async function(req, res) {
   var code = req.body.code;
-  if (!code) return res.status(400).json({ error: 'No code provided' });
+  if (!code) return res.status(400).json({ error: 'No code' });
   
   var promoResult = await supabase.from('promo_codes').select('*').eq('code', code.toUpperCase()).single();
   var promo = promoResult.data;
-  if (!promo) return res.status(404).json({ error: 'Invalid promo code' });
-  if (promo.times_used >= promo.max_uses) return res.status(400).json({ error: 'Promo code expired' });
+  if (!promo) return res.status(404).json({ error: 'Invalid code' });
+  if (promo.times_used >= promo.max_uses) return res.status(400).json({ error: 'Code expired' });
   
   var existingResult = await supabase.from('promo_redemptions').select('*').eq('user_id', req.user.id).eq('promo_code_id', promo.id).single();
-  if (existingResult.data) return res.status(400).json({ error: 'You already used this code' });
+  if (existingResult.data) return res.status(400).json({ error: 'Already used' });
   
   await supabase.from('promo_redemptions').insert({ user_id: req.user.id, promo_code_id: promo.id });
   await supabase.from('promo_codes').update({ times_used: promo.times_used + 1 }).eq('id', promo.id);
@@ -131,14 +135,13 @@ app.post('/api/redeem', auth, async function(req, res) {
 });
 
 app.post('/api/schedule', auth, async function(req, res) {
-  console.log('[API] Saving schedule for user:', req.user.id);
-  console.log('[API] Schedule data:', req.body);
-  
   var data = {
     user_id: req.user.id,
     target_number: req.body.targetNumber,
     pin: req.body.pin,
     notify_number: req.body.notifyNumber,
+    notify_email: req.body.notifyEmail || null,
+    notify_method: req.body.notifyMethod || 'email',
     hour: parseInt(req.body.hour) || 6,
     minute: parseInt(req.body.minute) || 0,
     timezone: req.body.timezone || 'America/Chicago',
@@ -146,30 +149,16 @@ app.post('/api/schedule', auth, async function(req, res) {
     updated_at: new Date().toISOString()
   };
   
-  try {
-    var existingResult = await supabase.from('user_schedules').select('id').eq('user_id', req.user.id).single();
-    
-    var result;
-    if (existingResult.data) {
-      console.log('[API] Updating existing schedule');
-      result = await supabase.from('user_schedules').update(data).eq('user_id', req.user.id);
-    } else {
-      console.log('[API] Creating new schedule');
-      result = await supabase.from('user_schedules').insert(data);
-    }
-    
-    if (result.error) {
-      console.error('[API] Schedule save error:', result.error);
-      return res.status(500).json({ success: false, error: result.error.message });
-    }
-    
-    console.log('[API] Schedule saved successfully');
-    rescheduleUser(req.user.id, data);
-    res.json({ success: true });
-  } catch(e) {
-    console.error('[API] Schedule error:', e);
-    res.status(500).json({ success: false, error: e.message });
+  var existingResult = await supabase.from('user_schedules').select('id').eq('user_id', req.user.id).single();
+  
+  if (existingResult.data) {
+    await supabase.from('user_schedules').update(data).eq('user_id', req.user.id);
+  } else {
+    await supabase.from('user_schedules').insert(data);
   }
+  
+  rescheduleUser(req.user.id, data);
+  res.json({ success: true });
 });
 
 app.delete('/api/schedule', auth, async function(req, res) {
@@ -189,36 +178,31 @@ function rescheduleUser(userId, sched) {
   if (!sched.enabled) return;
   
   var expr = sched.minute + ' ' + sched.hour + ' * * *';
-  console.log('[SCHED] User ' + userId + ' scheduled at: ' + expr + ' ' + sched.timezone);
+  console.log('[SCHED] User ' + userId + ': ' + expr + ' ' + sched.timezone);
   
   var job = cron.schedule(expr, async function() {
-    console.log('[SCHED] RUNNING scheduled call for ' + userId);
+    console.log('[SCHED] Running for ' + userId);
     try {
       var profileResult = await supabase.from('profiles').select('credits, email').eq('id', userId).single();
       var profile = profileResult.data;
       
-      if (!profile) {
-        console.log('[SCHED] No profile for ' + userId);
-        return;
-      }
+      if (!profile) return;
       
       var isDevUser = isDev(profile.email);
       
       if (!isDevUser && profile.credits < 1) {
-        console.log('[SCHED] No credits for ' + userId);
-        await notify(sched.notify_number, 'ProbationCall: Scheduled call skipped - no credits remaining!', 'sched');
+        await notify(sched.notify_number, sched.notify_email, sched.notify_method, 'ProbationCall: Scheduled call skipped - no credits!', 'sched');
         return;
       }
       
-      await initiateCall(sched.target_number, sched.pin, sched.notify_number, userId);
+      await initiateCall(sched.target_number, sched.pin, sched.notify_number, sched.notify_email, sched.notify_method, userId);
       
       if (!isDevUser) {
         await supabase.from('profiles').update({ credits: profile.credits - 1 }).eq('id', userId);
       }
-      console.log('[SCHED] Call initiated for ' + userId);
     } catch (e) {
-      console.error('[SCHED] Error for ' + userId + ':', e);
-      await notify(sched.notify_number, 'ProbationCall: Scheduled call failed! Please call manually.', 'sched');
+      console.error('[SCHED] Error:', e);
+      await notify(sched.notify_number, sched.notify_email, sched.notify_method, 'ProbationCall: Scheduled call failed!', 'sched');
     }
   }, { timezone: sched.timezone });
   
@@ -226,16 +210,10 @@ function rescheduleUser(userId, sched) {
 }
 
 async function loadAllSchedules() {
-  try {
-    var result = await supabase.from('user_schedules').select('*').eq('enabled', true);
-    if (result.data && result.data.length > 0) {
-      result.data.forEach(function(s) { rescheduleUser(s.user_id, s); });
-      console.log('[SCHED] Loaded ' + result.data.length + ' active schedules');
-    } else {
-      console.log('[SCHED] No active schedules found');
-    }
-  } catch(e) {
-    console.error('[SCHED] Error loading schedules:', e);
+  var result = await supabase.from('user_schedules').select('*').eq('enabled', true);
+  if (result.data && result.data.length > 0) {
+    result.data.forEach(function(s) { rescheduleUser(s.user_id, s); });
+    console.log('[SCHED] Loaded ' + result.data.length + ' schedules');
   }
 }
 
@@ -243,26 +221,15 @@ app.post('/api/checkout', auth, async function(req, res) {
   var pkg = PACKAGES[req.body.packageId];
   if (!pkg) return res.status(400).json({ error: 'Invalid package' });
   
-  try {
-    var session = await stripe.checkout.sessions.create({
-      payment_method_types: ['card'],
-      line_items: [{ 
-        price_data: { 
-          currency: 'usd', 
-          product_data: { name: pkg.name + ' - ' + pkg.credits + ' Credits' }, 
-          unit_amount: pkg.price 
-        }, 
-        quantity: 1 
-      }],
-      mode: 'payment',
-      success_url: process.env.BASE_URL + '/dashboard?success=true',
-      cancel_url: process.env.BASE_URL + '/dashboard?canceled=true',
-      metadata: { user_id: req.user.id, package_id: req.body.packageId, credits: String(pkg.credits) }
-    });
-    res.json({ url: session.url });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  var session = await stripe.checkout.sessions.create({
+    payment_method_types: ['card'],
+    line_items: [{ price_data: { currency: 'usd', product_data: { name: pkg.name + ' - ' + pkg.credits + ' Credits' }, unit_amount: pkg.price }, quantity: 1 }],
+    mode: 'payment',
+    success_url: process.env.BASE_URL + '/dashboard?success=true',
+    cancel_url: process.env.BASE_URL + '/dashboard?canceled=true',
+    metadata: { user_id: req.user.id, package_id: req.body.packageId, credits: String(pkg.credits) }
+  });
+  res.json({ url: session.url });
 });
 
 app.post('/webhook/stripe', async function(req, res) {
@@ -278,60 +245,49 @@ app.post('/webhook/stripe', async function(req, res) {
     var profileResult = await supabase.from('profiles').select('credits').eq('id', s.metadata.user_id).single();
     var currentCredits = profileResult.data ? profileResult.data.credits : 0;
     await supabase.from('profiles').update({ credits: currentCredits + parseInt(s.metadata.credits) }).eq('id', s.metadata.user_id);
-    await supabase.from('purchases').insert({ 
-      user_id: s.metadata.user_id, 
-      stripe_session_id: s.id, 
-      package_name: s.metadata.package_id, 
-      credits_purchased: parseInt(s.metadata.credits), 
-      amount_cents: s.amount_total 
-    });
-    console.log('[STRIPE] Added ' + s.metadata.credits + ' credits');
+    await supabase.from('purchases').insert({ user_id: s.metadata.user_id, stripe_session_id: s.id, package_name: s.metadata.package_id, credits_purchased: parseInt(s.metadata.credits), amount_cents: s.amount_total });
   }
   res.json({ received: true });
 });
 
 app.post('/api/call', auth, async function(req, res) {
-  console.log('[API] Call request from ' + req.user.email);
-  
   if (!req.profile.isDev && req.profile.credits < 1) {
-    return res.status(402).json({ error: 'No credits. Please purchase more.' });
+    return res.status(402).json({ error: 'No credits' });
   }
   
   var targetNumber = req.body.targetNumber;
   var pin = req.body.pin;
   var notifyNumber = req.body.notifyNumber;
+  var notifyEmail = req.body.notifyEmail;
+  var notifyMethod = req.body.notifyMethod || 'email';
   
-  if (!targetNumber || !pin || !notifyNumber) return res.status(400).json({ error: 'Missing fields' });
-  if (!/^\+\d{10,15}$/.test(targetNumber) || !/^\+\d{10,15}$/.test(notifyNumber)) return res.status(400).json({ error: 'Use E.164 format (+1234567890)' });
+  if (!targetNumber || !pin) return res.status(400).json({ error: 'Missing fields' });
+  if (!/^\+\d{10,15}$/.test(targetNumber)) return res.status(400).json({ error: 'Invalid phone format' });
   if (pin.length !== 6 || !/^\d+$/.test(pin)) return res.status(400).json({ error: 'PIN must be 6 digits' });
   
   try {
-    var result = await initiateCall(targetNumber, pin, notifyNumber, req.user.id);
-    
+    var result = await initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notifyMethod, req.user.id);
     if (!req.profile.isDev) {
       await supabase.from('profiles').update({ credits: req.profile.credits - 1 }).eq('id', req.user.id);
     }
-    
     res.json(result);
   } catch(e) {
-    console.error('[API] Call error:', e);
-    res.status(500).json({ error: 'Call failed: ' + e.message });
+    res.status(500).json({ error: e.message });
   }
 });
 
-async function initiateCall(targetNumber, pin, notifyNumber, userId) {
+async function initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notifyMethod, userId) {
   var callId = 'call_' + Date.now();
   log(callId, 'Starting call to ' + targetNumber, 'info');
-  log(callId, 'PIN: ' + pin, 'info');
-  log(callId, 'Notify: ' + notifyNumber, 'info');
   
   pendingCalls.set(callId, { 
     targetNumber: targetNumber, 
     pin: pin, 
     notifyNumber: notifyNumber,
+    notifyEmail: notifyEmail,
+    notifyMethod: notifyMethod,
     userId: userId, 
-    result: null,
-    startTime: Date.now()
+    result: null
   });
   
   var call = await twilioClient.calls.create({
@@ -353,25 +309,12 @@ app.post('/twiml/answer', function(req, res) {
   var config = pendingCalls.get(callId);
   var twiml = new twilio.twiml.VoiceResponse();
   
-  if (!config) { 
-    twiml.hangup(); 
-    return res.type('text/xml').send(twiml.toString()); 
-  }
+  if (!config) { twiml.hangup(); return res.type('text/xml').send(twiml.toString()); }
   
   log(callId, 'Call answered, sending DTMF', 'success');
-  
   twiml.play({ digits: 'wwwwwwwwww1wwwwwwwwwwwwwwwwwwww' + config.pin + 'wwwwwwwwwwwwwwwwwwww1' });
   twiml.pause({ length: 2 });
-  
-  log(callId, 'Listening for speech...', 'info');
-  twiml.gather({ 
-    input: 'speech', 
-    timeout: 15, 
-    speechTimeout: 3, 
-    action: process.env.BASE_URL + '/twiml/result?callId=' + callId, 
-    hints: 'do not test, required to test, must test, not required, you are required' 
-  });
-  
+  twiml.gather({ input: 'speech', timeout: 15, speechTimeout: 3, action: process.env.BASE_URL + '/twiml/result?callId=' + callId, hints: 'do not test, required to test, must test' });
   twiml.redirect(process.env.BASE_URL + '/twiml/fallback?callId=' + callId);
   res.type('text/xml').send(twiml.toString());
 });
@@ -379,11 +322,10 @@ app.post('/twiml/answer', function(req, res) {
 app.post('/twiml/result', async function(req, res) {
   var callId = req.query.callId;
   var speech = req.body.SpeechResult || '';
-  var confidence = req.body.Confidence || 'N/A';
   var config = pendingCalls.get(callId);
   var twiml = new twilio.twiml.VoiceResponse();
   
-  log(callId, 'Speech: "' + speech + '" (confidence: ' + confidence + ')', 'info');
+  log(callId, 'Speech: "' + speech + '"', 'info');
   
   if (config && !config.result) {
     var lower = speech.toLowerCase();
@@ -394,9 +336,7 @@ app.post('/twiml/result', async function(req, res) {
       log(callId, 'RESULT: TEST REQUIRED!', 'warning');
     } else if (KEYWORDS.NO_TEST.some(function(k) { return lower.indexOf(k) >= 0; })) {
       result = 'NO_TEST';
-      log(callId, 'RESULT: No test today', 'success');
-    } else {
-      log(callId, 'RESULT: Unknown', 'warning');
+      log(callId, 'RESULT: No test', 'success');
     }
     
     config.result = result;
@@ -410,16 +350,10 @@ app.post('/twiml/result', async function(req, res) {
       message = '⚠️ Could not determine result.\n\nHeard: "' + speech.slice(0, 100) + '"\n\nPlease verify manually.\nPIN: ' + config.pin;
     }
     
-    await notify(config.notifyNumber, message, callId);
+    await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, message, callId);
     
     if (config.userId) {
-      await supabase.from('call_history').insert({ 
-        user_id: config.userId, 
-        call_sid: config.callSid, 
-        target_number: config.targetNumber, 
-        pin_used: config.pin, 
-        result: result 
-      });
+      await supabase.from('call_history').insert({ user_id: config.userId, call_sid: config.callSid, target_number: config.targetNumber, pin_used: config.pin, result: result });
     }
     
     broadcastToClients({ type: 'result', callId: callId, result: result, speech: speech });
@@ -433,24 +367,12 @@ app.post('/twiml/fallback', async function(req, res) {
   var callId = req.query.callId;
   var config = pendingCalls.get(callId);
   
-  log(callId, 'Fallback - no speech detected', 'warning');
-  
   if (config && !config.result) {
     config.result = 'UNKNOWN';
-    
-    var message = '⚠️ Call completed but no result detected.\n\nPlease call manually to verify.\nPIN: ' + config.pin;
-    await notify(config.notifyNumber, message, callId);
-    
+    await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, '⚠️ Call completed but no result detected.\n\nPlease verify manually.\nPIN: ' + config.pin, callId);
     if (config.userId) {
-      await supabase.from('call_history').insert({ 
-        user_id: config.userId, 
-        call_sid: config.callSid, 
-        target_number: config.targetNumber, 
-        pin_used: config.pin, 
-        result: 'UNKNOWN' 
-      });
+      await supabase.from('call_history').insert({ user_id: config.userId, call_sid: config.callSid, target_number: config.targetNumber, pin_used: config.pin, result: 'UNKNOWN' });
     }
-    
     broadcastToClients({ type: 'result', callId: callId, result: 'UNKNOWN', speech: '' });
   }
   
@@ -461,83 +383,125 @@ app.post('/twiml/fallback', async function(req, res) {
 
 app.post('/webhook/status', function(req, res) {
   var callId = req.query.callId;
-  var status = req.body.CallStatus;
-  
-  log(callId, 'Status: ' + status, 'info');
-  
+  log(callId, 'Status: ' + req.body.CallStatus, 'info');
   var config = pendingCalls.get(callId);
   if (config) {
-    config.status = status;
-    broadcastToClients({ type: 'status', callId: callId, status: status });
+    config.status = req.body.CallStatus;
+    broadcastToClients({ type: 'status', callId: callId, status: req.body.CallStatus });
   }
-  
   res.sendStatus(200);
 });
 
-async function notify(to, body, callId) {
-  var toWA = to.indexOf('whatsapp:') === 0 ? to : 'whatsapp:' + to;
+// UNIFIED NOTIFY FUNCTION - Email, SMS, or WhatsApp
+async function notify(phone, email, method, message, callId) {
+  log(callId, 'Notifying via ' + method, 'info');
   
-  log(callId, 'Sending WhatsApp to ' + toWA, 'info');
+  // Always try email first if we have it
+  if (method === 'email' && email && process.env.SENDGRID_API_KEY) {
+    return await sendEmail(email, message, callId);
+  }
+  
+  // SMS
+  if (method === 'sms' && phone) {
+    return await sendSMS(phone, message, callId);
+  }
+  
+  // WhatsApp
+  if (method === 'whatsapp' && phone) {
+    return await sendWhatsApp(phone, message, callId);
+  }
+  
+  log(callId, 'No valid notification method', 'error');
+  return { success: false, error: 'No notification method' };
+}
+
+async function sendEmail(to, message, callId) {
+  if (!process.env.SENDGRID_API_KEY) {
+    log(callId, 'SendGrid not configured', 'error');
+    return { success: false, error: 'Email not configured' };
+  }
+  
+  // Determine subject based on content
+  var subject = 'ProbationCall Alert';
+  if (message.includes('TEST REQUIRED')) {
+    subject = '🚨 TEST REQUIRED - ProbationCall';
+  } else if (message.includes('No test today')) {
+    subject = '✅ No Test Today - ProbationCall';
+  }
   
   try {
-    var msg = await twilioClient.messages.create({ 
-      from: WHATSAPP_NUMBER,
-      to: toWA, 
-      body: body 
+    await sgMail.send({
+      to: to,
+      from: FROM_EMAIL,
+      subject: subject,
+      text: message,
+      html: '<div style="font-family:sans-serif;padding:20px;max-width:400px;margin:0 auto;">' +
+            '<h2 style="color:#00d9ff;">ProbationCall</h2>' +
+            '<div style="background:#f5f5f5;padding:20px;border-radius:10px;white-space:pre-line;">' + message + '</div>' +
+            '</div>'
     });
-    log(callId, 'WhatsApp sent! SID: ' + msg.sid, 'success');
-    return { success: true, sid: msg.sid };
+    log(callId, 'Email sent to ' + to, 'success');
+    return { success: true };
   } catch (e) {
-    log(callId, 'WhatsApp FAILED: ' + e.message, 'error');
-    console.error('WhatsApp error:', e);
+    log(callId, 'Email failed: ' + e.message, 'error');
     return { success: false, error: e.message };
   }
 }
 
-app.post('/api/test-whatsapp', auth, async function(req, res) {
-  var num = req.body.notifyNumber;
-  log('test', 'Testing WhatsApp to ' + num, 'info');
-  var result = await notify(num, '✅ WhatsApp test from ProbationCall!\n\nIf you see this, WhatsApp is working.', 'test');
+async function sendSMS(to, message, callId) {
+  try {
+    var msg = await twilioClient.messages.create({ from: TWILIO_SMS_NUMBER, to: to, body: message });
+    log(callId, 'SMS sent: ' + msg.sid, 'success');
+    return { success: true, sid: msg.sid };
+  } catch (e) {
+    log(callId, 'SMS failed: ' + e.message, 'error');
+    return { success: false, error: e.message };
+  }
+}
+
+async function sendWhatsApp(to, message, callId) {
+  var toWA = to.indexOf('whatsapp:') === 0 ? to : 'whatsapp:' + to;
+  try {
+    var msg = await twilioClient.messages.create({ from: WHATSAPP_NUMBER, to: toWA, body: message });
+    log(callId, 'WhatsApp sent: ' + msg.sid, 'success');
+    return { success: true, sid: msg.sid };
+  } catch (e) {
+    log(callId, 'WhatsApp failed: ' + e.message, 'error');
+    return { success: false, error: e.message };
+  }
+}
+
+// Test endpoints
+app.post('/api/test-email', auth, async function(req, res) {
+  var result = await sendEmail(req.body.email, '✅ Test email from ProbationCall!\n\nIf you see this, email notifications are working.', 'test');
   res.json(result);
 });
 
 app.post('/api/test-sms', auth, async function(req, res) {
-  var num = req.body.notifyNumber;
-  log('test', 'Testing SMS to ' + num, 'info');
-  
-  try {
-    var msg = await twilioClient.messages.create({ 
-      from: TWILIO_SMS_NUMBER,
-      to: num, 
-      body: 'SMS test from ProbationCall! If you see this, SMS is working.' 
-    });
-    log('test', 'SMS sent! SID: ' + msg.sid, 'success');
-    res.json({ success: true, sid: msg.sid });
-  } catch (e) {
-    log('test', 'SMS FAILED: ' + e.message, 'error');
-    res.json({ success: false, error: e.message });
-  }
+  var result = await sendSMS(req.body.notifyNumber, 'Test SMS from ProbationCall!', 'test');
+  res.json(result);
+});
+
+app.post('/api/test-whatsapp', auth, async function(req, res) {
+  var result = await sendWhatsApp(req.body.notifyNumber, '✅ Test WhatsApp from ProbationCall!', 'test');
+  res.json(result);
 });
 
 wss.on('connection', function(ws, req) {
   if (req.url === '/ws') {
-    console.log('[WS] Client connected');
     wsClients.add(ws);
-    ws.on('close', function() { 
-      wsClients.delete(ws); 
-    });
+    ws.on('close', function() { wsClients.delete(ws); });
   }
 });
 
 var PORT = process.env.PORT || 3000;
 server.listen(PORT, function() {
   console.log('========================================');
-  console.log('ProbationCall Server Started');
+  console.log('ProbationCall Server Running');
   console.log('Port: ' + PORT);
-  console.log('Base URL: ' + process.env.BASE_URL);
   console.log('Voice: ' + TWILIO_VOICE_NUMBER);
-  console.log('WhatsApp: ' + WHATSAPP_NUMBER);
-  console.log('Dev accounts: ' + DEV_EMAILS.join(', '));
+  console.log('SMS: ' + TWILIO_SMS_NUMBER);
+  console.log('Email: ' + (process.env.SENDGRID_API_KEY ? 'Configured' : 'Not configured'));
   console.log('========================================');
   loadAllSchedules();
 });
