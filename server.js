@@ -106,7 +106,7 @@ app.get('/api/user', auth, async function(req, res) {
     user: req.user, 
     profile: req.profile, 
     history: historyResult.data || [], 
-    schedule: scheduleResult.data,
+    schedule: scheduleResult.data || null,
     isDev: isDev(req.user.email)
   });
 });
@@ -544,3 +544,33 @@ server.listen(PORT, function() {
 });
 
 module.exports = app;
+
+// Email notification fallback (using nodemailer)
+const nodemailer = require('nodemailer');
+const emailTransporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
+  }
+});
+
+async function sendEmailNotification(email, result, pin) {
+  try {
+    var emoji = result === 'NO_TEST' ? '✅' : '🚨';
+    var subject = emoji + ' Probation Call Result';
+    var text = result === 'NO_TEST' 
+      ? 'Good news! No test required today. PIN used: ' + pin
+      : 'ALERT: Test required today! PIN used: ' + pin;
+    
+    await emailTransporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: email,
+      subject: subject,
+      text: text
+    });
+    console.log('Email sent to ' + email);
+  } catch (err) {
+    console.error('Email send failed:', err.message);
+  }
+}
