@@ -101,7 +101,7 @@ app.get('/health', function(req, res) { res.json({ status: 'ok', time: new Date(
 
 app.get('/api/user', auth, async function(req, res) {
   var historyResult = await supabase.from('call_history').select('*').eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(30);
-  var scheduleResult = await supabase.from('user_schedules').select('*').eq('user_id', req.user.id).single();
+  var scheduleResult = await supabase.from('user_schedules').select('*').eq('user_id', req.user.id).maybeSingle();
   var schedule = (scheduleResult.error || !scheduleResult.data) ? null : scheduleResult.data;
   res.json({ 
     user: req.user, 
