@@ -8,7 +8,10 @@
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,sans-serif;background:#0a0a0f;color:#fff;min-height:100vh}
-.loading{display:flex;align-items:center;justify-content:center;height:100vh;font-size:1.2rem;color:#8892b0}
+.loading{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:15px}
+.loading-text{color:#8892b0;font-size:1rem}
+.spinner{width:40px;height:40px;border:3px solid #333;border-top-color:#00d9ff;border-radius:50%;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
 .container{max-width:800px;margin:0 auto;padding:20px;display:none}
 nav{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;padding-bottom:15px;border-bottom:1px solid rgba(255,255,255,0.1)}
 .logo{font-size:1.2rem;font-weight:700;color:#00d9ff}
@@ -23,120 +26,87 @@ nav{display:flex;justify-content:space-between;align-items:center;margin-bottom:
 .schedule-banner h3{color:#000;font-size:1rem;margin-bottom:3px}
 .schedule-banner p{color:rgba(0,0,0,0.7);font-size:0.85rem}
 .schedule-banner .time{font-size:1.5rem;font-weight:700;color:#000}
-.no-schedule-banner{background:rgba(245,158,11,0.2);border:1px solid rgba(245,158,11,0.4);border-radius:12px;padding:15px 20px;margin-bottom:20px;display:none}
-.no-schedule-banner.active{display:block}
-.no-schedule-banner p{color:#f59e0b;font-size:0.9rem}
+.no-schedule{background:rgba(245,158,11,0.2);border:1px solid rgba(245,158,11,0.4);border-radius:12px;padding:15px;margin-bottom:20px;color:#f59e0b;display:none}
+.no-schedule.active{display:block}
 .card{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:20px;margin-bottom:15px}
 .card h2{color:#00d9ff;margin-bottom:15px;font-size:1.1rem}
 .form-group{margin-bottom:12px}
 label{display:block;margin-bottom:5px;color:#8892b0;font-size:0.85rem}
 input,select{width:100%;padding:10px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#fff;font-size:1rem}
-input:focus,select:focus{outline:none;border-color:#00d9ff}
 .btn{width:100%;padding:12px;border-radius:8px;border:none;background:linear-gradient(135deg,#00d9ff,#0099cc);color:#000;font-size:1rem;font-weight:600;cursor:pointer;margin-top:8px}
-.btn:hover{opacity:0.9}
-.btn:disabled{opacity:0.5;cursor:not-allowed}
+.btn:disabled{opacity:0.5}
 .btn-secondary{background:rgba(255,255,255,0.1);color:#fff}
-.btn-danger{background:rgba(239,68,68,0.8);color:#fff}
+.btn-danger{background:#ef4444}
 .btn-row{display:flex;gap:10px;margin-top:10px}
 .btn-row .btn{flex:1}
-.status{padding:12px;border-radius:8px;margin-top:12px;text-align:center;font-weight:500}
+.status{padding:12px;border-radius:8px;margin-top:12px;text-align:center}
 .status.success{background:rgba(34,197,94,0.2);color:#22c55e}
 .status.error{background:rgba(239,68,68,0.2);color:#ef4444}
 .status.calling{background:rgba(0,217,255,0.2);color:#00d9ff}
-.status.warning{background:rgba(245,158,11,0.2);color:#f59e0b}
 .console{background:#000;border:1px solid #333;border-radius:8px;padding:10px;margin-top:15px;max-height:200px;overflow-y:auto;font-family:monospace;font-size:0.75rem}
-.console-entry{padding:3px 0;border-bottom:1px solid #1a1a1a}
-.console-entry.info{color:#8892b0}
+.console-entry{padding:3px 0;color:#8892b0}
 .console-entry.success{color:#22c55e}
 .console-entry.error{color:#ef4444}
 .console-entry.warning{color:#f59e0b}
-.console-time{color:#555;margin-right:8px}
 .tabs{display:flex;gap:8px;margin-bottom:15px}
-.tab{padding:10px 16px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:#8892b0;cursor:pointer;font-size:0.9rem}
+.tab{padding:10px 16px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:#8892b0;cursor:pointer}
 .tab.active{background:#00d9ff;color:#000;border-color:#00d9ff}
 .tab-content{display:none}
 .tab-content.active{display:block}
 .schedule-details{background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:8px;padding:15px;margin-bottom:15px}
-.schedule-details h4{color:#22c55e;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.schedule-details h4{color:#22c55e;margin-bottom:10px}
 .schedule-details table{width:100%;font-size:0.9rem}
 .schedule-details td{padding:5px 0;color:#8892b0}
 .schedule-details td:first-child{color:#fff;width:40%}
-.history-item{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.05)}
-.history-result{padding:4px 10px;border-radius:12px;font-size:0.8rem;font-weight:500}
+.history-item{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.05)}
+.history-result{padding:4px 10px;border-radius:12px;font-size:0.8rem}
 .history-result.NO_TEST{background:rgba(34,197,94,0.2);color:#22c55e}
 .history-result.MUST_TEST{background:rgba(239,68,68,0.2);color:#ef4444}
 .history-result.UNKNOWN{background:rgba(245,158,11,0.2);color:#f59e0b}
-.radio-group{display:flex;gap:15px;margin-top:5px}
-.radio-group label{display:flex;align-items:center;gap:6px;cursor:pointer;color:#fff}
-.radio-group input{width:auto}
-small{color:#666;font-size:0.75rem}
 .info-box{background:rgba(0,217,255,0.1);border:1px solid rgba(0,217,255,0.3);border-radius:8px;padding:12px;margin-bottom:15px;font-size:0.85rem;color:#8892b0}
 .info-box strong{color:#00d9ff}
+small{color:#666;font-size:0.75rem}
 </style>
 </head>
 <body>
-<div class="loading" id="loading">Loading...</div>
+<div class="loading" id="loading">
+  <div class="spinner"></div>
+  <div class="loading-text">Loading...</div>
+</div>
 <div class="container" id="app">
   <nav>
     <div class="logo">📞 ProbationCall</div>
     <div class="nav-right">
-      <span class="dev-badge" id="devBadge" style="display:none">DEV MODE</span>
+      <span class="dev-badge" id="devBadge" style="display:none">DEV</span>
       <span id="userEmail" style="color:#8892b0;font-size:0.85rem"></span>
       <button class="logout-btn" onclick="logout()">Sign Out</button>
     </div>
   </nav>
   
-  <!-- Schedule Status Banner -->
   <div class="schedule-banner" id="scheduleBanner">
-    <div>
-      <h3>✅ Auto-Call Active</h3>
-      <p id="scheduleBannerText">Daily at 6:00 AM Central</p>
-    </div>
-    <div class="time" id="scheduleBannerTime">6:00 AM</div>
+    <div><h3>✅ Auto-Call Active</h3><p id="scheduleBannerText"></p></div>
+    <div class="time" id="scheduleBannerTime"></div>
   </div>
-  
-  <div class="no-schedule-banner" id="noScheduleBanner">
-    <p>⚠️ No schedule set. Go to Schedule tab to set up automatic daily calls.</p>
-  </div>
+  <div class="no-schedule" id="noSchedule">⚠️ No schedule set. Set up daily auto-calls in the Schedule tab.</div>
   
   <div class="credits-card">
-    <div>
-      <div class="credits-num" id="credits">0</div>
-      <div class="credits-label">Credits</div>
-    </div>
+    <div><div class="credits-num" id="credits">0</div><div class="credits-label">Credits</div></div>
   </div>
   
   <div class="tabs">
-    <div class="tab active" onclick="showTab('call')">📞 Call Now</div>
+    <div class="tab active" onclick="showTab('call')">📞 Call</div>
     <div class="tab" onclick="showTab('schedule')">⏰ Schedule</div>
     <div class="tab" onclick="showTab('history')">📜 History</div>
     <div class="tab" onclick="showTab('test')">🧪 Test</div>
   </div>
   
-  <!-- CALL TAB -->
   <div id="callTab" class="tab-content active">
     <div class="card">
       <h2>Make a Call</h2>
       <form id="callForm">
-        <div class="form-group">
-          <label>Hotline Number</label>
-          <input type="tel" id="targetNumber" value="+19362834848" required>
-        </div>
-        <div class="form-group">
-          <label>Your 6-Digit PIN</label>
-          <input type="text" id="pin" maxlength="6" placeholder="123456" required>
-        </div>
-        <div class="form-group">
-          <label>Your Phone Number (for notifications)</label>
-          <input type="tel" id="notifyNumber" placeholder="+1234567890" required>
-        </div>
-        <div class="form-group">
-          <label>Notification Method</label>
-          <div class="radio-group">
-            <label><input type="radio" name="notifyMethod" value="whatsapp" checked> WhatsApp</label>
-            <label><input type="radio" name="notifyMethod" value="sms"> SMS</label>
-          </div>
-        </div>
+        <div class="form-group"><label>Hotline</label><input type="tel" id="targetNumber" value="+19362834848" required></div>
+        <div class="form-group"><label>6-Digit PIN</label><input type="text" id="pin" maxlength="6" placeholder="123456" required></div>
+        <div class="form-group"><label>Your WhatsApp Number</label><input type="tel" id="notifyNumber" placeholder="+1234567890" required></div>
         <button type="submit" class="btn" id="callBtn">📞 Call Now</button>
       </form>
       <div id="callStatus" class="status" style="display:none"></div>
@@ -144,91 +114,52 @@ small{color:#666;font-size:0.75rem}
     </div>
   </div>
   
-  <!-- SCHEDULE TAB -->
   <div id="scheduleTab" class="tab-content">
     <div class="card">
-      <h2>⏰ Daily Auto-Call Schedule</h2>
-      
-      <!-- Current Schedule Display -->
+      <h2>Daily Schedule</h2>
       <div class="schedule-details" id="scheduleDetails" style="display:none">
         <h4>✅ Schedule Active</h4>
         <table>
-          <tr><td>Time:</td><td id="schedDisplayTime">-</td></tr>
-          <tr><td>Timezone:</td><td id="schedDisplayTZ">-</td></tr>
-          <tr><td>Hotline:</td><td id="schedDisplayTarget">-</td></tr>
-          <tr><td>PIN:</td><td id="schedDisplayPin">-</td></tr>
-          <tr><td>Notify:</td><td id="schedDisplayNotify">-</td></tr>
-          <tr><td>Method:</td><td id="schedDisplayMethod">-</td></tr>
+          <tr><td>Time:</td><td id="schedDisplayTime"></td></tr>
+          <tr><td>Timezone:</td><td id="schedDisplayTZ"></td></tr>
+          <tr><td>Hotline:</td><td id="schedDisplayTarget"></td></tr>
+          <tr><td>PIN:</td><td id="schedDisplayPin"></td></tr>
+          <tr><td>Notify:</td><td id="schedDisplayNotify"></td></tr>
         </table>
-        <button class="btn btn-danger" style="margin-top:15px" onclick="deleteSchedule()">🗑️ Delete Schedule</button>
+        <button class="btn btn-danger" style="margin-top:15px" onclick="deleteSchedule()">🗑️ Delete</button>
       </div>
-      
-      <div class="info-box" id="noScheduleInfo">
-        <strong>No schedule set.</strong> Fill out the form below to automatically call the hotline every day at your chosen time.
-      </div>
-      
+      <div class="info-box" id="noSchedInfo"><strong>No schedule.</strong> Set up auto-calls below.</div>
       <form id="scheduleForm">
+        <div class="form-group"><label>Hotline</label><input type="tel" id="schedTarget" value="+19362834848" required></div>
+        <div class="form-group"><label>6-Digit PIN</label><input type="text" id="schedPin" maxlength="6" placeholder="123456" required></div>
+        <div class="form-group"><label>Your WhatsApp</label><input type="tel" id="schedNotify" placeholder="+1234567890" required></div>
         <div class="form-group">
-          <label>Hotline Number</label>
-          <input type="tel" id="schedTarget" value="+19362834848" required>
-        </div>
-        <div class="form-group">
-          <label>Your 6-Digit PIN</label>
-          <input type="text" id="schedPin" maxlength="6" placeholder="123456" required>
-        </div>
-        <div class="form-group">
-          <label>Your Phone Number</label>
-          <input type="tel" id="schedNotify" placeholder="+1234567890" required>
-        </div>
-        <div class="form-group">
-          <label>Notification Method</label>
-          <div class="radio-group">
-            <label><input type="radio" name="schedMethod" value="whatsapp" checked> WhatsApp</label>
-            <label><input type="radio" name="schedMethod" value="sms"> SMS</label>
-          </div>
-        </div>
-        <div class="form-group">
-          <label>Call Time (24-hour format)</label>
+          <label>Time (24h)</label>
           <div style="display:flex;gap:10px">
-            <input type="number" id="schedHour" min="0" max="23" value="6" style="width:80px" required>
-            <span style="color:#fff;padding:10px 0">:</span>
-            <input type="number" id="schedMin" min="0" max="59" value="0" style="width:80px" required>
-            <select id="schedTZ">
-              <option value="America/Chicago">Central</option>
-              <option value="America/New_York">Eastern</option>
-              <option value="America/Denver">Mountain</option>
-              <option value="America/Los_Angeles">Pacific</option>
-            </select>
+            <input type="number" id="schedHour" min="0" max="23" value="6" style="width:70px">
+            <span style="padding:10px">:</span>
+            <input type="number" id="schedMin" min="0" max="59" value="0" style="width:70px">
+            <select id="schedTZ"><option value="America/Chicago">Central</option><option value="America/New_York">Eastern</option><option value="America/Denver">Mountain</option><option value="America/Los_Angeles">Pacific</option></select>
           </div>
-          <small>Examples: 6:00 = 6 AM, 18:00 = 6 PM</small>
+          <small>6 = 6AM, 18 = 6PM</small>
         </div>
-        <button type="submit" class="btn" id="saveSchedBtn">💾 Save Schedule</button>
+        <button type="submit" class="btn" id="schedBtn">💾 Save Schedule</button>
       </form>
     </div>
   </div>
   
-  <!-- HISTORY TAB -->
   <div id="historyTab" class="tab-content">
-    <div class="card">
-      <h2>📜 Call History</h2>
-      <div id="historyList"></div>
-    </div>
+    <div class="card"><h2>Call History</h2><div id="historyList"></div></div>
   </div>
   
-  <!-- TEST TAB -->
   <div id="testTab" class="tab-content">
     <div class="card">
       <h2>🧪 Test Notifications</h2>
-      <div class="info-box">
-        <strong>WhatsApp Users:</strong> You must first send a message to <strong>+1 555 896 5863</strong> from your WhatsApp before you can receive notifications.
-      </div>
-      <div class="form-group">
-        <label>Phone Number to Test</label>
-        <input type="tel" id="testNumber" placeholder="+1234567890">
-      </div>
+      <div class="info-box"><strong>WhatsApp:</strong> You must first message <strong>+1 415 523 8886</strong> with "join" code from Twilio sandbox.</div>
+      <div class="form-group"><label>Phone Number</label><input type="tel" id="testNumber" placeholder="+1234567890"></div>
       <div class="btn-row">
-        <button class="btn" onclick="testWhatsApp()">📱 Test WhatsApp</button>
-        <button class="btn btn-secondary" onclick="testSMS()">💬 Test SMS</button>
+        <button class="btn" onclick="testWhatsApp()">📱 WhatsApp</button>
+        <button class="btn btn-secondary" onclick="testSMS()">💬 SMS</button>
       </div>
       <div id="testStatus" class="status" style="display:none"></div>
     </div>
@@ -240,128 +171,96 @@ var SUPA_URL = 'https://xvpuqeaowvlkcyywgaaq.supabase.co';
 var SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh2cHVxZWFvd3Zsa2N5eXdnYWFxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQyNzc1MjcsImV4cCI6MjA3OTg1MzUyN30.y90odNDSU0zZcVGMK9C39gSFDL9NJcy5E4yBkgcFc8w';
 var supabase = window.supabase.createClient(SUPA_URL, SUPA_KEY);
 var token = null;
-var isDev = false;
-var currentSchedule = null;
 
 async function init() {
-  var hash = window.location.hash;
-  if (hash && hash.includes('access_token')) {
-    history.replaceState(null, '', window.location.pathname);
-    await new Promise(function(r) { setTimeout(r, 1000); });
+  console.log('Checking auth...');
+  
+  // Wait for Supabase to process OAuth callback if present
+  if (window.location.hash.includes('access_token')) {
+    console.log('Found access token in URL');
+    await new Promise(function(r) { setTimeout(r, 1500); });
   }
   
   var result = await supabase.auth.getSession();
+  console.log('Session:', result.data.session ? 'FOUND' : 'NONE');
+  
   if (result.data.session) {
     token = result.data.session.access_token;
-    document.getElementById('loading').style.display = 'none';
-    document.getElementById('app').style.display = 'block';
-    loadUser();
-    connectWebSocket();
+    showDashboard();
   } else {
+    console.log('No session, redirecting to login');
     window.location.href = '/login';
   }
 }
 
 supabase.auth.onAuthStateChange(function(event, session) {
+  console.log('Auth event:', event);
   if (event === 'SIGNED_IN' && session) {
     token = session.access_token;
-    document.getElementById('loading').style.display = 'none';
-    document.getElementById('app').style.display = 'block';
-    loadUser();
-    connectWebSocket();
+    showDashboard();
   }
 });
 
-init();
-
-function formatTime(hour, minute) {
-  var h = hour % 12 || 12;
-  var ampm = hour >= 12 ? 'PM' : 'AM';
-  var m = String(minute).padStart(2, '0');
-  return h + ':' + m + ' ' + ampm;
+function showDashboard() {
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  loadUser();
+  connectWS();
 }
 
-function formatTimezone(tz) {
-  var names = {
-    'America/Chicago': 'Central',
-    'America/New_York': 'Eastern',
-    'America/Denver': 'Mountain',
-    'America/Los_Angeles': 'Pacific'
-  };
-  return names[tz] || tz;
+function formatTime(h, m) {
+  var hr = h % 12 || 12;
+  var ampm = h >= 12 ? 'PM' : 'AM';
+  return hr + ':' + String(m).padStart(2, '0') + ' ' + ampm;
 }
 
 function loadUser() {
-  fetch('/api/user', { headers: { 'Authorization': 'Bearer ' + token } })
+  fetch('/api/user', { headers: { Authorization: 'Bearer ' + token } })
     .then(function(r) { return r.json(); })
     .then(function(d) {
       document.getElementById('userEmail').textContent = d.user.email;
-      document.getElementById('credits').textContent = d.profile.credits;
+      document.getElementById('credits').textContent = d.isDev ? '∞' : d.profile.credits;
+      if (d.isDev) document.getElementById('devBadge').style.display = 'inline';
       
-      if (d.isDev) {
-        isDev = true;
-        document.getElementById('devBadge').style.display = 'inline-block';
-        document.getElementById('credits').textContent = '∞';
-      }
-      
-      // Handle schedule display
       if (d.schedule) {
-        currentSchedule = d.schedule;
-        
-        // Fill form with current values
-        document.getElementById('schedTarget').value = d.schedule.target_number || '';
-        document.getElementById('schedPin').value = d.schedule.pin || '';
-        document.getElementById('schedNotify').value = d.schedule.notify_number || '';
-        document.getElementById('schedHour').value = d.schedule.hour || 6;
-        document.getElementById('schedMin').value = d.schedule.minute || 0;
-        document.getElementById('schedTZ').value = d.schedule.timezone || 'America/Chicago';
-        
-        if (d.schedule.notify_method === 'sms') {
-          document.querySelector('input[name="schedMethod"][value="sms"]').checked = true;
-        }
-        
-        // Show schedule banner
-        var timeStr = formatTime(d.schedule.hour, d.schedule.minute);
-        var tzStr = formatTimezone(d.schedule.timezone);
-        document.getElementById('scheduleBannerText').textContent = 'Daily at ' + timeStr + ' ' + tzStr;
-        document.getElementById('scheduleBannerTime').textContent = timeStr;
+        var t = formatTime(d.schedule.hour, d.schedule.minute);
+        document.getElementById('scheduleBannerText').textContent = 'Daily at ' + t;
+        document.getElementById('scheduleBannerTime').textContent = t;
         document.getElementById('scheduleBanner').classList.add('active');
-        document.getElementById('noScheduleBanner').classList.remove('active');
+        document.getElementById('noSchedule').classList.remove('active');
         
-        // Show schedule details in schedule tab
-        document.getElementById('schedDisplayTime').textContent = timeStr;
-        document.getElementById('schedDisplayTZ').textContent = tzStr;
+        document.getElementById('schedDisplayTime').textContent = t;
+        document.getElementById('schedDisplayTZ').textContent = d.schedule.timezone;
         document.getElementById('schedDisplayTarget').textContent = d.schedule.target_number;
         document.getElementById('schedDisplayPin').textContent = d.schedule.pin;
         document.getElementById('schedDisplayNotify').textContent = d.schedule.notify_number;
-        document.getElementById('schedDisplayMethod').textContent = (d.schedule.notify_method || 'whatsapp').toUpperCase();
         document.getElementById('scheduleDetails').style.display = 'block';
-        document.getElementById('noScheduleInfo').style.display = 'none';
-        document.getElementById('saveSchedBtn').textContent = '💾 Update Schedule';
+        document.getElementById('noSchedInfo').style.display = 'none';
+        document.getElementById('schedBtn').textContent = '💾 Update Schedule';
+        
+        document.getElementById('schedTarget').value = d.schedule.target_number;
+        document.getElementById('schedPin').value = d.schedule.pin;
+        document.getElementById('schedNotify').value = d.schedule.notify_number;
+        document.getElementById('schedHour').value = d.schedule.hour;
+        document.getElementById('schedMin').value = d.schedule.minute;
+        document.getElementById('schedTZ').value = d.schedule.timezone;
       } else {
-        currentSchedule = null;
         document.getElementById('scheduleBanner').classList.remove('active');
-        document.getElementById('noScheduleBanner').classList.add('active');
+        document.getElementById('noSchedule').classList.add('active');
         document.getElementById('scheduleDetails').style.display = 'none';
-        document.getElementById('noScheduleInfo').style.display = 'block';
-        document.getElementById('saveSchedBtn').textContent = '💾 Save Schedule';
+        document.getElementById('noSchedInfo').style.display = 'block';
       }
       
-      renderHistory(d.history);
+      var el = document.getElementById('historyList');
+      if (!d.history || !d.history.length) {
+        el.innerHTML = '<p style="color:#666">No calls yet</p>';
+      } else {
+        el.innerHTML = d.history.map(function(h) {
+          var txt = h.result === 'NO_TEST' ? '✅ No Test' : h.result === 'MUST_TEST' ? '🚨 Must Test' : '⚠️ Unknown';
+          return '<div class="history-item"><div>' + new Date(h.created_at).toLocaleString() + '<br><small>PIN: ' + h.pin_used + '</small></div><span class="history-result ' + h.result + '">' + txt + '</span></div>';
+        }).join('');
+      }
     });
-}
-
-function renderHistory(history) {
-  var el = document.getElementById('historyList');
-  if (!history || history.length === 0) {
-    el.innerHTML = '<p style="color:#666">No calls yet</p>';
-    return;
-  }
-  el.innerHTML = history.map(function(h) {
-    var resultText = h.result === 'NO_TEST' ? '✅ No Test' : (h.result === 'MUST_TEST' ? '🚨 Must Test' : '⚠️ Unknown');
-    var date = new Date(h.created_at).toLocaleString();
-    return '<div class="history-item"><div><div>' + date + '</div><small>PIN: ' + h.pin_used + '</small></div><span class="history-result ' + h.result + '">' + resultText + '</span></div>';
-  }).join('');
 }
 
 function showTab(name) {
@@ -372,77 +271,50 @@ function showTab(name) {
 }
 
 var ws;
-function connectWebSocket() {
-  var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(proto + '//' + location.host + '/ws');
+function connectWS() {
+  ws = new WebSocket((location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws');
   ws.onmessage = function(e) {
-    var data = JSON.parse(e.data);
-    if (data.type === 'log') {
-      addConsoleEntry(data.log.message, data.log.type);
-    }
-    if (data.type === 'status') {
-      addConsoleEntry('Call status: ' + data.status, 'info');
-    }
-    if (data.type === 'result') {
-      var msg = data.result === 'NO_TEST' ? '✅ No test today!' : (data.result === 'MUST_TEST' ? '🚨 TEST REQUIRED!' : '⚠️ Unknown result');
-      addConsoleEntry(msg, data.result === 'NO_TEST' ? 'success' : (data.result === 'MUST_TEST' ? 'error' : 'warning'));
+    var d = JSON.parse(e.data);
+    if (d.type === 'log') addLog(d.log.message, d.log.type);
+    if (d.type === 'result') {
+      var msg = d.result === 'NO_TEST' ? '✅ No test!' : d.result === 'MUST_TEST' ? '🚨 TEST REQUIRED!' : '⚠️ Unknown';
       var st = document.getElementById('callStatus');
       st.style.display = 'block';
-      st.className = 'status ' + (data.result === 'NO_TEST' ? 'success' : (data.result === 'MUST_TEST' ? 'error' : 'warning'));
+      st.className = 'status ' + (d.result === 'NO_TEST' ? 'success' : d.result === 'MUST_TEST' ? 'error' : 'warning');
       st.textContent = msg;
       loadUser();
     }
   };
-  ws.onclose = function() { setTimeout(connectWebSocket, 3000); };
+  ws.onclose = function() { setTimeout(connectWS, 3000); };
 }
 
-function addConsoleEntry(msg, type) {
-  var con = document.getElementById('console');
-  var time = new Date().toLocaleTimeString();
-  con.innerHTML += '<div class="console-entry ' + (type || 'info') + '"><span class="console-time">' + time + '</span>' + msg + '</div>';
-  con.scrollTop = con.scrollHeight;
+function addLog(msg, type) {
+  var c = document.getElementById('console');
+  c.innerHTML += '<div class="console-entry ' + (type || '') + '">' + new Date().toLocaleTimeString() + ' - ' + msg + '</div>';
+  c.scrollTop = c.scrollHeight;
 }
 
 document.getElementById('callForm').onsubmit = function(e) {
   e.preventDefault();
   var btn = document.getElementById('callBtn');
   var st = document.getElementById('callStatus');
-  
   btn.disabled = true;
   btn.textContent = 'Calling...';
   st.style.display = 'block';
   st.className = 'status calling';
-  st.textContent = '📞 Initiating call...';
+  st.textContent = 'Calling...';
   document.getElementById('console').innerHTML = '';
-  addConsoleEntry('Starting call...', 'info');
-  
-  var method = document.querySelector('input[name="notifyMethod"]:checked').value;
   
   fetch('/api/call', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
     body: JSON.stringify({
       targetNumber: document.getElementById('targetNumber').value,
       pin: document.getElementById('pin').value,
-      notifyNumber: document.getElementById('notifyNumber').value,
-      notifyMethod: method
+      notifyNumber: document.getElementById('notifyNumber').value
     })
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(d) {
-    if (d.error) {
-      st.className = 'status error';
-      st.textContent = '❌ ' + d.error;
-      addConsoleEntry('Error: ' + d.error, 'error');
-    } else {
-      addConsoleEntry('Call started! SID: ' + d.callSid, 'success');
-    }
-    btn.disabled = false;
-    btn.textContent = '📞 Call Now';
-  })
-  .catch(function(err) {
-    st.className = 'status error';
-    st.textContent = '❌ ' + err.message;
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.error) { st.className = 'status error'; st.textContent = d.error; }
     btn.disabled = false;
     btn.textContent = '📞 Call Now';
   });
@@ -450,103 +322,67 @@ document.getElementById('callForm').onsubmit = function(e) {
 
 document.getElementById('scheduleForm').onsubmit = function(e) {
   e.preventDefault();
-  var method = document.querySelector('input[name="schedMethod"]:checked').value;
-  var btn = document.getElementById('saveSchedBtn');
+  var btn = document.getElementById('schedBtn');
   btn.disabled = true;
-  btn.textContent = 'Saving...';
   
   fetch('/api/schedule', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
     body: JSON.stringify({
       targetNumber: document.getElementById('schedTarget').value,
       pin: document.getElementById('schedPin').value,
       notifyNumber: document.getElementById('schedNotify').value,
-      notifyMethod: method,
       hour: parseInt(document.getElementById('schedHour').value),
       minute: parseInt(document.getElementById('schedMin').value),
-      timezone: document.getElementById('schedTZ').value,
-      enabled: true
+      timezone: document.getElementById('schedTZ').value
     })
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(d) {
-    if (d.success) {
-      alert('✅ Schedule saved! Your call will run daily at the specified time.');
-      loadUser();
-    } else {
-      alert('❌ Error saving schedule');
-    }
+  }).then(function(r) { return r.json(); }).then(function(d) {
     btn.disabled = false;
+    if (d.success) { alert('✅ Saved!'); loadUser(); }
   });
 };
 
 function deleteSchedule() {
-  if (!confirm('Are you sure you want to delete your schedule?')) return;
-  
-  fetch('/api/schedule', { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + token } })
-    .then(function(r) { return r.json(); })
-    .then(function(d) {
-      alert('Schedule deleted');
-      loadUser();
-    });
+  if (!confirm('Delete schedule?')) return;
+  fetch('/api/schedule', { method: 'DELETE', headers: { Authorization: 'Bearer ' + token } })
+    .then(function() { alert('Deleted'); loadUser(); });
 }
 
 function testWhatsApp() {
-  var num = document.getElementById('testNumber').value;
-  if (!num) { alert('Enter a phone number'); return; }
-  
   var st = document.getElementById('testStatus');
   st.style.display = 'block';
   st.className = 'status calling';
-  st.textContent = 'Sending WhatsApp...';
-  
+  st.textContent = 'Sending...';
   fetch('/api/test-whatsapp', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-    body: JSON.stringify({ notifyNumber: num })
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(d) {
-    if (d.success) {
-      st.className = 'status success';
-      st.textContent = '✅ WhatsApp sent! Check your phone.';
-    } else {
-      st.className = 'status error';
-      st.textContent = '❌ Failed: ' + (d.error || 'Unknown error');
-    }
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({ notifyNumber: document.getElementById('testNumber').value })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    st.className = 'status ' + (d.success ? 'success' : 'error');
+    st.textContent = d.success ? '✅ Sent!' : '❌ ' + d.error;
   });
 }
 
 function testSMS() {
-  var num = document.getElementById('testNumber').value;
-  if (!num) { alert('Enter a phone number'); return; }
-  
   var st = document.getElementById('testStatus');
   st.style.display = 'block';
   st.className = 'status calling';
-  st.textContent = 'Sending SMS...';
-  
+  st.textContent = 'Sending...';
   fetch('/api/test-sms', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-    body: JSON.stringify({ notifyNumber: num })
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(d) {
-    if (d.success) {
-      st.className = 'status success';
-      st.textContent = '✅ SMS sent! Check your phone.';
-    } else {
-      st.className = 'status error';
-      st.textContent = '❌ Failed: ' + (d.error || 'Unknown error');
-    }
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({ notifyNumber: document.getElementById('testNumber').value })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    st.className = 'status ' + (d.success ? 'success' : 'error');
+    st.textContent = d.success ? '✅ Sent!' : '❌ ' + d.error;
   });
 }
 
 function logout() {
   supabase.auth.signOut().then(function() { window.location.href = '/'; });
 }
+
+init();
 </script>
 </body>
 </html>
