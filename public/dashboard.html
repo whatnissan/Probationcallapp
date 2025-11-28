@@ -9,7 +9,6 @@
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,sans-serif;background:#0a0a0f;color:#fff;min-height:100vh}
 .loading{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:15px}
-.loading-text{color:#8892b0;font-size:1rem}
 .spinner{width:40px;height:40px;border:3px solid #333;border-top-color:#00d9ff;border-radius:50%;animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .container{max-width:800px;margin:0 auto;padding:20px;display:none}
@@ -17,7 +16,7 @@ nav{display:flex;justify-content:space-between;align-items:center;margin-bottom:
 .logo{font-size:1.2rem;font-weight:700;color:#00d9ff}
 .nav-right{display:flex;align-items:center;gap:10px}
 .dev-badge{background:#f59e0b;color:#000;padding:4px 8px;border-radius:4px;font-size:0.7rem;font-weight:700}
-.logout-btn{background:rgba(255,255,255,0.1);border:none;color:#fff;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:0.85rem}
+.logout-btn{background:rgba(255,255,255,0.1);border:none;color:#fff;padding:8px 14px;border-radius:6px;cursor:pointer}
 .credits-card{background:linear-gradient(135deg,#00d9ff,#0099cc);border-radius:12px;padding:20px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center}
 .credits-num{font-size:2.2rem;font-weight:700;color:#000}
 .credits-label{color:rgba(0,0,0,0.6);font-size:0.85rem}
@@ -48,7 +47,7 @@ input,select{width:100%;padding:10px;border-radius:6px;border:1px solid rgba(255
 .console-entry.success{color:#22c55e}
 .console-entry.error{color:#ef4444}
 .console-entry.warning{color:#f59e0b}
-.tabs{display:flex;gap:8px;margin-bottom:15px}
+.tabs{display:flex;gap:8px;margin-bottom:15px;flex-wrap:wrap}
 .tab{padding:10px 16px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:#8892b0;cursor:pointer}
 .tab.active{background:#00d9ff;color:#000;border-color:#00d9ff}
 .tab-content{display:none}
@@ -65,14 +64,20 @@ input,select{width:100%;padding:10px;border-radius:6px;border:1px solid rgba(255
 .history-result.UNKNOWN{background:rgba(245,158,11,0.2);color:#f59e0b}
 .info-box{background:rgba(0,217,255,0.1);border:1px solid rgba(0,217,255,0.3);border-radius:8px;padding:12px;margin-bottom:15px;font-size:0.85rem;color:#8892b0}
 .info-box strong{color:#00d9ff}
+.info-box.warning{background:rgba(245,158,11,0.1);border-color:rgba(245,158,11,0.3)}
+.info-box.warning strong{color:#f59e0b}
 small{color:#666;font-size:0.75rem}
+.method-select{display:flex;gap:10px;margin-top:5px}
+.method-option{flex:1;padding:12px;border-radius:8px;border:2px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.03);cursor:pointer;text-align:center;transition:all 0.2s}
+.method-option:hover{border-color:rgba(255,255,255,0.3)}
+.method-option.active{border-color:#00d9ff;background:rgba(0,217,255,0.1)}
+.method-option .icon{font-size:1.5rem;margin-bottom:5px}
+.method-option .label{font-size:0.85rem;color:#8892b0}
+.method-option.active .label{color:#00d9ff}
 </style>
 </head>
 <body>
-<div class="loading" id="loading">
-  <div class="spinner"></div>
-  <div class="loading-text">Loading...</div>
-</div>
+<div class="loading" id="loading"><div class="spinner"></div><div style="color:#8892b0">Loading...</div></div>
 <div class="container" id="app">
   <nav>
     <div class="logo">📞 ProbationCall</div>
@@ -100,13 +105,24 @@ small{color:#666;font-size:0.75rem}
     <div class="tab" onclick="showTab('test')">🧪 Test</div>
   </div>
   
+  <!-- CALL TAB -->
   <div id="callTab" class="tab-content active">
     <div class="card">
       <h2>Make a Call</h2>
       <form id="callForm">
         <div class="form-group"><label>Hotline</label><input type="tel" id="targetNumber" value="+19362834848" required></div>
         <div class="form-group"><label>6-Digit PIN</label><input type="text" id="pin" maxlength="6" placeholder="123456" required></div>
-        <div class="form-group"><label>Your WhatsApp Number</label><input type="tel" id="notifyNumber" placeholder="+1234567890" required></div>
+        <div class="form-group">
+          <label>How should we notify you?</label>
+          <div class="method-select">
+            <div class="method-option active" onclick="selectMethod('email')"><div class="icon">📧</div><div class="label">Email</div></div>
+            <div class="method-option" onclick="selectMethod('sms')"><div class="icon">💬</div><div class="label">SMS</div></div>
+            <div class="method-option" onclick="selectMethod('whatsapp')"><div class="icon">📱</div><div class="label">WhatsApp</div></div>
+          </div>
+          <input type="hidden" id="notifyMethod" value="email">
+        </div>
+        <div class="form-group" id="emailGroup"><label>Your Email</label><input type="email" id="notifyEmail" placeholder="you@example.com"></div>
+        <div class="form-group" id="phoneGroup" style="display:none"><label>Your Phone Number</label><input type="tel" id="notifyNumber" placeholder="+1234567890"></div>
         <button type="submit" class="btn" id="callBtn">📞 Call Now</button>
       </form>
       <div id="callStatus" class="status" style="display:none"></div>
@@ -114,6 +130,7 @@ small{color:#666;font-size:0.75rem}
     </div>
   </div>
   
+  <!-- SCHEDULE TAB -->
   <div id="scheduleTab" class="tab-content">
     <div class="card">
       <h2>Daily Schedule</h2>
@@ -125,6 +142,7 @@ small{color:#666;font-size:0.75rem}
           <tr><td>Hotline:</td><td id="schedDisplayTarget"></td></tr>
           <tr><td>PIN:</td><td id="schedDisplayPin"></td></tr>
           <tr><td>Notify:</td><td id="schedDisplayNotify"></td></tr>
+          <tr><td>Method:</td><td id="schedDisplayMethod"></td></tr>
         </table>
         <button class="btn btn-danger" style="margin-top:15px" onclick="deleteSchedule()">🗑️ Delete</button>
       </div>
@@ -132,7 +150,17 @@ small{color:#666;font-size:0.75rem}
       <form id="scheduleForm">
         <div class="form-group"><label>Hotline</label><input type="tel" id="schedTarget" value="+19362834848" required></div>
         <div class="form-group"><label>6-Digit PIN</label><input type="text" id="schedPin" maxlength="6" placeholder="123456" required></div>
-        <div class="form-group"><label>Your WhatsApp</label><input type="tel" id="schedNotify" placeholder="+1234567890" required></div>
+        <div class="form-group">
+          <label>Notification Method</label>
+          <div class="method-select">
+            <div class="method-option active" onclick="selectSchedMethod('email')"><div class="icon">📧</div><div class="label">Email</div></div>
+            <div class="method-option" onclick="selectSchedMethod('sms')"><div class="icon">💬</div><div class="label">SMS</div></div>
+            <div class="method-option" onclick="selectSchedMethod('whatsapp')"><div class="icon">📱</div><div class="label">WhatsApp</div></div>
+          </div>
+          <input type="hidden" id="schedMethod" value="email">
+        </div>
+        <div class="form-group" id="schedEmailGroup"><label>Your Email</label><input type="email" id="schedEmail" placeholder="you@example.com"></div>
+        <div class="form-group" id="schedPhoneGroup" style="display:none"><label>Your Phone</label><input type="tel" id="schedNotify" placeholder="+1234567890"></div>
         <div class="form-group">
           <label>Time (24h)</label>
           <div style="display:flex;gap:10px">
@@ -148,20 +176,30 @@ small{color:#666;font-size:0.75rem}
     </div>
   </div>
   
+  <!-- HISTORY TAB -->
   <div id="historyTab" class="tab-content">
     <div class="card"><h2>Call History</h2><div id="historyList"></div></div>
   </div>
   
+  <!-- TEST TAB -->
   <div id="testTab" class="tab-content">
     <div class="card">
       <h2>🧪 Test Notifications</h2>
-      <div class="info-box"><strong>WhatsApp:</strong> You must first message <strong>+1 415 523 8886</strong> with "join" code from Twilio sandbox.</div>
-      <div class="form-group"><label>Phone Number</label><input type="tel" id="testNumber" placeholder="+1234567890"></div>
-      <div class="btn-row">
-        <button class="btn" onclick="testWhatsApp()">📱 WhatsApp</button>
-        <button class="btn btn-secondary" onclick="testSMS()">💬 SMS</button>
-      </div>
-      <div id="testStatus" class="status" style="display:none"></div>
+      <div class="info-box"><strong>Email</strong> is the most reliable method. SMS requires carrier approval. WhatsApp requires you to message our number first.</div>
+      
+      <h3 style="margin:20px 0 10px;font-size:1rem">Test Email</h3>
+      <div class="form-group"><input type="email" id="testEmail" placeholder="you@example.com"></div>
+      <button class="btn" onclick="testEmail()">📧 Send Test Email</button>
+      
+      <h3 style="margin:20px 0 10px;font-size:1rem">Test SMS</h3>
+      <div class="form-group"><input type="tel" id="testPhone" placeholder="+1234567890"></div>
+      <button class="btn btn-secondary" onclick="testSMS()">💬 Send Test SMS</button>
+      
+      <h3 style="margin:20px 0 10px;font-size:1rem">Test WhatsApp</h3>
+      <div class="info-box warning"><strong>First:</strong> Send any message to <strong>+1 415 523 8886</strong> from your WhatsApp, then test.</div>
+      <button class="btn btn-secondary" onclick="testWhatsApp()">📱 Send Test WhatsApp</button>
+      
+      <div id="testStatus" class="status" style="display:none;margin-top:15px"></div>
     </div>
   </div>
 </div>
@@ -173,28 +211,19 @@ var supabase = window.supabase.createClient(SUPA_URL, SUPA_KEY);
 var token = null;
 
 async function init() {
-  console.log('Checking auth...');
-  
-  // Wait for Supabase to process OAuth callback if present
   if (window.location.hash.includes('access_token')) {
-    console.log('Found access token in URL');
     await new Promise(function(r) { setTimeout(r, 1500); });
   }
-  
   var result = await supabase.auth.getSession();
-  console.log('Session:', result.data.session ? 'FOUND' : 'NONE');
-  
   if (result.data.session) {
     token = result.data.session.access_token;
     showDashboard();
   } else {
-    console.log('No session, redirecting to login');
     window.location.href = '/login';
   }
 }
 
 supabase.auth.onAuthStateChange(function(event, session) {
-  console.log('Auth event:', event);
   if (event === 'SIGNED_IN' && session) {
     token = session.access_token;
     showDashboard();
@@ -214,6 +243,34 @@ function formatTime(h, m) {
   return hr + ':' + String(m).padStart(2, '0') + ' ' + ampm;
 }
 
+function selectMethod(method) {
+  document.querySelectorAll('#callTab .method-option').forEach(function(el) { el.classList.remove('active'); });
+  event.target.closest('.method-option').classList.add('active');
+  document.getElementById('notifyMethod').value = method;
+  
+  if (method === 'email') {
+    document.getElementById('emailGroup').style.display = 'block';
+    document.getElementById('phoneGroup').style.display = 'none';
+  } else {
+    document.getElementById('emailGroup').style.display = 'none';
+    document.getElementById('phoneGroup').style.display = 'block';
+  }
+}
+
+function selectSchedMethod(method) {
+  document.querySelectorAll('#scheduleTab .method-option').forEach(function(el) { el.classList.remove('active'); });
+  event.target.closest('.method-option').classList.add('active');
+  document.getElementById('schedMethod').value = method;
+  
+  if (method === 'email') {
+    document.getElementById('schedEmailGroup').style.display = 'block';
+    document.getElementById('schedPhoneGroup').style.display = 'none';
+  } else {
+    document.getElementById('schedEmailGroup').style.display = 'none';
+    document.getElementById('schedPhoneGroup').style.display = 'block';
+  }
+}
+
 function loadUser() {
   fetch('/api/user', { headers: { Authorization: 'Bearer ' + token } })
     .then(function(r) { return r.json(); })
@@ -221,6 +278,11 @@ function loadUser() {
       document.getElementById('userEmail').textContent = d.user.email;
       document.getElementById('credits').textContent = d.isDev ? '∞' : d.profile.credits;
       if (d.isDev) document.getElementById('devBadge').style.display = 'inline';
+      
+      // Pre-fill email with user's email
+      document.getElementById('notifyEmail').value = d.user.email;
+      document.getElementById('schedEmail').value = d.user.email;
+      document.getElementById('testEmail').value = d.user.email;
       
       if (d.schedule) {
         var t = formatTime(d.schedule.hour, d.schedule.minute);
@@ -233,17 +295,19 @@ function loadUser() {
         document.getElementById('schedDisplayTZ').textContent = d.schedule.timezone;
         document.getElementById('schedDisplayTarget').textContent = d.schedule.target_number;
         document.getElementById('schedDisplayPin').textContent = d.schedule.pin;
-        document.getElementById('schedDisplayNotify').textContent = d.schedule.notify_number;
+        document.getElementById('schedDisplayNotify').textContent = d.schedule.notify_email || d.schedule.notify_number || '-';
+        document.getElementById('schedDisplayMethod').textContent = (d.schedule.notify_method || 'email').toUpperCase();
         document.getElementById('scheduleDetails').style.display = 'block';
         document.getElementById('noSchedInfo').style.display = 'none';
         document.getElementById('schedBtn').textContent = '💾 Update Schedule';
         
         document.getElementById('schedTarget').value = d.schedule.target_number;
         document.getElementById('schedPin').value = d.schedule.pin;
-        document.getElementById('schedNotify').value = d.schedule.notify_number;
         document.getElementById('schedHour').value = d.schedule.hour;
         document.getElementById('schedMin').value = d.schedule.minute;
         document.getElementById('schedTZ').value = d.schedule.timezone;
+        if (d.schedule.notify_email) document.getElementById('schedEmail').value = d.schedule.notify_email;
+        if (d.schedule.notify_number) document.getElementById('schedNotify').value = d.schedule.notify_number;
       } else {
         document.getElementById('scheduleBanner').classList.remove('active');
         document.getElementById('noSchedule').classList.add('active');
@@ -305,13 +369,17 @@ document.getElementById('callForm').onsubmit = function(e) {
   st.textContent = 'Calling...';
   document.getElementById('console').innerHTML = '';
   
+  var method = document.getElementById('notifyMethod').value;
+  
   fetch('/api/call', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
     body: JSON.stringify({
       targetNumber: document.getElementById('targetNumber').value,
       pin: document.getElementById('pin').value,
-      notifyNumber: document.getElementById('notifyNumber').value
+      notifyNumber: document.getElementById('notifyNumber').value,
+      notifyEmail: document.getElementById('notifyEmail').value,
+      notifyMethod: method
     })
   }).then(function(r) { return r.json(); }).then(function(d) {
     if (d.error) { st.className = 'status error'; st.textContent = d.error; }
@@ -325,6 +393,8 @@ document.getElementById('scheduleForm').onsubmit = function(e) {
   var btn = document.getElementById('schedBtn');
   btn.disabled = true;
   
+  var method = document.getElementById('schedMethod').value;
+  
   fetch('/api/schedule', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
@@ -332,13 +402,15 @@ document.getElementById('scheduleForm').onsubmit = function(e) {
       targetNumber: document.getElementById('schedTarget').value,
       pin: document.getElementById('schedPin').value,
       notifyNumber: document.getElementById('schedNotify').value,
+      notifyEmail: document.getElementById('schedEmail').value,
+      notifyMethod: method,
       hour: parseInt(document.getElementById('schedHour').value),
       minute: parseInt(document.getElementById('schedMin').value),
       timezone: document.getElementById('schedTZ').value
     })
   }).then(function(r) { return r.json(); }).then(function(d) {
     btn.disabled = false;
-    if (d.success) { alert('✅ Saved!'); loadUser(); }
+    if (d.success) { alert('✅ Schedule saved!'); loadUser(); }
   });
 };
 
@@ -348,18 +420,18 @@ function deleteSchedule() {
     .then(function() { alert('Deleted'); loadUser(); });
 }
 
-function testWhatsApp() {
+function testEmail() {
   var st = document.getElementById('testStatus');
   st.style.display = 'block';
   st.className = 'status calling';
-  st.textContent = 'Sending...';
-  fetch('/api/test-whatsapp', {
+  st.textContent = 'Sending email...';
+  fetch('/api/test-email', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
-    body: JSON.stringify({ notifyNumber: document.getElementById('testNumber').value })
+    body: JSON.stringify({ email: document.getElementById('testEmail').value })
   }).then(function(r) { return r.json(); }).then(function(d) {
     st.className = 'status ' + (d.success ? 'success' : 'error');
-    st.textContent = d.success ? '✅ Sent!' : '❌ ' + d.error;
+    st.textContent = d.success ? '✅ Email sent! Check your inbox.' : '❌ ' + (d.error || 'Failed');
   });
 }
 
@@ -367,14 +439,31 @@ function testSMS() {
   var st = document.getElementById('testStatus');
   st.style.display = 'block';
   st.className = 'status calling';
-  st.textContent = 'Sending...';
+  st.textContent = 'Sending SMS...';
   fetch('/api/test-sms', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
-    body: JSON.stringify({ notifyNumber: document.getElementById('testNumber').value })
+    body: JSON.stringify({ notifyNumber: document.getElementById('testPhone').value })
   }).then(function(r) { return r.json(); }).then(function(d) {
     st.className = 'status ' + (d.success ? 'success' : 'error');
-    st.textContent = d.success ? '✅ Sent!' : '❌ ' + d.error;
+    st.textContent = d.success ? '✅ SMS sent!' : '❌ ' + (d.error || 'Failed');
+  });
+}
+
+function testWhatsApp() {
+  var phone = document.getElementById('testPhone').value;
+  if (!phone) { alert('Enter phone number first'); return; }
+  var st = document.getElementById('testStatus');
+  st.style.display = 'block';
+  st.className = 'status calling';
+  st.textContent = 'Sending WhatsApp...';
+  fetch('/api/test-whatsapp', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({ notifyNumber: phone })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    st.className = 'status ' + (d.success ? 'success' : 'error');
+    st.textContent = d.success ? '✅ WhatsApp sent!' : '❌ ' + (d.error || 'Failed');
   });
 }
 
