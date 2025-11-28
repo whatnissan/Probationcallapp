@@ -7,6 +7,7 @@ const path = require('path');
 const cron = require('node-cron');
 const Stripe = require('stripe');
 const { createClient } = require('@supabase/supabase-js');
+const cookieParser = require('cookie-parser');
 
 const app = express();
 const server = http.createServer(app);
@@ -15,6 +16,7 @@ const wss = new WebSocket.Server({ server });
 app.use('/webhook/stripe', express.raw({ type: 'application/json' }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
 app.use(express.static('public'));
 
 const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
@@ -56,6 +58,12 @@ function broadcastToClients(data) {
 async function auth(req, res, next) {
   var authHeader = req.headers.authorization;
   var token = authHeader ? authHeader.replace('Bearer ', '') : null;
+  
+  // Fallback: check cookies for Supabase token
+  if (!token && req.cookies) {
+    token = req.cookies['sb-access-token'] || req.cookies['sb:token'];
+  }
+  
   if (!token) return res.status(401).json({ error: 'No token' });
   
   var result = await supabase.auth.getUser(token);
