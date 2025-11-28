@@ -18,6 +18,7 @@
     .divider{color:#555;margin:20px 0;font-size:0.85rem}
     .back{color:#8892b0;text-decoration:none;font-size:0.9rem}
     .back:hover{color:#00d9ff}
+    .loading{display:none;color:#00d9ff;margin-top:20px}
   </style>
 </head>
 <body>
@@ -34,6 +35,8 @@
     <p class="divider">New users get 1 free credit to try!</p>
     
     <a href="/" class="back">← Back to Home</a>
+    
+    <p class="loading" id="loading">Completing sign in...</p>
   </div>
 
   <script>
@@ -42,15 +45,34 @@
     
     const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-    // Check if already logged in
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session) window.location.href = '/dashboard';
-    });
+    // Handle OAuth callback (when Google redirects back)
+    const hashParams = new URLSearchParams(window.location.hash.substring(1));
+    if (hashParams.get('access_token')) {
+      document.getElementById('loading').style.display = 'block';
+      // Wait a moment for Supabase to process the session
+      setTimeout(() => {
+        supabase.auth.getSession().then(({ data: { session } }) => {
+          if (session) {
+            window.location.href = '/dashboard';
+          } else {
+            alert('Login failed. Please try again.');
+            window.location.href = '/login';
+          }
+        });
+      }, 500);
+    } else {
+      // Check if already logged in
+      supabase.auth.getSession().then(({ data: { session } }) => {
+        if (session) window.location.href = '/dashboard';
+      });
+    }
 
     async function signInWithGoogle() {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
-        options: { redirectTo: window.location.origin + '/dashboard' }
+        options: { 
+          redirectTo: window.location.origin + '/login'
+        }
       });
       if (error) alert('Error: ' + error.message);
     }
