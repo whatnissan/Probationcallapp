@@ -7,13 +7,13 @@ const path = require('path');
 const cron = require('node-cron');
 const Stripe = require('stripe');
 const { createClient } = require('@supabase/supabase-js');
-const sgMail = require('@sendgrid/mail');
+const nodemailer = require('nodemailer');
 
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-const DEV_EMAILS = ['whatnissan@gmail.com', 'probationreportingapp@gmail.com'];
+const DEV_EMAILS = ['whatnissan@gmail.com', 'whatnissan@protonmail.com'];
 
 app.use('/webhook/stripe', express.raw({ type: 'application/json' }));
 app.use(express.json());
@@ -24,10 +24,17 @@ const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_A
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
-// SendGrid setup
-if (process.env.SENDGRID_API_KEY) {
-  sgMail.setApiKey(process.env.SENDGRID_API_KEY);
-  console.log('[EMAIL] SendGrid configured');
+// Gmail SMTP setup
+let emailTransporter = null;
+if (process.env.GMAIL_USER && process.env.GMAIL_PASS) {
+  emailTransporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: process.env.GMAIL_USER,
+      pass: process.env.GMAIL_PASS
+    }
+  });
+  console.log('[EMAIL] Gmail configured');
 }
 
 const pendingCalls = new Map();
@@ -35,9 +42,8 @@ const wsClients = new Set();
 const scheduledJobs = new Map();
 
 const TWILIO_VOICE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
-const TWILIO_SMS_NUMBER = process.env.TWILIO_SMS_NUMBER || '+16315267507';
+const MESSAGING_SERVICE_SID = 'MG8adbb793f6b8c100da6770f6f0707258';
 const WHATSAPP_NUMBER = 'whatsapp:+14155238886';
-const FROM_EMAIL = 'probationreportingapp@gmail.com';
 
 const PACKAGES = {
   starter: { name: 'Starter', credits: 30, price: 999 },
@@ -392,21 +398,16 @@ app.post('/webhook/status', function(req, res) {
   res.sendStatus(200);
 });
 
-// UNIFIED NOTIFY FUNCTION - Email, SMS, or WhatsApp
+// NOTIFICATION FUNCTIONS
 async function notify(phone, email, method, message, callId) {
   log(callId, 'Notifying via ' + method, 'info');
   
-  // Always try email first if we have it
-  if (method === 'email' && email && process.env.SENDGRID_API_KEY) {
+  if (method === 'email' && email) {
     return await sendEmail(email, message, callId);
   }
-  
-  // SMS
   if (method === 'sms' && phone) {
     return await sendSMS(phone, message, callId);
   }
-  
-  // WhatsApp
   if (method === 'whatsapp' && phone) {
     return await sendWhatsApp(phone, message, callId);
   }
@@ -416,12 +417,11 @@ async function notify(phone, email, method, message, callId) {
 }
 
 async function sendEmail(to, message, callId) {
-  if (!process.env.SENDGRID_API_KEY) {
-    log(callId, 'SendGrid not configured', 'error');
+  if (!emailTransporter) {
+    log(callId, 'Email not configured', 'error');
     return { success: false, error: 'Email not configured' };
   }
   
-  // Determine subject based on content
   var subject = 'ProbationCall Alert';
   if (message.includes('TEST REQUIRED')) {
     subject = '🚨 TEST REQUIRED - ProbationCall';
@@ -430,9 +430,9 @@ async function sendEmail(to, message, callId) {
   }
   
   try {
-    await sgMail.send({
+    await emailTransporter.sendMail({
+      from: '"ProbationCall" <' + process.env.GMAIL_USER + '>',
       to: to,
-      from: FROM_EMAIL,
       subject: subject,
       text: message,
       html: '<div style="font-family:sans-serif;padding:20px;max-width:400px;margin:0 auto;">' +
@@ -450,7 +450,11 @@ async function sendEmail(to, message, callId) {
 
 async function sendSMS(to, message, callId) {
   try {
-    var msg = await twilioClient.messages.create({ messagingServiceSid: 'MG8adbb793f6b8c100da6770f6f0707258', to: to, body: message });
+    var msg = await twilioClient.messages.create({ 
+      messagingServiceSid: MESSAGING_SERVICE_SID, 
+      to: to, 
+      body: message 
+    });
     log(callId, 'SMS sent: ' + msg.sid, 'success');
     return { success: true, sid: msg.sid };
   } catch (e) {
@@ -500,8 +504,7 @@ server.listen(PORT, function() {
   console.log('ProbationCall Server Running');
   console.log('Port: ' + PORT);
   console.log('Voice: ' + TWILIO_VOICE_NUMBER);
-  console.log('SMS: ' + TWILIO_SMS_NUMBER);
-  console.log('Email: ' + (process.env.SENDGRID_API_KEY ? 'Configured' : 'Not configured'));
+  console.log('Email: ' + (emailTransporter ? 'Gmail configured' : 'Not configured'));
   console.log('========================================');
   loadAllSchedules();
 });
