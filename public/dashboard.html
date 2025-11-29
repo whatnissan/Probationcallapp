@@ -20,6 +20,8 @@ nav{display:flex;justify-content:space-between;align-items:center;margin-bottom:
 .credits-card{background:linear-gradient(135deg,#00d9ff,#0099cc);border-radius:12px;padding:20px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center}
 .credits-num{font-size:2.2rem;font-weight:700;color:#000}
 .credits-label{color:rgba(0,0,0,0.6);font-size:0.85rem}
+.buy-btn{background:#000;color:#fff;border:none;padding:12px 20px;border-radius:8px;font-weight:600;cursor:pointer}
+.buy-btn:hover{background:#222}
 .schedule-banner{background:linear-gradient(135deg,#22c55e,#16a34a);border-radius:12px;padding:15px 20px;margin-bottom:20px;display:none}
 .schedule-banner.active{display:flex;justify-content:space-between;align-items:center}
 .schedule-banner h3{color:#000;font-size:1rem;margin-bottom:3px}
@@ -74,6 +76,21 @@ small{color:#666;font-size:0.75rem}
 .method-option .icon{font-size:1.5rem;margin-bottom:5px}
 .method-option .label{font-size:0.85rem;color:#8892b0}
 .method-option.active .label{color:#00d9ff}
+.packages{display:grid;grid-template-columns:repeat(3,1fr);gap:15px;margin-top:15px}
+.package{background:rgba(255,255,255,0.03);border:2px solid rgba(255,255,255,0.1);border-radius:12px;padding:20px;text-align:center;cursor:pointer;transition:all 0.2s}
+.package:hover{border-color:#00d9ff}
+.package.popular{border-color:#00d9ff;background:rgba(0,217,255,0.05)}
+.package-name{font-size:0.9rem;color:#8892b0;margin-bottom:5px}
+.package-credits{font-size:2rem;font-weight:700;color:#fff}
+.package-price{font-size:1.1rem;color:#00d9ff;margin-top:5px}
+.package-save{font-size:0.75rem;color:#22c55e;margin-top:5px}
+.modal{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);display:none;align-items:center;justify-content:center;z-index:100}
+.modal.active{display:flex}
+.modal-content{background:#1a1a2e;border-radius:16px;padding:30px;max-width:500px;width:90%}
+.modal-close{float:right;background:none;border:none;color:#fff;font-size:1.5rem;cursor:pointer}
+.promo-input{display:flex;gap:10px;margin-top:15px}
+.promo-input input{flex:1}
+.promo-input button{width:auto;padding:10px 20px}
 </style>
 </head>
 <body>
@@ -96,6 +113,7 @@ small{color:#666;font-size:0.75rem}
   
   <div class="credits-card">
     <div><div class="credits-num" id="credits">0</div><div class="credits-label">Credits</div></div>
+    <button class="buy-btn" onclick="showBuyModal()">Buy Credits</button>
   </div>
   
   <div class="tabs">
@@ -185,7 +203,7 @@ small{color:#666;font-size:0.75rem}
   <div id="testTab" class="tab-content">
     <div class="card">
       <h2>🧪 Test Notifications</h2>
-      <div class="info-box"><strong>Email</strong> is the most reliable method. SMS requires carrier approval. WhatsApp requires you to message our number first.</div>
+      <div class="info-box"><strong>Email</strong> is the most reliable method.</div>
       
       <h3 style="margin:20px 0 10px;font-size:1rem">Test Email</h3>
       <div class="form-group"><input type="email" id="testEmail" placeholder="you@example.com"></div>
@@ -196,11 +214,44 @@ small{color:#666;font-size:0.75rem}
       <button class="btn btn-secondary" onclick="testSMS()">💬 Send Test SMS</button>
       
       <h3 style="margin:20px 0 10px;font-size:1rem">Test WhatsApp</h3>
-      <div class="info-box warning"><strong>First:</strong> Send any message to <strong>+1 415 523 8886</strong> from your WhatsApp, then test.</div>
+      <div class="info-box warning"><strong>First:</strong> Message <strong>+1 415 523 8886</strong> from WhatsApp, then test.</div>
       <button class="btn btn-secondary" onclick="testWhatsApp()">📱 Send Test WhatsApp</button>
       
       <div id="testStatus" class="status" style="display:none;margin-top:15px"></div>
     </div>
+  </div>
+</div>
+
+<!-- BUY CREDITS MODAL -->
+<div class="modal" id="buyModal">
+  <div class="modal-content">
+    <button class="modal-close" onclick="closeBuyModal()">&times;</button>
+    <h2 style="margin-bottom:10px">Buy Credits</h2>
+    <p style="color:#8892b0;margin-bottom:5px">1 credit = 1 automated call</p>
+    <div class="packages">
+      <div class="package" onclick="buyPackage('starter')">
+        <div class="package-name">Starter</div>
+        <div class="package-credits">30</div>
+        <div class="package-price">$9.99</div>
+      </div>
+      <div class="package popular" onclick="buyPackage('standard')">
+        <div class="package-name">Standard</div>
+        <div class="package-credits">90</div>
+        <div class="package-price">$24.99</div>
+        <div class="package-save">Save 17%</div>
+      </div>
+      <div class="package" onclick="buyPackage('value')">
+        <div class="package-name">Value</div>
+        <div class="package-credits">180</div>
+        <div class="package-price">$39.99</div>
+        <div class="package-save">Save 33%</div>
+      </div>
+    </div>
+    <div class="promo-input">
+      <input type="text" id="promoCode" placeholder="Promo code">
+      <button class="btn" onclick="redeemPromo()">Apply</button>
+    </div>
+    <div id="promoStatus" class="status" style="display:none;margin-top:10px"></div>
   </div>
 </div>
 
@@ -235,6 +286,13 @@ function showDashboard() {
   document.getElementById('app').style.display = 'block';
   loadUser();
   connectWS();
+  
+  // Check for payment success
+  var params = new URLSearchParams(window.location.search);
+  if (params.get('success')) {
+    alert('✅ Payment successful! Credits added.');
+    history.replaceState({}, '', '/dashboard');
+  }
 }
 
 function formatTime(h, m) {
@@ -247,28 +305,16 @@ function selectMethod(method) {
   document.querySelectorAll('#callTab .method-option').forEach(function(el) { el.classList.remove('active'); });
   event.target.closest('.method-option').classList.add('active');
   document.getElementById('notifyMethod').value = method;
-  
-  if (method === 'email') {
-    document.getElementById('emailGroup').style.display = 'block';
-    document.getElementById('phoneGroup').style.display = 'none';
-  } else {
-    document.getElementById('emailGroup').style.display = 'none';
-    document.getElementById('phoneGroup').style.display = 'block';
-  }
+  document.getElementById('emailGroup').style.display = method === 'email' ? 'block' : 'none';
+  document.getElementById('phoneGroup').style.display = method !== 'email' ? 'block' : 'none';
 }
 
 function selectSchedMethod(method) {
   document.querySelectorAll('#scheduleTab .method-option').forEach(function(el) { el.classList.remove('active'); });
   event.target.closest('.method-option').classList.add('active');
   document.getElementById('schedMethod').value = method;
-  
-  if (method === 'email') {
-    document.getElementById('schedEmailGroup').style.display = 'block';
-    document.getElementById('schedPhoneGroup').style.display = 'none';
-  } else {
-    document.getElementById('schedEmailGroup').style.display = 'none';
-    document.getElementById('schedPhoneGroup').style.display = 'block';
-  }
+  document.getElementById('schedEmailGroup').style.display = method === 'email' ? 'block' : 'none';
+  document.getElementById('schedPhoneGroup').style.display = method !== 'email' ? 'block' : 'none';
 }
 
 function loadUser() {
@@ -279,7 +325,6 @@ function loadUser() {
       document.getElementById('credits').textContent = d.isDev ? '∞' : d.profile.credits;
       if (d.isDev) document.getElementById('devBadge').style.display = 'inline';
       
-      // Pre-fill email with user's email
       document.getElementById('notifyEmail').value = d.user.email;
       document.getElementById('schedEmail').value = d.user.email;
       document.getElementById('testEmail').value = d.user.email;
@@ -334,6 +379,47 @@ function showTab(name) {
   document.getElementById(name + 'Tab').classList.add('active');
 }
 
+// Buy Credits Modal
+function showBuyModal() { document.getElementById('buyModal').classList.add('active'); }
+function closeBuyModal() { document.getElementById('buyModal').classList.remove('active'); }
+
+function buyPackage(packageId) {
+  fetch('/api/checkout', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({ packageId: packageId })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.url) window.location.href = d.url;
+    else alert('Error: ' + (d.error || 'Unknown'));
+  });
+}
+
+function redeemPromo() {
+  var code = document.getElementById('promoCode').value;
+  var st = document.getElementById('promoStatus');
+  if (!code) return;
+  
+  st.style.display = 'block';
+  st.className = 'status calling';
+  st.textContent = 'Applying...';
+  
+  fetch('/api/redeem', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({ code: code })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.success) {
+      st.className = 'status success';
+      st.textContent = '✅ Added ' + d.credits + ' credits!';
+      loadUser();
+      setTimeout(closeBuyModal, 1500);
+    } else {
+      st.className = 'status error';
+      st.textContent = '❌ ' + (d.error || 'Invalid code');
+    }
+  });
+}
+
 var ws;
 function connectWS() {
   ws = new WebSocket((location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws');
@@ -369,8 +455,6 @@ document.getElementById('callForm').onsubmit = function(e) {
   st.textContent = 'Calling...';
   document.getElementById('console').innerHTML = '';
   
-  var method = document.getElementById('notifyMethod').value;
-  
   fetch('/api/call', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
@@ -379,7 +463,7 @@ document.getElementById('callForm').onsubmit = function(e) {
       pin: document.getElementById('pin').value,
       notifyNumber: document.getElementById('notifyNumber').value,
       notifyEmail: document.getElementById('notifyEmail').value,
-      notifyMethod: method
+      notifyMethod: document.getElementById('notifyMethod').value
     })
   }).then(function(r) { return r.json(); }).then(function(d) {
     if (d.error) { st.className = 'status error'; st.textContent = d.error; }
@@ -393,8 +477,6 @@ document.getElementById('scheduleForm').onsubmit = function(e) {
   var btn = document.getElementById('schedBtn');
   btn.disabled = true;
   
-  var method = document.getElementById('schedMethod').value;
-  
   fetch('/api/schedule', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
@@ -403,7 +485,7 @@ document.getElementById('scheduleForm').onsubmit = function(e) {
       pin: document.getElementById('schedPin').value,
       notifyNumber: document.getElementById('schedNotify').value,
       notifyEmail: document.getElementById('schedEmail').value,
-      notifyMethod: method,
+      notifyMethod: document.getElementById('schedMethod').value,
       hour: parseInt(document.getElementById('schedHour').value),
       minute: parseInt(document.getElementById('schedMin').value),
       timezone: document.getElementById('schedTZ').value
@@ -431,7 +513,7 @@ function testEmail() {
     body: JSON.stringify({ email: document.getElementById('testEmail').value })
   }).then(function(r) { return r.json(); }).then(function(d) {
     st.className = 'status ' + (d.success ? 'success' : 'error');
-    st.textContent = d.success ? '✅ Email sent! Check your inbox.' : '❌ ' + (d.error || 'Failed');
+    st.textContent = d.success ? '✅ Email sent!' : '❌ ' + (d.error || 'Failed');
   });
 }
 
