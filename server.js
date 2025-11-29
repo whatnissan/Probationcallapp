@@ -450,7 +450,7 @@ async function sendEmail(to, message, callId) {
 
 async function sendSMS(to, message, callId) {
   try {
-    var msg = await twilioClient.messages.create({ from: TWILIO_SMS_NUMBER, to: to, body: message });
+    var msg = await twilioClient.messages.create({ messagingServiceSid: 'MG8adbb793f6b8c100da6770f6f0707258', to: to, body: message });
     log(callId, 'SMS sent: ' + msg.sid, 'success');
     return { success: true, sid: msg.sid };
   } catch (e) {
