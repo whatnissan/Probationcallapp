@@ -13,7 +13,7 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-const DEV_EMAILS = ['whatnissan@gmail.com', 'whatnissan@protonmail.com'];
+const DEV_EMAILS = ['whatnissan@gmail.com', 'probationreportingapp@gmail.com'];
 
 app.use('/webhook/stripe', express.raw({ type: 'application/json' }));
 app.use(express.json());
@@ -37,7 +37,7 @@ const scheduledJobs = new Map();
 const TWILIO_VOICE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
 const TWILIO_SMS_NUMBER = process.env.TWILIO_SMS_NUMBER || '+16315267507';
 const WHATSAPP_NUMBER = 'whatsapp:+14155238886';
-const FROM_EMAIL = 'whatnissan@protonmail.com';
+const FROM_EMAIL = 'probationreportingapp@gmail.com';
 
 const PACKAGES = {
   starter: { name: 'Starter', credits: 30, price: 999 },
