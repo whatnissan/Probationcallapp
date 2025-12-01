@@ -1,175 +1,119 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ProbationCall - Never Miss a Drug Test Check-In</title>
-  <style>
-    *{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0a0f;color:#fff;line-height:1.6}
-    .container{max-width:1100px;margin:0 auto;padding:0 20px}
-    
-    /* Nav */
-    nav{padding:20px 0;display:flex;justify-content:space-between;align-items:center}
-    .logo{font-size:1.5rem;font-weight:700;color:#00d9ff}
-    .nav-btn{background:#00d9ff;color:#0a0a0f;padding:10px 24px;border-radius:8px;text-decoration:none;font-weight:600}
-    .nav-btn:hover{background:#00b4d8}
-    
-    /* Hero */
-    .hero{text-align:center;padding:80px 20px 60px}
-    .hero h1{font-size:3rem;margin-bottom:20px;background:linear-gradient(135deg,#fff,#00d9ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-    .hero p{font-size:1.25rem;color:#8892b0;max-width:600px;margin:0 auto 40px}
-    .hero-btn{display:inline-block;background:linear-gradient(135deg,#00d9ff,#00b4d8);color:#0a0a0f;padding:16px 40px;border-radius:12px;font-size:1.1rem;font-weight:600;text-decoration:none}
-    .hero-btn:hover{transform:translateY(-2px);box-shadow:0 10px 40px rgba(0,217,255,0.3)}
-    
-    /* Features */
-    .features{padding:60px 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:30px}
-    .feature{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:30px;text-align:center}
-    .feature-icon{font-size:2.5rem;margin-bottom:15px}
-    .feature h3{margin-bottom:10px;color:#00d9ff}
-    .feature p{color:#8892b0;font-size:0.95rem}
-    
-    /* How it works */
-    .how{padding:60px 0;text-align:center}
-    .how h2{font-size:2rem;margin-bottom:40px}
-    .steps{display:flex;flex-wrap:wrap;justify-content:center;gap:20px}
-    .step{background:rgba(0,217,255,0.05);border:1px solid rgba(0,217,255,0.2);border-radius:12px;padding:25px;width:220px}
-    .step-num{background:#00d9ff;color:#0a0a0f;width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;margin:0 auto 15px}
-    .step h4{margin-bottom:8px}
-    .step p{color:#8892b0;font-size:0.85rem}
-    
-    /* Pricing */
-    .pricing{padding:80px 0;text-align:center}
-    .pricing h2{font-size:2rem;margin-bottom:15px}
-    .pricing>p{color:#8892b0;margin-bottom:40px}
-    .plans{display:flex;flex-wrap:wrap;justify-content:center;gap:25px}
-    .plan{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:35px;width:300px;position:relative}
-    .plan.popular{border-color:#00d9ff;transform:scale(1.05)}
-    .plan.popular::before{content:'MOST POPULAR';position:absolute;top:-12px;left:50%;transform:translateX(-50%);background:#00d9ff;color:#0a0a0f;padding:4px 16px;border-radius:20px;font-size:0.7rem;font-weight:700}
-    .plan h3{font-size:1.3rem;margin-bottom:5px}
-    .plan .desc{color:#8892b0;font-size:0.85rem;margin-bottom:20px}
-    .plan .price{font-size:2.5rem;font-weight:700;color:#00d9ff;margin-bottom:5px}
-    .plan .credits{color:#8892b0;margin-bottom:25px}
-    .plan ul{list-style:none;text-align:left;margin-bottom:25px}
-    .plan li{padding:8px 0;color:#ccd6f6;font-size:0.9rem}
-    .plan li::before{content:'✓';color:#00d9ff;margin-right:10px}
-    .plan-btn{display:block;background:linear-gradient(135deg,#00d9ff,#00b4d8);color:#0a0a0f;padding:14px;border-radius:10px;text-decoration:none;font-weight:600}
-    .plan-btn:hover{opacity:0.9}
-    
-    /* Footer */
-    footer{padding:40px 0;text-align:center;color:#555;border-top:1px solid rgba(255,255,255,0.05);margin-top:60px}
-    
-    @media(max-width:768px){
-      .hero h1{font-size:2rem}
-      .plan.popular{transform:none}
-    }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ProbationCall - Automated Check-In Calls</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,sans-serif;background:#0a0a0f;color:#fff}
+.hero{min-height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;padding:40px 20px;background:linear-gradient(135deg,#0a0a0f,#1a1a2e)}
+.logo{font-size:4rem;margin-bottom:20px}
+h1{font-size:2.5rem;margin-bottom:15px;background:linear-gradient(135deg,#fff,#00d9ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.subtitle{font-size:1.2rem;color:#8892b0;margin-bottom:30px;max-width:600px}
+.btn{display:inline-block;padding:15px 40px;background:linear-gradient(135deg,#00d9ff,#0099cc);color:#000;text-decoration:none;border-radius:10px;font-weight:600;font-size:1.1rem}
+.btn:hover{opacity:0.9}
+.features{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:30px;padding:80px 20px;max-width:1000px;margin:0 auto}
+.feature{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:30px;text-align:center}
+.feature-icon{font-size:2.5rem;margin-bottom:15px}
+.feature h3{margin-bottom:10px;color:#00d9ff}
+.feature p{color:#8892b0}
+.pricing{padding:80px 20px;background:#0f0f1a}
+.pricing h2{text-align:center;font-size:2rem;margin-bottom:40px}
+.pricing-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:20px;max-width:900px;margin:0 auto}
+.pricing-card{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:30px;text-align:center}
+.pricing-card.popular{border-color:#00d9ff;background:rgba(0,217,255,0.05)}
+.pricing-card h3{color:#8892b0;margin-bottom:10px}
+.pricing-card .credits{font-size:3rem;font-weight:700;color:#fff}
+.pricing-card .price{font-size:1.5rem;color:#00d9ff;margin:10px 0}
+.pricing-card .save{color:#22c55e;font-size:0.9rem}
+.sms-disclosure{background:#1a1a2e;padding:60px 20px;text-align:center}
+.sms-disclosure h2{color:#00d9ff;margin-bottom:20px}
+.sms-disclosure p{color:#8892b0;max-width:800px;margin:0 auto 15px;line-height:1.8}
+.sms-disclosure .highlight{background:rgba(0,217,255,0.1);border:1px solid rgba(0,217,255,0.3);border-radius:10px;padding:20px;margin:20px auto;max-width:600px}
+.sms-disclosure .highlight p{margin:10px 0;color:#fff}
+footer{padding:40px 20px;text-align:center;border-top:1px solid rgba(255,255,255,0.1)}
+footer a{color:#00d9ff;margin:0 15px;text-decoration:none}
+footer p{color:#666;margin-top:20px}
+.disclaimer{max-width:800px;margin:0 auto;padding:20px;color:#666;font-size:0.85rem;text-align:center}
+</style>
 </head>
 <body>
-  <div class="container">
-    <nav>
-      <div class="logo">📞 ProbationCall</div>
-      <a href="/login" class="nav-btn">Sign In</a>
-    </nav>
+<section class="hero">
+  <div class="logo">📞</div>
+  <h1>Never Miss a Check-In</h1>
+  <p class="subtitle">ProbationCall automatically calls your reporting hotline daily and sends you the results. Know if you need to test without calling yourself.</p>
+  <a href="/login" class="btn">Get Started Free</a>
+</section>
 
-    <section class="hero">
-      <h1>Never Miss a Drug Test Check-In</h1>
-      <p>Automated daily calls to your probation hotline. Get instant WhatsApp alerts if you need to test. Peace of mind, every single day.</p>
-      <a href="/login" class="hero-btn">Get Started Free →</a>
-    </section>
-
-    <section class="features">
-      <div class="feature">
-        <div class="feature-icon">🤖</div>
-        <h3>Fully Automated</h3>
-        <p>We call the hotline for you every day at your scheduled time. No more manual calls.</p>
-      </div>
-      <div class="feature">
-        <div class="feature-icon">📱</div>
-        <h3>Instant Alerts</h3>
-        <p>Get WhatsApp notifications immediately after each call with your test status.</p>
-      </div>
-      <div class="feature">
-        <div class="feature-icon">🔒</div>
-        <h3>Private & Secure</h3>
-        <p>Your PIN and data are encrypted. We never share your information.</p>
-      </div>
-    </section>
-
-    <section class="how">
-      <h2>How It Works</h2>
-      <div class="steps">
-        <div class="step">
-          <div class="step-num">1</div>
-          <h4>Sign Up</h4>
-          <p>Create your account with Google in seconds</p>
-        </div>
-        <div class="step">
-          <div class="step-num">2</div>
-          <h4>Enter Your PIN</h4>
-          <p>Add your 6-digit probation PIN and phone number</p>
-        </div>
-        <div class="step">
-          <div class="step-num">3</div>
-          <h4>Set Schedule</h4>
-          <p>Choose what time you want us to call each day</p>
-        </div>
-        <div class="step">
-          <div class="step-num">4</div>
-          <h4>Relax</h4>
-          <p>Get notified only when you need to test</p>
-        </div>
-      </div>
-    </section>
-
-    <section class="pricing">
-      <h2>Simple, Credit-Based Pricing</h2>
-      <p>1 credit = 1 daily call. Buy what you need, no subscriptions.</p>
-      <div class="plans">
-        <div class="plan">
-          <h3>Starter</h3>
-          <p class="desc">~1 Month</p>
-          <div class="price">$9.99</div>
-          <div class="credits">30 Credits</div>
-          <ul>
-            <li>30 automated calls</li>
-            <li>WhatsApp notifications</li>
-            <li>Call history</li>
-          </ul>
-          <a href="/login" class="plan-btn">Get Started</a>
-        </div>
-        <div class="plan popular">
-          <h3>Standard</h3>
-          <p class="desc">~3 Months</p>
-          <div class="price">$24.99</div>
-          <div class="credits">90 Credits</div>
-          <ul>
-            <li>90 automated calls</li>
-            <li>WhatsApp notifications</li>
-            <li>Call history</li>
-            <li>Priority support</li>
-          </ul>
-          <a href="/login" class="plan-btn">Get Started</a>
-        </div>
-        <div class="plan">
-          <h3>Value</h3>
-          <p class="desc">~6 Months</p>
-          <div class="price">$39.99</div>
-          <div class="credits">180 Credits</div>
-          <ul>
-            <li>180 automated calls</li>
-            <li>WhatsApp notifications</li>
-            <li>Call history</li>
-            <li>Priority support</li>
-          </ul>
-          <a href="/login" class="plan-btn">Get Started</a>
-        </div>
-      </div>
-    </section>
-
-    <footer>
-      <p>© 2024 ProbationCall. All rights reserved.</p>
-    </footer>
+<section class="features">
+  <div class="feature">
+    <div class="feature-icon">🤖</div>
+    <h3>Automated Calls</h3>
+    <p>We call the hotline for you every day at your scheduled time</p>
   </div>
+  <div class="feature">
+    <div class="feature-icon">📧</div>
+    <h3>Instant Alerts</h3>
+    <p>Get notified via Email, SMS, or WhatsApp with your results</p>
+  </div>
+  <div class="feature">
+    <div class="feature-icon">⏰</div>
+    <h3>Set & Forget</h3>
+    <p>Schedule once and never worry about missing a check-in</p>
+  </div>
+</section>
+
+<section class="pricing">
+  <h2>Simple Pricing</h2>
+  <div class="pricing-cards">
+    <div class="pricing-card">
+      <h3>Starter</h3>
+      <div class="credits">30</div>
+      <div class="price">$9.99</div>
+      <p style="color:#8892b0">~1 month of daily calls</p>
+    </div>
+    <div class="pricing-card popular">
+      <h3>Standard</h3>
+      <div class="credits">90</div>
+      <div class="price">$24.99</div>
+      <p class="save">Save 17%</p>
+      <p style="color:#8892b0">~3 months of daily calls</p>
+    </div>
+    <div class="pricing-card">
+      <h3>Value</h3>
+      <div class="credits">180</div>
+      <div class="price">$39.99</div>
+      <p class="save">Save 33%</p>
+      <p style="color:#8892b0">~6 months of daily calls</p>
+    </div>
+  </div>
+</section>
+
+<section class="sms-disclosure">
+  <h2>SMS Notification Terms</h2>
+  <p>When you sign up for ProbationCall and opt in to SMS notifications, you agree to receive text messages about your call results.</p>
+  
+  <div class="highlight">
+    <p><strong>📱 How to Opt-In:</strong> Create an account, go to Settings, enter your phone number, and select "SMS" as your notification method.</p>
+    <p><strong>📊 Message Frequency:</strong> You will receive up to 1 message per scheduled call (typically 1 per day).</p>
+    <p><strong>💰 Rates:</strong> Message and data rates may apply.</p>
+    <p><strong>🛑 Opt-Out:</strong> Reply STOP to any message to unsubscribe.</p>
+    <p><strong>❓ Help:</strong> Reply HELP for assistance or email probationreportingapp@gmail.com</p>
+  </div>
+  
+  <p>We will never share your phone number with third parties for marketing purposes. See our <a href="/privacy.html" style="color:#00d9ff">Privacy Policy</a> for details.</p>
+</section>
+
+<div class="disclaimer">
+  <p>⚠️ <strong>Legal Disclaimer:</strong> ProbationCall is a convenience tool only. Results may not always be accurate due to voice recognition limitations. Always verify important information by calling the hotline directly. ProbationCall is not affiliated with any government agency, court, or probation office. Use of this service does not guarantee compliance with your probation terms. You are solely responsible for meeting all requirements of your probation.</p>
+</div>
+
+<footer>
+  <a href="/terms.html">Terms of Service</a>
+  <a href="/privacy.html">Privacy Policy</a>
+  <a href="mailto:probationreportingapp@gmail.com">Contact</a>
+  <p>© 2025 ProbationCall. All rights reserved.</p>
+</footer>
 </body>
 </html>
