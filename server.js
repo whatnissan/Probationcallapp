@@ -7,7 +7,7 @@ const path = require('path');
 const cron = require('node-cron');
 const Stripe = require('stripe');
 const { createClient } = require('@supabase/supabase-js');
-const nodemailer = require('nodemailer');
+const sgMail = require('@sendgrid/mail');
 
 const app = express();
 const server = http.createServer(app);
@@ -24,17 +24,10 @@ const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_A
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
-// Gmail SMTP setup
-let emailTransporter = null;
-if (process.env.GMAIL_USER && process.env.GMAIL_PASS) {
-  emailTransporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-      user: process.env.GMAIL_USER,
-      pass: process.env.GMAIL_PASS
-    }
-  });
-  console.log('[EMAIL] Gmail configured');
+// SendGrid setup
+if (process.env.SENDGRID_API_KEY) {
+  sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+  console.log('[EMAIL] SendGrid configured');
 }
 
 const pendingCalls = new Map();
@@ -43,7 +36,8 @@ const scheduledJobs = new Map();
 
 const TWILIO_VOICE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
 const MESSAGING_SERVICE_SID = 'MG8adbb793f6b8c100da6770f6f0707258';
-const WHATSAPP_NUMBER = 'whatsapp:+14155238886';
+const WHATSAPP_NUMBER = 'whatsapp:+15558965863';
+const FROM_EMAIL = 'probationreportingapp@gmail.com';
 
 const PACKAGES = {
   starter: { name: 'Starter', credits: 30, price: 999 },
@@ -417,8 +411,8 @@ async function notify(phone, email, method, message, callId) {
 }
 
 async function sendEmail(to, message, callId) {
-  if (!emailTransporter) {
-    log(callId, 'Email not configured', 'error');
+  if (!process.env.SENDGRID_API_KEY) {
+    log(callId, 'SendGrid not configured', 'error');
     return { success: false, error: 'Email not configured' };
   }
   
@@ -430,14 +424,14 @@ async function sendEmail(to, message, callId) {
   }
   
   try {
-    await emailTransporter.sendMail({
-      from: '"ProbationCall" <' + process.env.GMAIL_USER + '>',
+    await sgMail.send({
       to: to,
+      from: FROM_EMAIL,
       subject: subject,
       text: message,
       html: '<div style="font-family:sans-serif;padding:20px;max-width:400px;margin:0 auto;">' +
             '<h2 style="color:#00d9ff;">ProbationCall</h2>' +
-            '<div style="background:#f5f5f5;padding:20px;border-radius:10px;white-space:pre-line;">' + message + '</div>' +
+            '<div style="background:#f5f5f5;padding:20px;border-radius:10px;white-space:pre-line;color:#333;">' + message + '</div>' +
             '</div>'
     });
     log(callId, 'Email sent to ' + to, 'success');
@@ -466,7 +460,11 @@ async function sendSMS(to, message, callId) {
 async function sendWhatsApp(to, message, callId) {
   var toWA = to.indexOf('whatsapp:') === 0 ? to : 'whatsapp:' + to;
   try {
-    var msg = await twilioClient.messages.create({ from: WHATSAPP_NUMBER, to: toWA, body: message });
+    var msg = await twilioClient.messages.create({ 
+      from: WHATSAPP_NUMBER, 
+      to: toWA, 
+      body: message 
+    });
     log(callId, 'WhatsApp sent: ' + msg.sid, 'success');
     return { success: true, sid: msg.sid };
   } catch (e) {
@@ -487,7 +485,7 @@ app.post('/api/test-sms', auth, async function(req, res) {
 });
 
 app.post('/api/test-whatsapp', auth, async function(req, res) {
-  var result = await sendWhatsApp(req.body.notifyNumber, '✅ Test WhatsApp from ProbationCall!', 'test');
+  var result = await sendWhatsApp(req.body.notifyNumber, '✅ Test WhatsApp from ProbationCall!\n\nIf you see this, WhatsApp notifications are working.', 'test');
   res.json(result);
 });
 
@@ -504,7 +502,9 @@ server.listen(PORT, function() {
   console.log('ProbationCall Server Running');
   console.log('Port: ' + PORT);
   console.log('Voice: ' + TWILIO_VOICE_NUMBER);
-  console.log('Email: ' + (emailTransporter ? 'Gmail configured' : 'Not configured'));
+  console.log('Email: ' + (process.env.SENDGRID_API_KEY ? 'SendGrid configured' : 'Not configured'));
+  console.log('SMS: Messaging Service ' + MESSAGING_SERVICE_SID);
+  console.log('WhatsApp: ' + WHATSAPP_NUMBER);
   console.log('========================================');
   loadAllSchedules();
 });
