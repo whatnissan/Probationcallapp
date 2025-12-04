@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SMS Consent - ProbationCall</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,sans-serif;background:#0a0a0f;color:#fff;padding:40px 20px;line-height:1.8}
+.container{max-width:800px;margin:0 auto}
+h1{color:#00d9ff;margin-bottom:10px;font-size:2rem}
+h2{color:#00d9ff;margin:30px 0 15px;font-size:1.3rem}
+h3{color:#fff;margin:20px 0 10px;font-size:1.1rem}
+p{color:#ccc;margin-bottom:15px}
+a{color:#00d9ff}
+.back{display:inline-block;margin-bottom:30px;color:#00d9ff;text-decoration:none}
+ul,ol{margin-left:20px;color:#ccc;margin-bottom:20px}
+li{margin-bottom:10px}
+.highlight{background:rgba(0,217,255,0.1);border:2px solid rgba(0,217,255,0.3);border-radius:12px;padding:20px;margin:20px 0}
+.consent-demo{background:rgba(0,217,255,0.1);border:2px solid rgba(0,217,255,0.3);border-radius:8px;padding:20px;margin:20px 0}
+.consent-demo h4{color:#00d9ff;margin-bottom:15px;font-size:1rem}
+.consent-demo p{color:#8892b0;font-size:0.85rem;margin-bottom:10px;line-height:1.6}
+.consent-demo label{display:flex;align-items:flex-start;gap:10px;cursor:pointer;color:#fff;font-size:0.9rem;background:rgba(255,255,255,0.05);padding:15px;border-radius:8px;border:1px solid rgba(255,255,255,0.1)}
+.consent-demo input[type="checkbox"]{width:20px;height:20px;margin-top:2px;flex-shrink:0}
+.screenshot{background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:20px;margin:20px 0}
+.screenshot-title{color:#8892b0;font-size:0.8rem;margin-bottom:10px;text-transform:uppercase;letter-spacing:1px}
+.method-buttons{display:flex;gap:10px;margin:15px 0}
+.method-btn{flex:1;padding:15px;border-radius:8px;border:2px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.03);text-align:center;color:#8892b0}
+.method-btn.active{border-color:#00d9ff;background:rgba(0,217,255,0.1);color:#00d9ff}
+.method-btn .icon{font-size:1.5rem;margin-bottom:5px}
+.sample-msg{background:#000;border:1px solid #333;border-radius:8px;padding:15px;margin:10px 0;font-family:monospace;font-size:0.85rem;color:#0f0}
+.disclosure-box{background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:8px;padding:20px;margin:20px 0}
+.disclosure-box h4{color:#22c55e;margin-bottom:15px}
+.disclosure-box ul{color:#ccc}
+.btn-demo{width:100%;padding:12px;border-radius:8px;border:none;background:linear-gradient(135deg,#00d9ff,#0099cc);color:#000;font-size:1rem;font-weight:600;margin-top:15px}
+</style>
+</head>
+<body>
+<div class="container">
+<a href="/" class="back">← Back to Home</a>
+<h1>📱 SMS Consent Process</h1>
+<p>This page documents how ProbationCall collects explicit user consent before sending any SMS text messages.</p>
+
+<div class="highlight">
+<h3>Brand Information</h3>
+<ul>
+<li><strong>Brand Name:</strong> ProbationCall</li>
+<li><strong>Website:</strong> https://web-production-9a90.up.railway.app</li>
+<li><strong>Contact:</strong> probationreportingapp@gmail.com</li>
+<li><strong>Message Frequency:</strong> Maximum 1 message per day</li>
+<li><strong>Message Purpose:</strong> Notify users of their daily probation check-in call results</li>
+</ul>
+</div>
+
+<h2>Step-by-Step Consent Process</h2>
+
+<h3>Step 1: User Creates Account</h3>
+<p>Users sign up using Google Sign-In at our website. No SMS consent is requested at this stage.</p>
+
+<h3>Step 2: User Selects SMS Notification Method</h3>
+<p>In the dashboard, users can choose how they want to receive notifications. When they click "SMS", a consent form appears:</p>
+
+<div class="screenshot">
+<div class="screenshot-title">Dashboard - Notification Method Selection</div>
+<div class="method-buttons">
+<div class="method-btn"><div class="icon">📧</div><div>Email</div></div>
+<div class="method-btn active"><div class="icon">💬</div><div>SMS</div></div>
+<div class="method-btn"><div class="icon">📱</div><div>WhatsApp</div></div>
+</div>
+</div>
+
+<h3>Step 3: SMS Consent Disclosure Appears</h3>
+<p>When SMS is selected, the following consent box is displayed with all required disclosures:</p>
+
+<div class="consent-demo">
+<h4>📱 SMS Notification Consent</h4>
+<p>By checking the box below, you agree to receive SMS text messages from ProbationCall about your daily call results. Message frequency: 1 message per day. Message and data rates may apply. Reply STOP to unsubscribe at any time. Reply HELP for help.</p>
+<label>
+<input type="checkbox" checked disabled>
+<span>I agree to receive SMS messages from ProbationCall and have read the <a href="/terms.html">Terms of Service</a> and <a href="/privacy.html">Privacy Policy</a>.</span>
+</label>
+</div>
+
+<h3>Step 4: User Must Check Consent Box</h3>
+<p>The form <strong>cannot be submitted</strong> without checking the consent checkbox. If a user tries to save their schedule or make a call with SMS selected but without checking the box, they see this alert:</p>
+<div class="sample-msg" style="color:#f00">"Please agree to receive SMS messages by checking the consent box."</div>
+
+<h3>Step 5: Confirmation</h3>
+<p>Only after explicitly checking the consent box can the user submit the form and start receiving SMS notifications.</p>
+
+<h2>Required Disclosures</h2>
+<div class="disclosure-box">
+<h4>✅ All Disclosures Shown at Point of Consent</h4>
+<ul>
+<li><strong>Brand Identification:</strong> "ProbationCall" clearly stated</li>
+<li><strong>Message Frequency:</strong> "1 message per day" / "up to 1 message per scheduled call"</li>
+<li><strong>Data Rates:</strong> "Message and data rates may apply"</li>
+<li><strong>Opt-Out Instructions:</strong> "Reply STOP to unsubscribe"</li>
+<li><strong>Help Instructions:</strong> "Reply HELP for help"</li>
+<li><strong>Terms & Privacy Links:</strong> Links to Terms of Service and Privacy Policy</li>
+</ul>
+</div>
+
+<h2>Sample Messages</h2>
+<p>Users receive ONE of these messages per day based on their call result:</p>
+
+<div class="sample-msg">ProbationCall: ✅ No test today! Your color was NOT called. PIN: 123456. Reply STOP to unsubscribe, HELP for help.</div>
+
+<div class="sample-msg">ProbationCall: 🚨 TEST REQUIRED! Your color was called. Report for testing today. PIN: 123456. Reply STOP to unsubscribe, HELP for help.</div>
+
+<div class="sample-msg">ProbationCall: ⚠️ Could not determine result. Please verify manually. PIN: 123456. Reply STOP to unsubscribe.</div>
+
+<h2>Opt-Out Process</h2>
+<p>Users can opt out at any time by:</p>
+<ul>
+<li>Replying <strong>STOP</strong> to any message</li>
+<li>Changing their notification method in the dashboard</li>
+<li>Deleting their schedule</li>
+<li>Contacting us at probationreportingapp@gmail.com</li>
+</ul>
+
+<h2>Verification Links</h2>
+<ul>
+<li><strong>This SMS Consent Page:</strong> <a href="/sms-consent.html">https://web-production-9a90.up.railway.app/sms-consent.html</a></li>
+<li><strong>Homepage:</strong> <a href="/">https://web-production-9a90.up.railway.app</a></li>
+<li><strong>Terms of Service:</strong> <a href="/terms.html">https://web-production-9a90.up.railway.app/terms.html</a></li>
+<li><strong>Privacy Policy:</strong> <a href="/privacy.html">https://web-production-9a90.up.railway.app/privacy.html</a></li>
+</ul>
+
+<div class="highlight" style="margin-top:40px">
+<h3>Summary</h3>
+<p>ProbationCall requires <strong>explicit opt-in consent</strong> via checkbox before sending any SMS messages. All required disclosures (brand name, frequency, rates, opt-out, help, terms, privacy) are displayed at the point of consent. Users cannot receive SMS without actively checking the consent box.</p>
+</div>
+
+</div>
+</body>
+</html>
