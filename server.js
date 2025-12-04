@@ -24,7 +24,6 @@ const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_A
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
-// SendGrid setup
 if (process.env.SENDGRID_API_KEY) {
   sgMail.setApiKey(process.env.SENDGRID_API_KEY);
   console.log('[EMAIL] SendGrid configured');
@@ -38,6 +37,10 @@ const TWILIO_VOICE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
 const MESSAGING_SERVICE_SID = 'MG8adbb793f6b8c100da6770f6f0707258';
 const WHATSAPP_NUMBER = 'whatsapp:+15558965863';
 const FROM_EMAIL = 'probationreportingapp@gmail.com';
+
+// Time restrictions: 6:00 AM to 2:59 PM
+const MIN_HOUR = 6;
+const MAX_HOUR = 14; // 2 PM (2:59 PM max)
 
 const PACKAGES = {
   starter: { name: 'Starter', credits: 30, price: 999 },
@@ -135,6 +138,14 @@ app.post('/api/redeem', auth, async function(req, res) {
 });
 
 app.post('/api/schedule', auth, async function(req, res) {
+  var hour = parseInt(req.body.hour) || 6;
+  var minute = parseInt(req.body.minute) || 0;
+  
+  // Validate time: 6:00 AM to 2:59 PM
+  if (hour < MIN_HOUR || hour > MAX_HOUR || (hour === MAX_HOUR && minute > 59)) {
+    return res.status(400).json({ error: 'Schedule time must be between 6:00 AM and 2:59 PM' });
+  }
+  
   var data = {
     user_id: req.user.id,
     target_number: req.body.targetNumber,
@@ -142,9 +153,10 @@ app.post('/api/schedule', auth, async function(req, res) {
     notify_number: req.body.notifyNumber,
     notify_email: req.body.notifyEmail || null,
     notify_method: req.body.notifyMethod || 'email',
-    hour: parseInt(req.body.hour) || 6,
-    minute: parseInt(req.body.minute) || 0,
+    hour: hour,
+    minute: minute,
     timezone: req.body.timezone || 'America/Chicago',
+    retry_on_unknown: req.body.retryOnUnknown || false,
     enabled: true,
     updated_at: new Date().toISOString()
   };
@@ -178,7 +190,7 @@ function rescheduleUser(userId, sched) {
   if (!sched.enabled) return;
   
   var expr = sched.minute + ' ' + sched.hour + ' * * *';
-  console.log('[SCHED] User ' + userId + ': ' + expr + ' ' + sched.timezone);
+  console.log('[SCHED] User ' + userId + ': ' + expr + ' ' + sched.timezone + (sched.retry_on_unknown ? ' (retry enabled)' : ''));
   
   var job = cron.schedule(expr, async function() {
     console.log('[SCHED] Running for ' + userId);
@@ -195,7 +207,7 @@ function rescheduleUser(userId, sched) {
         return;
       }
       
-      await initiateCall(sched.target_number, sched.pin, sched.notify_number, sched.notify_email, sched.notify_method, userId);
+      await initiateCall(sched.target_number, sched.pin, sched.notify_number, sched.notify_email, sched.notify_method, userId, sched.retry_on_unknown, 0);
       
       if (!isDevUser) {
         await supabase.from('profiles').update({ credits: profile.credits - 1 }).eq('id', userId);
@@ -260,13 +272,14 @@ app.post('/api/call', auth, async function(req, res) {
   var notifyNumber = req.body.notifyNumber;
   var notifyEmail = req.body.notifyEmail;
   var notifyMethod = req.body.notifyMethod || 'email';
+  var retryOnUnknown = req.body.retryOnUnknown || false;
   
   if (!targetNumber || !pin) return res.status(400).json({ error: 'Missing fields' });
   if (!/^\+\d{10,15}$/.test(targetNumber)) return res.status(400).json({ error: 'Invalid phone format' });
   if (pin.length !== 6 || !/^\d+$/.test(pin)) return res.status(400).json({ error: 'PIN must be 6 digits' });
   
   try {
-    var result = await initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notifyMethod, req.user.id);
+    var result = await initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notifyMethod, req.user.id, retryOnUnknown, 0);
     if (!req.profile.isDev) {
       await supabase.from('profiles').update({ credits: req.profile.credits - 1 }).eq('id', req.user.id);
     }
@@ -276,9 +289,9 @@ app.post('/api/call', auth, async function(req, res) {
   }
 });
 
-async function initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notifyMethod, userId) {
+async function initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notifyMethod, userId, retryOnUnknown, retryCount) {
   var callId = 'call_' + Date.now();
-  log(callId, 'Starting call to ' + targetNumber, 'info');
+  log(callId, 'Starting call to ' + targetNumber + (retryCount > 0 ? ' (retry #' + retryCount + ')' : ''), 'info');
   
   pendingCalls.set(callId, { 
     targetNumber: targetNumber, 
@@ -287,6 +300,8 @@ async function initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notify
     notifyEmail: notifyEmail,
     notifyMethod: notifyMethod,
     userId: userId, 
+    retryOnUnknown: retryOnUnknown,
+    retryCount: retryCount,
     result: null
   });
   
@@ -302,6 +317,28 @@ async function initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notify
   pendingCalls.get(callId).callSid = call.sid;
   log(callId, 'Call SID: ' + call.sid, 'success');
   return { success: true, callId: callId, callSid: call.sid };
+}
+
+// Retry call after 5 minutes
+async function scheduleRetry(config) {
+  var retryCount = (config.retryCount || 0) + 1;
+  if (retryCount > 2) {
+    log('retry', 'Max retries reached for user ' + config.userId, 'warning');
+    await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, 
+      '⚠️ ProbationCall: Could not determine result after multiple attempts. Please call manually.\n\nPIN: ' + config.pin, 'retry');
+    return;
+  }
+  
+  log('retry', 'Scheduling retry #' + retryCount + ' in 5 minutes for user ' + config.userId, 'info');
+  
+  setTimeout(async function() {
+    log('retry', 'Executing retry #' + retryCount, 'info');
+    try {
+      await initiateCall(config.targetNumber, config.pin, config.notifyNumber, config.notifyEmail, config.notifyMethod, config.userId, config.retryOnUnknown, retryCount);
+    } catch (e) {
+      log('retry', 'Retry failed: ' + e.message, 'error');
+    }
+  }, 5 * 60 * 1000); // 5 minutes
 }
 
 app.post('/twiml/answer', function(req, res) {
@@ -341,22 +378,33 @@ app.post('/twiml/result', async function(req, res) {
     
     config.result = result;
     
-    var message;
-    if (result === 'MUST_TEST') {
-      message = '🚨 TEST REQUIRED! 🚨\n\nYour color was called. Report for testing today.\n\nPIN: ' + config.pin;
-    } else if (result === 'NO_TEST') {
-      message = '✅ No test today!\n\nYour color was NOT called.\n\nPIN: ' + config.pin;
+    // Handle UNKNOWN with retry
+    if (result === 'UNKNOWN' && config.retryOnUnknown && config.retryCount < 2) {
+      log(callId, 'Result unknown, will retry in 5 minutes', 'info');
+      await scheduleRetry(config);
+      // Don't notify yet, wait for retry
+      if (config.userId) {
+        await supabase.from('call_history').insert({ user_id: config.userId, call_sid: config.callSid, target_number: config.targetNumber, pin_used: config.pin, result: 'RETRY_PENDING' });
+      }
+      broadcastToClients({ type: 'result', callId: callId, result: 'RETRY_PENDING', speech: speech });
     } else {
-      message = '⚠️ Could not determine result.\n\nHeard: "' + speech.slice(0, 100) + '"\n\nPlease verify manually.\nPIN: ' + config.pin;
+      var message;
+      if (result === 'MUST_TEST') {
+        message = '🚨 TEST REQUIRED! 🚨\n\nYour color was called. Report for testing today.\n\nPIN: ' + config.pin;
+      } else if (result === 'NO_TEST') {
+        message = '✅ No test today!\n\nYour color was NOT called.\n\nPIN: ' + config.pin;
+      } else {
+        message = '⚠️ Could not determine result.\n\nHeard: "' + speech.slice(0, 100) + '"\n\nPlease verify manually.\nPIN: ' + config.pin;
+      }
+      
+      await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, message, callId);
+      
+      if (config.userId) {
+        await supabase.from('call_history').insert({ user_id: config.userId, call_sid: config.callSid, target_number: config.targetNumber, pin_used: config.pin, result: result });
+      }
+      
+      broadcastToClients({ type: 'result', callId: callId, result: result, speech: speech });
     }
-    
-    await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, message, callId);
-    
-    if (config.userId) {
-      await supabase.from('call_history').insert({ user_id: config.userId, call_sid: config.callSid, target_number: config.targetNumber, pin_used: config.pin, result: result });
-    }
-    
-    broadcastToClients({ type: 'result', callId: callId, result: result, speech: speech });
   }
   
   twiml.hangup();
@@ -369,11 +417,22 @@ app.post('/twiml/fallback', async function(req, res) {
   
   if (config && !config.result) {
     config.result = 'UNKNOWN';
-    await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, '⚠️ Call completed but no result detected.\n\nPlease verify manually.\nPIN: ' + config.pin, callId);
-    if (config.userId) {
-      await supabase.from('call_history').insert({ user_id: config.userId, call_sid: config.callSid, target_number: config.targetNumber, pin_used: config.pin, result: 'UNKNOWN' });
+    
+    // Handle UNKNOWN with retry
+    if (config.retryOnUnknown && config.retryCount < 2) {
+      log(callId, 'Fallback - Result unknown, will retry in 5 minutes', 'info');
+      await scheduleRetry(config);
+      if (config.userId) {
+        await supabase.from('call_history').insert({ user_id: config.userId, call_sid: config.callSid, target_number: config.targetNumber, pin_used: config.pin, result: 'RETRY_PENDING' });
+      }
+      broadcastToClients({ type: 'result', callId: callId, result: 'RETRY_PENDING', speech: '' });
+    } else {
+      await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, '⚠️ Call completed but no result detected.\n\nPlease verify manually.\nPIN: ' + config.pin, callId);
+      if (config.userId) {
+        await supabase.from('call_history').insert({ user_id: config.userId, call_sid: config.callSid, target_number: config.targetNumber, pin_used: config.pin, result: 'UNKNOWN' });
+      }
+      broadcastToClients({ type: 'result', callId: callId, result: 'UNKNOWN', speech: '' });
     }
-    broadcastToClients({ type: 'result', callId: callId, result: 'UNKNOWN', speech: '' });
   }
   
   var twiml = new twilio.twiml.VoiceResponse();
@@ -392,7 +451,6 @@ app.post('/webhook/status', function(req, res) {
   res.sendStatus(200);
 });
 
-// NOTIFICATION FUNCTIONS
 async function notify(phone, email, method, message, callId) {
   log(callId, 'Notifying via ' + method, 'info');
   
@@ -473,7 +531,6 @@ async function sendWhatsApp(to, message, callId) {
   }
 }
 
-// Test endpoints
 app.post('/api/test-email', auth, async function(req, res) {
   var result = await sendEmail(req.body.email, '✅ Test email from ProbationCall!\n\nIf you see this, email notifications are working.', 'test');
   res.json(result);
@@ -505,6 +562,7 @@ server.listen(PORT, function() {
   console.log('Email: ' + (process.env.SENDGRID_API_KEY ? 'SendGrid configured' : 'Not configured'));
   console.log('SMS: Messaging Service ' + MESSAGING_SERVICE_SID);
   console.log('WhatsApp: ' + WHATSAPP_NUMBER);
+  console.log('Call Hours: ' + MIN_HOUR + ':00 AM - ' + MAX_HOUR + ':59 PM');
   console.log('========================================');
   loadAllSchedules();
 });

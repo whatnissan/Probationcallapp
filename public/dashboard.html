@@ -21,7 +21,6 @@ nav{display:flex;justify-content:space-between;align-items:center;margin-bottom:
 .credits-num{font-size:2.2rem;font-weight:700;color:#000}
 .credits-label{color:rgba(0,0,0,0.6);font-size:0.85rem}
 .buy-btn{background:#000;color:#fff;border:none;padding:12px 20px;border-radius:8px;font-weight:600;cursor:pointer}
-.buy-btn:hover{background:#222}
 .schedule-banner{background:linear-gradient(135deg,#22c55e,#16a34a);border-radius:12px;padding:15px 20px;margin-bottom:20px;display:none}
 .schedule-banner.active{display:flex;justify-content:space-between;align-items:center}
 .schedule-banner h3{color:#000;font-size:1rem;margin-bottom:3px}
@@ -38,12 +37,11 @@ input,select{width:100%;padding:10px;border-radius:6px;border:1px solid rgba(255
 .btn:disabled{opacity:0.5}
 .btn-secondary{background:rgba(255,255,255,0.1);color:#fff}
 .btn-danger{background:#ef4444}
-.btn-row{display:flex;gap:10px;margin-top:10px}
-.btn-row .btn{flex:1}
 .status{padding:12px;border-radius:8px;margin-top:12px;text-align:center}
 .status.success{background:rgba(34,197,94,0.2);color:#22c55e}
 .status.error{background:rgba(239,68,68,0.2);color:#ef4444}
 .status.calling{background:rgba(0,217,255,0.2);color:#00d9ff}
+.status.retry{background:rgba(245,158,11,0.2);color:#f59e0b}
 .console{background:#000;border:1px solid #333;border-radius:8px;padding:10px;margin-top:15px;max-height:200px;overflow-y:auto;font-family:monospace;font-size:0.75rem}
 .console-entry{padding:3px 0;color:#8892b0}
 .console-entry.success{color:#22c55e}
@@ -64,6 +62,7 @@ input,select{width:100%;padding:10px;border-radius:6px;border:1px solid rgba(255
 .history-result.NO_TEST{background:rgba(34,197,94,0.2);color:#22c55e}
 .history-result.MUST_TEST{background:rgba(239,68,68,0.2);color:#ef4444}
 .history-result.UNKNOWN{background:rgba(245,158,11,0.2);color:#f59e0b}
+.history-result.RETRY_PENDING{background:rgba(0,217,255,0.2);color:#00d9ff}
 .info-box{background:rgba(0,217,255,0.1);border:1px solid rgba(0,217,255,0.3);border-radius:8px;padding:12px;margin-bottom:15px;font-size:0.85rem;color:#8892b0}
 .info-box strong{color:#00d9ff}
 .info-box.warning{background:rgba(245,158,11,0.1);border-color:rgba(245,158,11,0.3)}
@@ -97,6 +96,11 @@ small{color:#666;font-size:0.75rem}
 .consent-box label{display:flex;align-items:flex-start;gap:10px;cursor:pointer;color:#fff;font-size:0.85rem}
 .consent-box input[type="checkbox"]{width:20px;height:20px;margin-top:2px;flex-shrink:0}
 .consent-box a{color:#00d9ff}
+.checkbox-group{display:flex;align-items:center;gap:10px;padding:12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:8px;margin:12px 0;cursor:pointer}
+.checkbox-group input{width:18px;height:18px}
+.checkbox-group label{color:#fff;font-size:0.9rem;cursor:pointer;flex:1}
+.checkbox-group small{display:block;color:#8892b0;font-size:0.75rem;margin-top:3px}
+.time-note{background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:8px;padding:10px;margin:10px 0;font-size:0.8rem;color:#f59e0b}
 </style>
 </head>
 <body>
@@ -148,7 +152,11 @@ small{color:#666;font-size:0.75rem}
         <div class="form-group" id="emailGroup"><label>Your Email</label><input type="email" id="notifyEmail" placeholder="you@example.com"></div>
         <div class="form-group" id="phoneGroup" style="display:none"><label>Your Phone Number</label><input type="tel" id="notifyNumber" placeholder="+1234567890"></div>
         
-        <!-- SMS CONSENT BOX -->
+        <div class="checkbox-group" onclick="document.getElementById('retryOnUnknown').click()">
+          <input type="checkbox" id="retryOnUnknown">
+          <label for="retryOnUnknown">Auto-retry on unknown result<small>If we can't determine the result, automatically try again in 5 minutes (max 2 retries)</small></label>
+        </div>
+        
         <div class="consent-box" id="smsConsentBox" style="display:none">
           <h4>📱 SMS Notification Consent</h4>
           <p>By checking the box below, you agree to receive SMS text messages from ProbationCall about your call results. Message frequency: up to 1 message per scheduled call. Message and data rates may apply. Reply STOP to unsubscribe. Reply HELP for help.</p>
@@ -178,6 +186,7 @@ small{color:#666;font-size:0.75rem}
           <tr><td>PIN:</td><td id="schedDisplayPin"></td></tr>
           <tr><td>Notify:</td><td id="schedDisplayNotify"></td></tr>
           <tr><td>Method:</td><td id="schedDisplayMethod"></td></tr>
+          <tr><td>Auto-Retry:</td><td id="schedDisplayRetry"></td></tr>
         </table>
         <button class="btn btn-danger" style="margin-top:15px" onclick="deleteSchedule()">🗑️ Delete</button>
       </div>
@@ -197,7 +206,6 @@ small{color:#666;font-size:0.75rem}
         <div class="form-group" id="schedEmailGroup"><label>Your Email</label><input type="email" id="schedEmail" placeholder="you@example.com"></div>
         <div class="form-group" id="schedPhoneGroup" style="display:none"><label>Your Phone</label><input type="tel" id="schedNotify" placeholder="+1234567890"></div>
         
-        <!-- SMS CONSENT BOX FOR SCHEDULE -->
         <div class="consent-box" id="schedSmsConsentBox" style="display:none">
           <h4>📱 SMS Notification Consent</h4>
           <p>By checking the box below, you agree to receive SMS text messages from ProbationCall about your daily call results. Message frequency: 1 message per day. Message and data rates may apply. Reply STOP to unsubscribe at any time. Reply HELP for help.</p>
@@ -208,15 +216,31 @@ small{color:#666;font-size:0.75rem}
         </div>
         
         <div class="form-group">
-          <label>Time (24h)</label>
-          <div style="display:flex;gap:10px">
-            <input type="number" id="schedHour" min="0" max="23" value="6" style="width:70px">
+          <label>Time</label>
+          <div class="time-note">⏰ Calls can only be scheduled between <strong>6:00 AM</strong> and <strong>2:59 PM</strong></div>
+          <div style="display:flex;gap:10px;margin-top:10px">
+            <select id="schedHour" style="width:100px">
+              <option value="6">6 AM</option>
+              <option value="7">7 AM</option>
+              <option value="8">8 AM</option>
+              <option value="9">9 AM</option>
+              <option value="10">10 AM</option>
+              <option value="11">11 AM</option>
+              <option value="12">12 PM</option>
+              <option value="13">1 PM</option>
+              <option value="14">2 PM</option>
+            </select>
             <span style="padding:10px">:</span>
             <input type="number" id="schedMin" min="0" max="59" value="0" style="width:70px">
             <select id="schedTZ"><option value="America/Chicago">Central</option><option value="America/New_York">Eastern</option><option value="America/Denver">Mountain</option><option value="America/Los_Angeles">Pacific</option></select>
           </div>
-          <small>6 = 6AM, 18 = 6PM</small>
         </div>
+        
+        <div class="checkbox-group" onclick="document.getElementById('schedRetry').click()">
+          <input type="checkbox" id="schedRetry">
+          <label for="schedRetry">Auto-retry on unknown result<small>If we can't determine the result, automatically try again in 5 minutes (max 2 retries)</small></label>
+        </div>
+        
         <button type="submit" class="btn" id="schedBtn">💾 Save Schedule</button>
       </form>
     </div>
@@ -362,7 +386,7 @@ function loadUser() {
       
       if (d.schedule) {
         var t = formatTime(d.schedule.hour, d.schedule.minute);
-        document.getElementById('scheduleBannerText').textContent = 'Daily at ' + t;
+        document.getElementById('scheduleBannerText').textContent = 'Daily at ' + t + (d.schedule.retry_on_unknown ? ' (auto-retry on)' : '');
         document.getElementById('scheduleBannerTime').textContent = t;
         document.getElementById('scheduleBanner').classList.add('active');
         document.getElementById('noSchedule').classList.remove('active');
@@ -373,6 +397,7 @@ function loadUser() {
         document.getElementById('schedDisplayPin').textContent = d.schedule.pin;
         document.getElementById('schedDisplayNotify').textContent = d.schedule.notify_email || d.schedule.notify_number || '-';
         document.getElementById('schedDisplayMethod').textContent = (d.schedule.notify_method || 'email').toUpperCase();
+        document.getElementById('schedDisplayRetry').textContent = d.schedule.retry_on_unknown ? 'Yes (5 min delay)' : 'No';
         document.getElementById('scheduleDetails').style.display = 'block';
         document.getElementById('noSchedInfo').style.display = 'none';
         document.getElementById('schedBtn').textContent = '💾 Update Schedule';
@@ -382,6 +407,7 @@ function loadUser() {
         document.getElementById('schedHour').value = d.schedule.hour;
         document.getElementById('schedMin').value = d.schedule.minute;
         document.getElementById('schedTZ').value = d.schedule.timezone;
+        document.getElementById('schedRetry').checked = d.schedule.retry_on_unknown || false;
         if (d.schedule.notify_email) document.getElementById('schedEmail').value = d.schedule.notify_email;
         if (d.schedule.notify_number) document.getElementById('schedNotify').value = d.schedule.notify_number;
       } else {
@@ -396,7 +422,7 @@ function loadUser() {
         el.innerHTML = '<p style="color:#666">No calls yet</p>';
       } else {
         el.innerHTML = d.history.map(function(h) {
-          var txt = h.result === 'NO_TEST' ? '✅ No Test' : h.result === 'MUST_TEST' ? '🚨 Must Test' : '⚠️ Unknown';
+          var txt = h.result === 'NO_TEST' ? '✅ No Test' : h.result === 'MUST_TEST' ? '🚨 Must Test' : h.result === 'RETRY_PENDING' ? '🔄 Retrying...' : '⚠️ Unknown';
           return '<div class="history-item"><div>' + new Date(h.created_at).toLocaleString() + '<br><small>PIN: ' + h.pin_used + '</small></div><span class="history-result ' + h.result + '">' + txt + '</span></div>';
         }).join('');
       }
@@ -457,11 +483,21 @@ function connectWS() {
     var d = JSON.parse(e.data);
     if (d.type === 'log') addLog(d.log.message, d.log.type);
     if (d.type === 'result') {
-      var msg = d.result === 'NO_TEST' ? '✅ No test!' : d.result === 'MUST_TEST' ? '🚨 TEST REQUIRED!' : '⚠️ Unknown';
       var st = document.getElementById('callStatus');
       st.style.display = 'block';
-      st.className = 'status ' + (d.result === 'NO_TEST' ? 'success' : d.result === 'MUST_TEST' ? 'error' : 'warning');
-      st.textContent = msg;
+      if (d.result === 'NO_TEST') {
+        st.className = 'status success';
+        st.textContent = '✅ No test today!';
+      } else if (d.result === 'MUST_TEST') {
+        st.className = 'status error';
+        st.textContent = '🚨 TEST REQUIRED!';
+      } else if (d.result === 'RETRY_PENDING') {
+        st.className = 'status retry';
+        st.textContent = '🔄 Unknown result - retrying in 5 minutes...';
+      } else {
+        st.className = 'status warning';
+        st.textContent = '⚠️ Unknown result';
+      }
       loadUser();
     }
   };
@@ -500,7 +536,8 @@ document.getElementById('callForm').onsubmit = function(e) {
       pin: document.getElementById('pin').value,
       notifyNumber: document.getElementById('notifyNumber').value,
       notifyEmail: document.getElementById('notifyEmail').value,
-      notifyMethod: method
+      notifyMethod: method,
+      retryOnUnknown: document.getElementById('retryOnUnknown').checked
     })
   }).then(function(r) { return r.json(); }).then(function(d) {
     if (d.error) { st.className = 'status error'; st.textContent = d.error; }
@@ -518,6 +555,14 @@ document.getElementById('scheduleForm').onsubmit = function(e) {
     return;
   }
   
+  var hour = parseInt(document.getElementById('schedHour').value);
+  var minute = parseInt(document.getElementById('schedMin').value);
+  
+  if (hour < 6 || hour > 14) {
+    alert('Schedule time must be between 6:00 AM and 2:59 PM');
+    return;
+  }
+  
   var btn = document.getElementById('schedBtn');
   btn.disabled = true;
   
@@ -530,13 +575,15 @@ document.getElementById('scheduleForm').onsubmit = function(e) {
       notifyNumber: document.getElementById('schedNotify').value,
       notifyEmail: document.getElementById('schedEmail').value,
       notifyMethod: method,
-      hour: parseInt(document.getElementById('schedHour').value),
-      minute: parseInt(document.getElementById('schedMin').value),
-      timezone: document.getElementById('schedTZ').value
+      hour: hour,
+      minute: minute,
+      timezone: document.getElementById('schedTZ').value,
+      retryOnUnknown: document.getElementById('schedRetry').checked
     })
   }).then(function(r) { return r.json(); }).then(function(d) {
     btn.disabled = false;
     if (d.success) { alert('✅ Schedule saved!'); loadUser(); }
+    else { alert('Error: ' + (d.error || 'Unknown')); }
   });
 };
 
