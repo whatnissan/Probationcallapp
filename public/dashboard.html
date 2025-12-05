@@ -83,9 +83,9 @@ small{color:#666;font-size:0.75rem}
 .package-credits{font-size:2rem;font-weight:700;color:#fff}
 .package-price{font-size:1.1rem;color:#00d9ff;margin-top:5px}
 .package-save{font-size:0.75rem;color:#22c55e;margin-top:5px}
-.modal{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);display:none;align-items:center;justify-content:center;z-index:100}
+.modal{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.9);display:none;align-items:center;justify-content:center;z-index:100;padding:20px;overflow-y:auto}
 .modal.active{display:flex}
-.modal-content{background:#1a1a2e;border-radius:16px;padding:30px;max-width:500px;width:90%}
+.modal-content{background:#1a1a2e;border-radius:16px;padding:30px;max-width:500px;width:100%}
 .modal-close{float:right;background:none;border:none;color:#fff;font-size:1.5rem;cursor:pointer}
 .promo-input{display:flex;gap:10px;margin-top:15px}
 .promo-input input{flex:1}
@@ -101,9 +101,88 @@ small{color:#666;font-size:0.75rem}
 .checkbox-group label{color:#fff;font-size:0.9rem;cursor:pointer;flex:1}
 .checkbox-group small{display:block;color:#8892b0;font-size:0.75rem;margin-top:3px}
 .time-note{background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:8px;padding:10px;margin:10px 0;font-size:0.8rem;color:#f59e0b}
+/* Disclaimer Modal Styles */
+.disclaimer-modal{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.95);display:none;align-items:center;justify-content:center;z-index:200;padding:20px;overflow-y:auto}
+.disclaimer-modal.active{display:flex}
+.disclaimer-content{background:#1a1a2e;border-radius:16px;padding:30px;max-width:600px;width:100%;max-height:90vh;overflow-y:auto}
+.disclaimer-content h2{color:#ef4444;margin-bottom:20px;font-size:1.5rem}
+.disclaimer-content h3{color:#f59e0b;margin:20px 0 10px;font-size:1.1rem}
+.disclaimer-content p{color:#ccc;margin-bottom:15px;font-size:0.9rem;line-height:1.6}
+.disclaimer-content ul{margin-left:20px;margin-bottom:15px;color:#ccc;font-size:0.9rem}
+.disclaimer-content li{margin-bottom:8px}
+.warning-banner{background:rgba(239,68,68,0.2);border:2px solid rgba(239,68,68,0.5);border-radius:12px;padding:20px;margin-bottom:20px}
+.warning-banner p{color:#ef4444;font-weight:600;margin:0}
+.agree-section{background:rgba(255,255,255,0.05);border-radius:12px;padding:20px;margin-top:25px}
+.agree-section label{display:flex;align-items:flex-start;gap:12px;cursor:pointer;color:#fff;font-size:0.95rem;line-height:1.5;margin-bottom:15px}
+.agree-section input[type="checkbox"]{width:24px;height:24px;flex-shrink:0;margin-top:2px}
+.agree-btn{width:100%;padding:15px;border-radius:8px;border:none;background:#22c55e;color:#000;font-size:1.1rem;font-weight:700;cursor:pointer}
+.agree-btn:disabled{background:#666;cursor:not-allowed}
+.decline-btn{width:100%;padding:12px;border-radius:8px;border:1px solid rgba(255,255,255,0.2);background:transparent;color:#8892b0;font-size:0.9rem;cursor:pointer;margin-top:10px}
 </style>
 </head>
 <body>
+
+<!-- DISCLAIMER MODAL - Shows first time -->
+<div class="disclaimer-modal" id="disclaimerModal">
+<div class="disclaimer-content">
+<h2>⚠️ Important Disclaimer</h2>
+
+<div class="warning-banner">
+<p>THIS SERVICE IS NOT A SUBSTITUTE FOR PERSONALLY CALLING YOUR PROBATION HOTLINE</p>
+</div>
+
+<p>Before using ProbationCall, you must understand and agree to the following:</p>
+
+<h3>🚨 Critical Warnings</h3>
+<ul>
+<li><strong>This is a convenience tool ONLY</strong> - not a guaranteed service</li>
+<li><strong>Technology can fail</strong> - calls may not connect, speech recognition may be wrong</li>
+<li><strong>YOU are responsible</strong> for your probation compliance, not us</li>
+<li><strong>Always verify</strong> your testing status through official channels</li>
+</ul>
+
+<h3>⚖️ What Could Go Wrong</h3>
+<ul>
+<li>The automated call might not connect</li>
+<li>Speech recognition might misinterpret the message</li>
+<li>You might receive an incorrect "No Test" notification when testing IS required</li>
+<li>Notifications might be delayed or not delivered</li>
+<li>Server outages could prevent scheduled calls</li>
+</ul>
+
+<h3>🛡️ Your Responsibilities</h3>
+<ul>
+<li>Use this as a BACKUP, not your only method</li>
+<li>Call the hotline yourself if anything seems wrong</li>
+<li>Never blame this service for missed tests</li>
+<li>Understand that YOU face the legal consequences, not us</li>
+</ul>
+
+<h3>📋 Legal Agreement</h3>
+<p>By using this service, you agree that ProbationCall and its operators are <strong>NOT LIABLE</strong> for any consequences including but not limited to: arrest, incarceration, probation revocation, fines, or any other legal penalties resulting from service failures or inaccuracies.</p>
+
+<div class="agree-section">
+<label>
+<input type="checkbox" id="agreeCheck1">
+<span>I understand this service may fail or provide incorrect information, and I will NOT rely on it as my only method of checking my probation status.</span>
+</label>
+
+<label>
+<input type="checkbox" id="agreeCheck2">
+<span>I accept FULL RESPONSIBILITY for my probation compliance and will not hold ProbationCall liable for any consequences.</span>
+</label>
+
+<label>
+<input type="checkbox" id="agreeCheck3">
+<span>I have read and agree to the <a href="/terms.html" target="_blank" style="color:#00d9ff">Terms of Service</a> and <a href="/privacy.html" target="_blank" style="color:#00d9ff">Privacy Policy</a>.</span>
+</label>
+
+<button class="agree-btn" id="agreeBtn" disabled onclick="acceptDisclaimer()">I Understand and Accept All Risks</button>
+<button class="decline-btn" onclick="declineDisclaimer()">I Do Not Agree - Exit</button>
+</div>
+</div>
+</div>
+
 <div class="loading" id="loading"><div class="spinner"></div><div style="color:#8892b0">Loading...</div></div>
 <div class="container" id="app">
   <nav>
@@ -114,6 +193,11 @@ small{color:#666;font-size:0.75rem}
       <button class="logout-btn" onclick="logout()">Sign Out</button>
     </div>
   </nav>
+  
+  <!-- Persistent Warning Banner -->
+  <div style="background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.3);border-radius:8px;padding:10px 15px;margin-bottom:15px;font-size:0.8rem;color:#ef4444">
+    ⚠️ <strong>Reminder:</strong> Always verify your status by calling the hotline yourself. This service is not guaranteed.
+  </div>
   
   <div class="schedule-banner" id="scheduleBanner">
     <div><h3>✅ Auto-Call Active</h3><p id="scheduleBannerText"></p></div>
@@ -313,6 +397,33 @@ var SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 var supabase = window.supabase.createClient(SUPA_URL, SUPA_KEY);
 var token = null;
 
+// Check all disclaimer checkboxes
+document.querySelectorAll('#agreeCheck1, #agreeCheck2, #agreeCheck3').forEach(function(cb) {
+  cb.addEventListener('change', function() {
+    var allChecked = document.getElementById('agreeCheck1').checked && 
+                     document.getElementById('agreeCheck2').checked && 
+                     document.getElementById('agreeCheck3').checked;
+    document.getElementById('agreeBtn').disabled = !allChecked;
+  });
+});
+
+function acceptDisclaimer() {
+  localStorage.setItem('disclaimerAccepted', 'true');
+  localStorage.setItem('disclaimerDate', new Date().toISOString());
+  document.getElementById('disclaimerModal').classList.remove('active');
+}
+
+function declineDisclaimer() {
+  window.location.href = '/';
+}
+
+function checkDisclaimer() {
+  var accepted = localStorage.getItem('disclaimerAccepted');
+  if (!accepted) {
+    document.getElementById('disclaimerModal').classList.add('active');
+  }
+}
+
 async function init() {
   if (window.location.hash.includes('access_token')) {
     await new Promise(function(r) { setTimeout(r, 1500); });
@@ -336,6 +447,7 @@ supabase.auth.onAuthStateChange(function(event, session) {
 function showDashboard() {
   document.getElementById('loading').style.display = 'none';
   document.getElementById('app').style.display = 'block';
+  checkDisclaimer();
   loadUser();
   connectWS();
   
