@@ -40,7 +40,10 @@ const FROM_EMAIL = 'probationreportingapp@gmail.com';
 
 // Time restrictions: 6:00 AM to 2:59 PM
 const MIN_HOUR = 6;
-const MAX_HOUR = 14; // 2 PM (2:59 PM max)
+const MAX_HOUR = 14;
+
+// Stagger calls over this many minutes to prevent server overload
+const STAGGER_MINUTES = 15;
 
 const PACKAGES = {
   starter: { name: 'Starter', credits: 30, price: 999 },
@@ -66,6 +69,18 @@ function broadcastToClients(data) {
   wsClients.forEach(function(c) { 
     if (c.readyState === WebSocket.OPEN) c.send(JSON.stringify(data)); 
   });
+}
+
+// Generate consistent random delay based on user ID (same user = same delay each day)
+function getStaggerDelay(userId) {
+  var hash = 0;
+  for (var i = 0; i < userId.length; i++) {
+    hash = ((hash << 5) - hash) + userId.charCodeAt(i);
+    hash = hash & hash;
+  }
+  // Convert to 0 to STAGGER_MINUTES range (in milliseconds)
+  var delayMs = Math.abs(hash % (STAGGER_MINUTES * 60 * 1000));
+  return delayMs;
 }
 
 async function auth(req, res, next) {
@@ -104,7 +119,7 @@ async function auth(req, res, next) {
 app.get('/', function(req, res) { res.sendFile(path.join(__dirname, 'public', 'index.html')); });
 app.get('/login', function(req, res) { res.sendFile(path.join(__dirname, 'public', 'login.html')); });
 app.get('/dashboard', function(req, res) { res.sendFile(path.join(__dirname, 'public', 'dashboard.html')); });
-app.get('/health', function(req, res) { res.json({ status: 'ok' }); });
+app.get('/health', function(req, res) { res.json({ status: 'ok', scheduledJobs: scheduledJobs.size, activeConnections: wsClients.size }); });
 
 app.get('/api/user', auth, async function(req, res) {
   var historyResult = await supabase.from('call_history').select('*').eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(30);
@@ -141,7 +156,6 @@ app.post('/api/schedule', auth, async function(req, res) {
   var hour = parseInt(req.body.hour) || 6;
   var minute = parseInt(req.body.minute) || 0;
   
-  // Validate time: 6:00 AM to 2:59 PM
   if (hour < MIN_HOUR || hour > MAX_HOUR || (hour === MAX_HOUR && minute > 59)) {
     return res.status(400).json({ error: 'Schedule time must be between 6:00 AM and 2:59 PM' });
   }
@@ -190,32 +204,41 @@ function rescheduleUser(userId, sched) {
   if (!sched.enabled) return;
   
   var expr = sched.minute + ' ' + sched.hour + ' * * *';
-  console.log('[SCHED] User ' + userId + ': ' + expr + ' ' + sched.timezone + (sched.retry_on_unknown ? ' (retry enabled)' : ''));
+  var staggerDelay = getStaggerDelay(userId);
+  var staggerMinutes = Math.floor(staggerDelay / 60000);
+  var staggerSeconds = Math.floor((staggerDelay % 60000) / 1000);
+  
+  console.log('[SCHED] User ' + userId.slice(0,8) + '...: ' + expr + ' ' + sched.timezone + 
+    ' (stagger: +' + staggerMinutes + 'm ' + staggerSeconds + 's)' +
+    (sched.retry_on_unknown ? ' [retry enabled]' : ''));
   
   var job = cron.schedule(expr, async function() {
-    console.log('[SCHED] Running for ' + userId);
-    try {
-      var profileResult = await supabase.from('profiles').select('credits, email').eq('id', userId).single();
-      var profile = profileResult.data;
-      
-      if (!profile) return;
-      
-      var isDevUser = isDev(profile.email);
-      
-      if (!isDevUser && profile.credits < 1) {
-        await notify(sched.notify_number, sched.notify_email, sched.notify_method, 'ProbationCall: Scheduled call skipped - no credits!', 'sched');
-        return;
+    // Apply stagger delay to spread out calls
+    setTimeout(async function() {
+      console.log('[SCHED] Running for ' + userId.slice(0,8) + '... (after ' + staggerMinutes + 'm stagger)');
+      try {
+        var profileResult = await supabase.from('profiles').select('credits, email').eq('id', userId).single();
+        var profile = profileResult.data;
+        
+        if (!profile) return;
+        
+        var isDevUser = isDev(profile.email);
+        
+        if (!isDevUser && profile.credits < 1) {
+          await notify(sched.notify_number, sched.notify_email, sched.notify_method, 'ProbationCall: Scheduled call skipped - no credits!', 'sched');
+          return;
+        }
+        
+        await initiateCall(sched.target_number, sched.pin, sched.notify_number, sched.notify_email, sched.notify_method, userId, sched.retry_on_unknown, 0);
+        
+        if (!isDevUser) {
+          await supabase.from('profiles').update({ credits: profile.credits - 1 }).eq('id', userId);
+        }
+      } catch (e) {
+        console.error('[SCHED] Error for ' + userId.slice(0,8) + '...:', e.message);
+        await notify(sched.notify_number, sched.notify_email, sched.notify_method, 'ProbationCall: Scheduled call failed!', 'sched');
       }
-      
-      await initiateCall(sched.target_number, sched.pin, sched.notify_number, sched.notify_email, sched.notify_method, userId, sched.retry_on_unknown, 0);
-      
-      if (!isDevUser) {
-        await supabase.from('profiles').update({ credits: profile.credits - 1 }).eq('id', userId);
-      }
-    } catch (e) {
-      console.error('[SCHED] Error:', e);
-      await notify(sched.notify_number, sched.notify_email, sched.notify_method, 'ProbationCall: Scheduled call failed!', 'sched');
-    }
+    }, staggerDelay);
   }, { timezone: sched.timezone });
   
   scheduledJobs.set(userId, job);
@@ -225,7 +248,7 @@ async function loadAllSchedules() {
   var result = await supabase.from('user_schedules').select('*').eq('enabled', true);
   if (result.data && result.data.length > 0) {
     result.data.forEach(function(s) { rescheduleUser(s.user_id, s); });
-    console.log('[SCHED] Loaded ' + result.data.length + ' schedules');
+    console.log('[SCHED] Loaded ' + result.data.length + ' schedules (staggered over ' + STAGGER_MINUTES + ' minutes)');
   }
 }
 
@@ -316,20 +339,25 @@ async function initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notify
   
   pendingCalls.get(callId).callSid = call.sid;
   log(callId, 'Call SID: ' + call.sid, 'success');
+  
+  // Clean up old pending calls after 10 minutes
+  setTimeout(function() {
+    pendingCalls.delete(callId);
+  }, 10 * 60 * 1000);
+  
   return { success: true, callId: callId, callSid: call.sid };
 }
 
-// Retry call after 5 minutes
 async function scheduleRetry(config) {
   var retryCount = (config.retryCount || 0) + 1;
   if (retryCount > 2) {
-    log('retry', 'Max retries reached for user ' + config.userId, 'warning');
+    log('retry', 'Max retries reached for user ' + config.userId.slice(0,8) + '...', 'warning');
     await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, 
       '⚠️ ProbationCall: Could not determine result after multiple attempts. Please call manually.\n\nPIN: ' + config.pin, 'retry');
     return;
   }
   
-  log('retry', 'Scheduling retry #' + retryCount + ' in 5 minutes for user ' + config.userId, 'info');
+  log('retry', 'Scheduling retry #' + retryCount + ' in 5 minutes for user ' + config.userId.slice(0,8) + '...', 'info');
   
   setTimeout(async function() {
     log('retry', 'Executing retry #' + retryCount, 'info');
@@ -338,7 +366,7 @@ async function scheduleRetry(config) {
     } catch (e) {
       log('retry', 'Retry failed: ' + e.message, 'error');
     }
-  }, 5 * 60 * 1000); // 5 minutes
+  }, 5 * 60 * 1000);
 }
 
 app.post('/twiml/answer', function(req, res) {
@@ -378,11 +406,9 @@ app.post('/twiml/result', async function(req, res) {
     
     config.result = result;
     
-    // Handle UNKNOWN with retry
     if (result === 'UNKNOWN' && config.retryOnUnknown && config.retryCount < 2) {
       log(callId, 'Result unknown, will retry in 5 minutes', 'info');
       await scheduleRetry(config);
-      // Don't notify yet, wait for retry
       if (config.userId) {
         await supabase.from('call_history').insert({ user_id: config.userId, call_sid: config.callSid, target_number: config.targetNumber, pin_used: config.pin, result: 'RETRY_PENDING' });
       }
@@ -418,7 +444,6 @@ app.post('/twiml/fallback', async function(req, res) {
   if (config && !config.result) {
     config.result = 'UNKNOWN';
     
-    // Handle UNKNOWN with retry
     if (config.retryOnUnknown && config.retryCount < 2) {
       log(callId, 'Fallback - Result unknown, will retry in 5 minutes', 'info');
       await scheduleRetry(config);
@@ -563,6 +588,7 @@ server.listen(PORT, function() {
   console.log('SMS: Messaging Service ' + MESSAGING_SERVICE_SID);
   console.log('WhatsApp: ' + WHATSAPP_NUMBER);
   console.log('Call Hours: ' + MIN_HOUR + ':00 AM - ' + MAX_HOUR + ':59 PM');
+  console.log('Stagger Window: ' + STAGGER_MINUTES + ' minutes');
   console.log('========================================');
   loadAllSchedules();
 });
