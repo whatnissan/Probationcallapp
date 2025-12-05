@@ -252,6 +252,8 @@ async function loadAllSchedules() {
   }
 }
 
+app.post("/api/accept-terms", auth, async function(req, res) { try { await supabase.from("profiles").update({ terms_accepted_at: new Date().toISOString() }).eq("id", req.user.id); res.json({ success: true }); } catch (e) { res.status(500).json({ error: e.message }); } });
+
 app.post('/api/checkout', auth, async function(req, res) {
   var pkg = PACKAGES[req.body.packageId];
   if (!pkg) return res.status(400).json({ error: 'Invalid package' });

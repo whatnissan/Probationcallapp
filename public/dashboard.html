@@ -728,3 +728,56 @@ init();
 </script>
 </body>
 </html>
+
+<script>
+// --- AUTO-FIX FOR TERMS BUTTON ---
+document.addEventListener('DOMContentLoaded', () => {
+  setTimeout(() => {
+    // Attempt to find the Accept button in the disclaimer modal
+    // We look for a button inside any element with class 'disclaimer-modal' or just 'modal'
+    const modals = document.querySelectorAll('.disclaimer-modal, .modal');
+    let btn = null;
+    
+    modals.forEach(m => {
+      const b = m.querySelector('.btn');
+      if(b && b.textContent.toLowerCase().includes('accept')) btn = b;
+    });
+
+    if(btn) {
+      console.log('Fixing Accept Button...');
+      // Remove old listeners by cloning
+      const newBtn = btn.cloneNode(true);
+      btn.parentNode.replaceChild(newBtn, btn);
+      
+      newBtn.onclick = async () => {
+        newBtn.textContent = 'Saving...';
+        newBtn.disabled = true;
+        
+        const { data: { session } } = await supabase.auth.getSession();
+        if(!session) return;
+        
+        try {
+          const res = await fetch('/api/accept-terms', {
+            method: 'POST',
+            headers: { 
+              'Content-Type': 'application/json', 
+              'Authorization': 'Bearer ' + session.access_token 
+            }
+          });
+          
+          if(res.ok) {
+            // Success! Reload to clear the modal
+            window.location.reload();
+          } else {
+            throw new Error('Save failed');
+          }
+        } catch(e) {
+          alert('Error saving terms. Please try again.');
+          newBtn.textContent = 'I Accept';
+          newBtn.disabled = false;
+        }
+      };
+    }
+  }, 1000); // Wait 1s for other scripts to load
+});
+</script>
