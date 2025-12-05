@@ -37,6 +37,7 @@ input,select{width:100%;padding:10px;border-radius:6px;border:1px solid rgba(255
 .btn:disabled{opacity:0.5;cursor:not-allowed}
 .btn-secondary{background:rgba(255,255,255,0.1);color:#fff}
 .btn-danger{background:#ef4444}
+.btn-green{background:linear-gradient(135deg,#22c55e,#16a34a)}
 .status{padding:12px;border-radius:8px;margin-top:12px;text-align:center}
 .status.success{background:rgba(34,197,94,0.2);color:#22c55e}
 .status.error{background:rgba(239,68,68,0.2);color:#ef4444}
@@ -48,7 +49,7 @@ input,select{width:100%;padding:10px;border-radius:6px;border:1px solid rgba(255
 .console-entry.error{color:#ef4444}
 .console-entry.warning{color:#f59e0b}
 .tabs{display:flex;gap:8px;margin-bottom:15px;flex-wrap:wrap}
-.tab{padding:10px 16px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:#8892b0;cursor:pointer}
+.tab{padding:10px 16px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:#8892b0;cursor:pointer;font-size:0.9rem}
 .tab.active{background:#00d9ff;color:#000;border-color:#00d9ff}
 .tab-content{display:none}
 .tab-content.active{display:block}
@@ -67,6 +68,8 @@ input,select{width:100%;padding:10px;border-radius:6px;border:1px solid rgba(255
 .info-box strong{color:#00d9ff}
 .info-box.warning{background:rgba(245,158,11,0.1);border-color:rgba(245,158,11,0.3)}
 .info-box.warning strong{color:#f59e0b}
+.info-box.green{background:rgba(34,197,94,0.1);border-color:rgba(34,197,94,0.3)}
+.info-box.green strong{color:#22c55e}
 small{color:#666;font-size:0.75rem}
 .method-select{display:flex;gap:10px;margin-top:5px}
 .method-option{flex:1;padding:12px;border-radius:8px;border:2px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.03);cursor:pointer;text-align:center;transition:all 0.2s}
@@ -119,6 +122,30 @@ small{color:#666;font-size:0.75rem}
 .agree-btn:disabled{background:#666;cursor:not-allowed}
 .decline-btn{width:100%;padding:12px;border-radius:8px;border:1px solid rgba(255,255,255,0.2);background:transparent;color:#8892b0;font-size:0.9rem;cursor:pointer;margin-top:10px}
 .warning-strip{background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.3);border-radius:8px;padding:10px 15px;margin-bottom:15px;font-size:0.8rem;color:#ef4444}
+/* Affiliate Styles */
+.affiliate-balance{background:linear-gradient(135deg,#22c55e,#16a34a);border-radius:12px;padding:20px;margin-bottom:20px;text-align:center}
+.affiliate-balance .amount{font-size:2.5rem;font-weight:700;color:#000}
+.affiliate-balance .label{color:rgba(0,0,0,0.7);font-size:0.9rem}
+.referral-link-box{background:rgba(0,217,255,0.1);border:2px solid rgba(0,217,255,0.3);border-radius:12px;padding:20px;margin-bottom:20px}
+.referral-link-box h3{color:#00d9ff;margin-bottom:10px;font-size:1rem}
+.referral-link{display:flex;gap:10px;align-items:center}
+.referral-link input{flex:1;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.2);color:#fff;padding:12px;border-radius:8px;font-size:0.9rem}
+.referral-link button{padding:12px 20px;background:#00d9ff;color:#000;border:none;border-radius:8px;font-weight:600;cursor:pointer}
+.referral-link button:hover{background:#00c4e8}
+.stats-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:15px;margin-bottom:20px}
+.stat-box{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:15px;text-align:center}
+.stat-box .value{font-size:1.5rem;font-weight:700;color:#fff}
+.stat-box .label{color:#8892b0;font-size:0.8rem;margin-top:5px}
+.earnings-list{max-height:200px;overflow-y:auto}
+.earning-item{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.05)}
+.earning-item .amount{color:#22c55e;font-weight:600}
+.earning-item .date{color:#8892b0;font-size:0.8rem}
+.payout-history{margin-top:20px}
+.payout-item{display:flex;justify-content:space-between;align-items:center;padding:10px;background:rgba(255,255,255,0.03);border-radius:8px;margin-bottom:8px}
+.payout-item .amount{font-weight:600}
+.payout-item .status{padding:4px 10px;border-radius:12px;font-size:0.75rem}
+.payout-item .status.pending{background:rgba(245,158,11,0.2);color:#f59e0b}
+.payout-item .status.paid{background:rgba(34,197,94,0.2);color:#22c55e}
 </style>
 </head>
 <body>
@@ -127,13 +154,10 @@ small{color:#666;font-size:0.75rem}
 <div class="disclaimer-modal" id="disclaimerModal">
 <div class="disclaimer-content">
 <h2>⚠️ Important Disclaimer</h2>
-
 <div class="warning-banner">
 <p>THIS SERVICE IS NOT A SUBSTITUTE FOR PERSONALLY CALLING YOUR PROBATION HOTLINE</p>
 </div>
-
 <p>Before using ProbationCall, you must understand and agree to the following:</p>
-
 <h3>🚨 Critical Warnings</h3>
 <ul>
 <li><strong>This is a convenience tool ONLY</strong> - not a guaranteed service</li>
@@ -141,7 +165,6 @@ small{color:#666;font-size:0.75rem}
 <li><strong>YOU are responsible</strong> for your probation compliance, not us</li>
 <li><strong>Always verify</strong> your testing status through official channels</li>
 </ul>
-
 <h3>⚖️ What Could Go Wrong</h3>
 <ul>
 <li>The automated call might not connect</li>
@@ -150,7 +173,6 @@ small{color:#666;font-size:0.75rem}
 <li>Notifications might be delayed or not delivered</li>
 <li>Server outages could prevent scheduled calls</li>
 </ul>
-
 <h3>🛡️ Your Responsibilities</h3>
 <ul>
 <li>Use this as a BACKUP, not your only method</li>
@@ -158,26 +180,12 @@ small{color:#666;font-size:0.75rem}
 <li>Never blame this service for missed tests</li>
 <li>Understand that YOU face the legal consequences, not us</li>
 </ul>
-
 <h3>📋 Legal Agreement</h3>
 <p>By using this service, you agree that ProbationCall and its operators are <strong>NOT LIABLE</strong> for any consequences including but not limited to: arrest, incarceration, probation revocation, fines, or any other legal penalties resulting from service failures or inaccuracies.</p>
-
 <div class="agree-section">
-<label>
-<input type="checkbox" id="agreeCheck1">
-<span>I understand this service may fail or provide incorrect information, and I will NOT rely on it as my only method of checking my probation status.</span>
-</label>
-
-<label>
-<input type="checkbox" id="agreeCheck2">
-<span>I accept FULL RESPONSIBILITY for my probation compliance and will not hold ProbationCall liable for any consequences.</span>
-</label>
-
-<label>
-<input type="checkbox" id="agreeCheck3">
-<span>I have read and agree to the <a href="/terms.html" target="_blank" style="color:#00d9ff">Terms of Service</a> and <a href="/privacy.html" target="_blank" style="color:#00d9ff">Privacy Policy</a>.</span>
-</label>
-
+<label><input type="checkbox" id="agreeCheck1"><span>I understand this service may fail or provide incorrect information, and I will NOT rely on it as my only method of checking my probation status.</span></label>
+<label><input type="checkbox" id="agreeCheck2"><span>I accept FULL RESPONSIBILITY for my probation compliance and will not hold ProbationCall liable for any consequences.</span></label>
+<label><input type="checkbox" id="agreeCheck3"><span>I have read and agree to the <a href="/terms.html" target="_blank" style="color:#00d9ff">Terms of Service</a> and <a href="/privacy.html" target="_blank" style="color:#00d9ff">Privacy Policy</a>.</span></label>
 <button class="agree-btn" id="agreeBtn" disabled onclick="acceptTerms()">I Understand and Accept All Risks</button>
 <button class="decline-btn" onclick="declineTerms()">I Do Not Agree - Exit</button>
 </div>
@@ -195,9 +203,7 @@ small{color:#666;font-size:0.75rem}
     </div>
   </nav>
   
-  <div class="warning-strip">
-    ⚠️ <strong>Reminder:</strong> Always verify your status by calling the hotline yourself. This service is not guaranteed.
-  </div>
+  <div class="warning-strip">⚠️ <strong>Reminder:</strong> Always verify your status by calling the hotline yourself. This service is not guaranteed.</div>
   
   <div class="schedule-banner" id="scheduleBanner">
     <div><h3>✅ Auto-Call Active</h3><p id="scheduleBannerText"></p></div>
@@ -214,9 +220,11 @@ small{color:#666;font-size:0.75rem}
     <div class="tab active" onclick="showTab('call')">📞 Call</div>
     <div class="tab" onclick="showTab('schedule')">⏰ Schedule</div>
     <div class="tab" onclick="showTab('history')">📜 History</div>
+    <div class="tab" onclick="showTab('affiliate')">💰 Earn Cash</div>
     <div class="tab" onclick="showTab('test')">🧪 Test</div>
   </div>
   
+  <!-- CALL TAB -->
   <div id="callTab" class="tab-content active">
     <div class="card">
       <h2>Make a Call</h2>
@@ -234,18 +242,15 @@ small{color:#666;font-size:0.75rem}
         </div>
         <div class="form-group" id="emailGroup"><label>Your Email</label><input type="email" id="notifyEmail" placeholder="you@example.com"></div>
         <div class="form-group" id="phoneGroup" style="display:none"><label>Your Phone Number</label><input type="tel" id="notifyNumber" placeholder="+1234567890"></div>
-        
         <div class="checkbox-group" onclick="document.getElementById('retryOnUnknown').click()">
           <input type="checkbox" id="retryOnUnknown">
           <label for="retryOnUnknown">Auto-retry on unknown result<small>If we can't determine the result, automatically try again in 5 minutes (max 2 retries)</small></label>
         </div>
-        
         <div class="consent-box" id="smsConsentBox" style="display:none">
           <h4>📱 SMS Notification Consent</h4>
           <p>By checking the box below, you agree to receive SMS text messages from ProbationCall. Message frequency: up to 1 per call. Msg & data rates may apply. Reply STOP to unsubscribe.</p>
           <label><input type="checkbox" id="smsConsent"><span>I agree to receive SMS messages and have read the <a href="/terms.html" target="_blank">Terms</a> and <a href="/privacy.html" target="_blank">Privacy Policy</a>.</span></label>
         </div>
-        
         <button type="submit" class="btn" id="callBtn">📞 Call Now</button>
       </form>
       <div id="callStatus" class="status" style="display:none"></div>
@@ -253,6 +258,7 @@ small{color:#666;font-size:0.75rem}
     </div>
   </div>
   
+  <!-- SCHEDULE TAB -->
   <div id="scheduleTab" class="tab-content">
     <div class="card">
       <h2>Daily Schedule</h2>
@@ -284,48 +290,102 @@ small{color:#666;font-size:0.75rem}
         </div>
         <div class="form-group" id="schedEmailGroup"><label>Your Email</label><input type="email" id="schedEmail" placeholder="you@example.com"></div>
         <div class="form-group" id="schedPhoneGroup" style="display:none"><label>Your Phone</label><input type="tel" id="schedNotify" placeholder="+1234567890"></div>
-        
         <div class="consent-box" id="schedSmsConsentBox" style="display:none">
           <h4>📱 SMS Notification Consent</h4>
           <p>By checking the box below, you agree to receive daily SMS messages from ProbationCall. Msg & data rates may apply. Reply STOP to unsubscribe.</p>
           <label><input type="checkbox" id="schedSmsConsent"><span>I agree to receive SMS messages and have read the <a href="/terms.html" target="_blank">Terms</a> and <a href="/privacy.html" target="_blank">Privacy Policy</a>.</span></label>
         </div>
-        
         <div class="form-group">
           <label>Time</label>
           <div class="time-note">⏰ Calls can only be scheduled between <strong>6:00 AM</strong> and <strong>2:59 PM</strong></div>
           <div style="display:flex;gap:10px;margin-top:10px">
             <select id="schedHour" style="width:100px">
-              <option value="6">6 AM</option>
-              <option value="7">7 AM</option>
-              <option value="8">8 AM</option>
-              <option value="9">9 AM</option>
-              <option value="10">10 AM</option>
-              <option value="11">11 AM</option>
-              <option value="12">12 PM</option>
-              <option value="13">1 PM</option>
-              <option value="14">2 PM</option>
+              <option value="6">6 AM</option><option value="7">7 AM</option><option value="8">8 AM</option>
+              <option value="9">9 AM</option><option value="10">10 AM</option><option value="11">11 AM</option>
+              <option value="12">12 PM</option><option value="13">1 PM</option><option value="14">2 PM</option>
             </select>
             <span style="padding:10px">:</span>
             <input type="number" id="schedMin" min="0" max="59" value="0" style="width:70px">
             <select id="schedTZ"><option value="America/Chicago">Central</option><option value="America/New_York">Eastern</option><option value="America/Denver">Mountain</option><option value="America/Los_Angeles">Pacific</option></select>
           </div>
         </div>
-        
         <div class="checkbox-group" onclick="document.getElementById('schedRetry').click()">
           <input type="checkbox" id="schedRetry">
           <label for="schedRetry">Auto-retry on unknown result<small>If we can't determine the result, automatically try again in 5 minutes (max 2 retries)</small></label>
         </div>
-        
         <button type="submit" class="btn" id="schedBtn">💾 Save Schedule</button>
       </form>
     </div>
   </div>
   
+  <!-- HISTORY TAB -->
   <div id="historyTab" class="tab-content">
     <div class="card"><h2>Call History</h2><div id="historyList"></div></div>
   </div>
   
+  <!-- AFFILIATE TAB -->
+  <div id="affiliateTab" class="tab-content">
+    <div class="card">
+      <h2>💰 Earn Cash - Affiliate Program</h2>
+      
+      <div class="info-box green">
+        <strong>Earn 30% commission</strong> on every purchase made by people you refer! Get paid via PayPal when you reach $20.
+      </div>
+      
+      <div class="affiliate-balance">
+        <div class="label">Available Balance</div>
+        <div class="amount" id="affiliateBalance">$0.00</div>
+      </div>
+      
+      <div class="referral-link-box">
+        <h3>🔗 Your Referral Link</h3>
+        <p style="color:#8892b0;font-size:0.85rem;margin-bottom:10px">Share this link with friends. They get <strong style="color:#22c55e">5 free credits</strong> when they sign up!</p>
+        <div class="referral-link">
+          <input type="text" id="referralLink" readonly>
+          <button onclick="copyReferralLink()">📋 Copy</button>
+        </div>
+      </div>
+      
+      <div class="stats-grid">
+        <div class="stat-box">
+          <div class="value" id="totalReferred">0</div>
+          <div class="label">People Referred</div>
+        </div>
+        <div class="stat-box">
+          <div class="value" id="totalConverted">0</div>
+          <div class="label">Made Purchase</div>
+        </div>
+        <div class="stat-box">
+          <div class="value" id="totalEarned">$0.00</div>
+          <div class="label">Total Earned</div>
+        </div>
+      </div>
+      
+      <div class="card" style="background:rgba(34,197,94,0.1);border-color:rgba(34,197,94,0.3)">
+        <h3 style="color:#22c55e;margin-bottom:15px">💵 Request Payout</h3>
+        <div class="form-group">
+          <label>PayPal Email</label>
+          <input type="email" id="payoutEmail" placeholder="your@paypal.email">
+        </div>
+        <button class="btn btn-green" onclick="savePayoutEmail()" style="margin-bottom:10px">Save PayPal Email</button>
+        <button class="btn" id="requestPayoutBtn" onclick="requestPayout()">Request Payout</button>
+        <p style="color:#8892b0;font-size:0.8rem;margin-top:10px">Minimum payout: $20.00. Payouts processed within 48 hours.</p>
+        <div id="payoutStatus" class="status" style="display:none;margin-top:10px"></div>
+      </div>
+      
+      <div class="payout-history" id="payoutHistorySection" style="display:none">
+        <h3 style="color:#8892b0;margin-bottom:15px">Payout History</h3>
+        <div id="payoutHistory"></div>
+      </div>
+      
+      <div style="margin-top:20px" id="earningsSection" style="display:none">
+        <h3 style="color:#8892b0;margin-bottom:15px">Recent Earnings</h3>
+        <div class="earnings-list" id="earningsList"></div>
+      </div>
+    </div>
+  </div>
+  
+  <!-- TEST TAB -->
   <div id="testTab" class="tab-content">
     <div class="card">
       <h2>🧪 Test Notifications</h2>
@@ -344,6 +404,7 @@ small{color:#666;font-size:0.75rem}
   </div>
 </div>
 
+<!-- BUY MODAL -->
 <div class="modal" id="buyModal">
   <div class="modal-content">
     <button class="modal-close" onclick="closeBuyModal()">&times;</button>
@@ -365,13 +426,12 @@ var SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 var supabase = window.supabase.createClient(SUPA_URL, SUPA_KEY);
 var token = null;
 var termsAccepted = false;
+var affiliateData = null;
 
-// Checkbox listeners for disclaimer
+// Disclaimer checkboxes
 document.querySelectorAll('#agreeCheck1, #agreeCheck2, #agreeCheck3').forEach(function(cb) {
   cb.addEventListener('change', function() {
-    var allChecked = document.getElementById('agreeCheck1').checked && 
-                     document.getElementById('agreeCheck2').checked && 
-                     document.getElementById('agreeCheck3').checked;
+    var allChecked = document.getElementById('agreeCheck1').checked && document.getElementById('agreeCheck2').checked && document.getElementById('agreeCheck3').checked;
     document.getElementById('agreeBtn').disabled = !allChecked;
   });
 });
@@ -379,7 +439,6 @@ document.querySelectorAll('#agreeCheck1, #agreeCheck2, #agreeCheck3').forEach(fu
 function acceptTerms() {
   document.getElementById('agreeBtn').disabled = true;
   document.getElementById('agreeBtn').textContent = 'Saving...';
-  
   fetch('/api/accept-terms', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }
@@ -399,14 +458,10 @@ function acceptTerms() {
   });
 }
 
-function declineTerms() {
-  window.location.href = '/';
-}
+function declineTerms() { window.location.href = '/'; }
 
 function showDisclaimerIfNeeded() {
-  if (!termsAccepted) {
-    document.getElementById('disclaimerModal').classList.add('active');
-  }
+  if (!termsAccepted) document.getElementById('disclaimerModal').classList.add('active');
 }
 
 async function init() {
@@ -434,7 +489,6 @@ function showDashboard() {
   document.getElementById('app').style.display = 'block';
   loadUser();
   connectWS();
-  
   var params = new URLSearchParams(window.location.search);
   if (params.get('success')) {
     alert('✅ Payment successful! Credits added.');
@@ -470,7 +524,6 @@ function loadUser() {
   fetch('/api/user', { headers: { Authorization: 'Bearer ' + token } })
     .then(function(r) { return r.json(); })
     .then(function(d) {
-      // Check if terms accepted
       termsAccepted = d.profile && d.profile.terms_accepted_at ? true : false;
       showDisclaimerIfNeeded();
       
@@ -482,13 +535,52 @@ function loadUser() {
       document.getElementById('schedEmail').value = d.user.email;
       document.getElementById('testEmail').value = d.user.email;
       
+      // Load affiliate data
+      if (d.affiliate) {
+        affiliateData = d.affiliate;
+        document.getElementById('referralLink').value = 'https://probationcall.com/r/' + d.affiliate.referralCode;
+        document.getElementById('affiliateBalance').textContent = '$' + (d.affiliate.balance / 100).toFixed(2);
+        document.getElementById('totalEarned').textContent = '$' + (d.affiliate.totalEarned / 100).toFixed(2);
+        document.getElementById('totalReferred').textContent = d.affiliate.referrals ? d.affiliate.referrals.length : 0;
+        document.getElementById('totalConverted').textContent = d.affiliate.referrals ? d.affiliate.referrals.filter(function(r) { return r.status === 'converted'; }).length : 0;
+        
+        if (d.affiliate.payoutEmail) {
+          document.getElementById('payoutEmail').value = d.affiliate.payoutEmail;
+        }
+        
+        // Update payout button
+        var payoutBtn = document.getElementById('requestPayoutBtn');
+        if (d.affiliate.balance < d.affiliate.minPayout) {
+          payoutBtn.disabled = true;
+          payoutBtn.textContent = 'Need $' + ((d.affiliate.minPayout - d.affiliate.balance) / 100).toFixed(2) + ' more';
+        } else {
+          payoutBtn.disabled = false;
+          payoutBtn.textContent = 'Request Payout ($' + (d.affiliate.balance / 100).toFixed(2) + ')';
+        }
+        
+        // Show earnings
+        if (d.affiliate.earnings && d.affiliate.earnings.length > 0) {
+          document.getElementById('earningsSection').style.display = 'block';
+          document.getElementById('earningsList').innerHTML = d.affiliate.earnings.map(function(e) {
+            return '<div class="earning-item"><div><span class="amount">+$' + (e.amount_cents / 100).toFixed(2) + '</span><br><span class="date">' + new Date(e.created_at).toLocaleDateString() + '</span></div><div style="color:#8892b0;font-size:0.8rem">From $' + (e.purchase_amount_cents / 100).toFixed(2) + ' purchase</div></div>';
+          }).join('');
+        }
+        
+        // Show payout history
+        if (d.affiliate.payouts && d.affiliate.payouts.length > 0) {
+          document.getElementById('payoutHistorySection').style.display = 'block';
+          document.getElementById('payoutHistory').innerHTML = d.affiliate.payouts.map(function(p) {
+            return '<div class="payout-item"><div><strong>$' + (p.amount_cents / 100).toFixed(2) + '</strong><br><small style="color:#8892b0">' + new Date(p.created_at).toLocaleDateString() + '</small></div><span class="status ' + p.status + '">' + p.status + '</span></div>';
+          }).join('');
+        }
+      }
+      
       if (d.schedule) {
         var t = formatTime(d.schedule.hour, d.schedule.minute);
         document.getElementById('scheduleBannerText').textContent = 'Daily at ' + t + (d.schedule.retry_on_unknown ? ' (auto-retry on)' : '');
         document.getElementById('scheduleBannerTime').textContent = t;
         document.getElementById('scheduleBanner').classList.add('active');
         document.getElementById('noSchedule').classList.remove('active');
-        
         document.getElementById('schedDisplayTime').textContent = t;
         document.getElementById('schedDisplayTZ').textContent = d.schedule.timezone;
         document.getElementById('schedDisplayTarget').textContent = d.schedule.target_number;
@@ -499,7 +591,6 @@ function loadUser() {
         document.getElementById('scheduleDetails').style.display = 'block';
         document.getElementById('noSchedInfo').style.display = 'none';
         document.getElementById('schedBtn').textContent = '💾 Update Schedule';
-        
         document.getElementById('schedTarget').value = d.schedule.target_number;
         document.getElementById('schedPin').value = d.schedule.pin;
         document.getElementById('schedHour').value = d.schedule.hour;
@@ -568,6 +659,53 @@ function redeemPromo() {
     } else {
       st.className = 'status error';
       st.textContent = '❌ ' + (d.error || 'Invalid code');
+    }
+  });
+}
+
+// Affiliate functions
+function copyReferralLink() {
+  var input = document.getElementById('referralLink');
+  input.select();
+  document.execCommand('copy');
+  alert('✅ Referral link copied!');
+}
+
+function savePayoutEmail() {
+  var email = document.getElementById('payoutEmail').value;
+  if (!email) { alert('Please enter your PayPal email'); return; }
+  
+  fetch('/api/affiliate/payout-email', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({ email: email })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.success) {
+      alert('✅ PayPal email saved!');
+    } else {
+      alert('Error: ' + (d.error || 'Failed to save'));
+    }
+  });
+}
+
+function requestPayout() {
+  var st = document.getElementById('payoutStatus');
+  st.style.display = 'block';
+  st.className = 'status calling';
+  st.textContent = 'Requesting payout...';
+  
+  fetch('/api/affiliate/request-payout', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({ method: 'paypal' })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.success) {
+      st.className = 'status success';
+      st.textContent = '✅ Payout requested! You will receive $' + (d.amount / 100).toFixed(2) + ' within 48 hours.';
+      loadUser();
+    } else {
+      st.className = 'status error';
+      st.textContent = '❌ ' + (d.error || 'Failed');
     }
   });
 }
@@ -728,56 +866,3 @@ init();
 </script>
 </body>
 </html>
-
-<script>
-// --- AUTO-FIX FOR TERMS BUTTON ---
-document.addEventListener('DOMContentLoaded', () => {
-  setTimeout(() => {
-    // Attempt to find the Accept button in the disclaimer modal
-    // We look for a button inside any element with class 'disclaimer-modal' or just 'modal'
-    const modals = document.querySelectorAll('.disclaimer-modal, .modal');
-    let btn = null;
-    
-    modals.forEach(m => {
-      const b = m.querySelector('.btn');
-      if(b && b.textContent.toLowerCase().includes('accept')) btn = b;
-    });
-
-    if(btn) {
-      console.log('Fixing Accept Button...');
-      // Remove old listeners by cloning
-      const newBtn = btn.cloneNode(true);
-      btn.parentNode.replaceChild(newBtn, btn);
-      
-      newBtn.onclick = async () => {
-        newBtn.textContent = 'Saving...';
-        newBtn.disabled = true;
-        
-        const { data: { session } } = await supabase.auth.getSession();
-        if(!session) return;
-        
-        try {
-          const res = await fetch('/api/accept-terms', {
-            method: 'POST',
-            headers: { 
-              'Content-Type': 'application/json', 
-              'Authorization': 'Bearer ' + session.access_token 
-            }
-          });
-          
-          if(res.ok) {
-            // Success! Reload to clear the modal
-            window.location.reload();
-          } else {
-            throw new Error('Save failed');
-          }
-        } catch(e) {
-          alert('Error saving terms. Please try again.');
-          newBtn.textContent = 'I Accept';
-          newBtn.disabled = false;
-        }
-      };
-    }
-  }, 1000); // Wait 1s for other scripts to load
-});
-</script>
