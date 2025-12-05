@@ -3,117 +3,270 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ProbationCall - Automated Check-In Calls</title>
+<title>ProbationCall - Automated Probation Check-In Calls</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,sans-serif;background:#0a0a0f;color:#fff}
-.hero{min-height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;padding:40px 20px;background:linear-gradient(135deg,#0a0a0f,#1a1a2e)}
-.logo{font-size:4rem;margin-bottom:20px}
-h1{font-size:2.5rem;margin-bottom:15px;background:linear-gradient(135deg,#fff,#00d9ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-.subtitle{font-size:1.2rem;color:#8892b0;margin-bottom:30px;max-width:600px}
-.btn{display:inline-block;padding:15px 40px;background:linear-gradient(135deg,#00d9ff,#0099cc);color:#000;text-decoration:none;border-radius:10px;font-weight:600;font-size:1.1rem}
-.btn:hover{opacity:0.9}
-.features{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:30px;padding:80px 20px;max-width:1000px;margin:0 auto}
+body{font-family:-apple-system,sans-serif;background:#0a0a0f;color:#fff;min-height:100vh}
+nav{display:flex;justify-content:space-between;align-items:center;padding:20px 40px;max-width:1200px;margin:0 auto}
+.logo{font-size:1.5rem;font-weight:700;color:#00d9ff}
+.nav-btn{background:rgba(255,255,255,0.1);border:none;color:#fff;padding:10px 20px;border-radius:8px;cursor:pointer;font-size:0.95rem}
+.nav-btn:hover{background:rgba(255,255,255,0.2)}
+.hero{text-align:center;padding:80px 20px;max-width:800px;margin:0 auto}
+.hero h1{font-size:3rem;margin-bottom:20px;line-height:1.2}
+.hero h1 span{color:#00d9ff}
+.hero p{font-size:1.2rem;color:#8892b0;margin-bottom:40px;line-height:1.6}
+.cta-btn{background:linear-gradient(135deg,#00d9ff,#0099cc);color:#000;border:none;padding:16px 40px;border-radius:10px;font-size:1.1rem;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:10px}
+.cta-btn:hover{opacity:0.9}
+.features{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:30px;padding:60px 40px;max-width:1200px;margin:0 auto}
 .feature{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:30px;text-align:center}
 .feature-icon{font-size:2.5rem;margin-bottom:15px}
-.feature h3{margin-bottom:10px;color:#00d9ff}
-.feature p{color:#8892b0}
-.pricing{padding:80px 20px;background:#0f0f1a}
-.pricing h2{text-align:center;font-size:2rem;margin-bottom:40px}
-.pricing-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:20px;max-width:900px;margin:0 auto}
-.pricing-card{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:30px;text-align:center}
-.pricing-card.popular{border-color:#00d9ff;background:rgba(0,217,255,0.05)}
-.pricing-card h3{color:#8892b0;margin-bottom:10px}
-.pricing-card .credits{font-size:3rem;font-weight:700;color:#fff}
-.pricing-card .price{font-size:1.5rem;color:#00d9ff;margin:10px 0}
-.pricing-card .save{color:#22c55e;font-size:0.9rem}
-.sms-disclosure{background:#1a1a2e;padding:60px 20px;text-align:center}
-.sms-disclosure h2{color:#00d9ff;margin-bottom:20px}
-.sms-disclosure p{color:#8892b0;max-width:800px;margin:0 auto 15px;line-height:1.8}
-.sms-disclosure .highlight{background:rgba(0,217,255,0.1);border:1px solid rgba(0,217,255,0.3);border-radius:10px;padding:20px;margin:20px auto;max-width:600px}
-.sms-disclosure .highlight p{margin:10px 0;color:#fff}
-footer{padding:40px 20px;text-align:center;border-top:1px solid rgba(255,255,255,0.1)}
-footer a{color:#00d9ff;margin:0 15px;text-decoration:none}
-footer p{color:#666;margin-top:20px}
-.disclaimer{max-width:800px;margin:0 auto;padding:20px;color:#666;font-size:0.85rem;text-align:center}
+.feature h3{color:#00d9ff;margin-bottom:10px}
+.feature p{color:#8892b0;font-size:0.95rem;line-height:1.5}
+.how-it-works{padding:60px 40px;max-width:1000px;margin:0 auto}
+.how-it-works h2{text-align:center;color:#00d9ff;margin-bottom:40px;font-size:2rem}
+.steps{display:flex;flex-direction:column;gap:20px}
+.step{display:flex;gap:20px;align-items:flex-start;background:rgba(255,255,255,0.03);border-radius:12px;padding:25px}
+.step-num{background:#00d9ff;color:#000;width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0}
+.step-content h3{margin-bottom:8px}
+.step-content p{color:#8892b0;font-size:0.95rem}
+.pricing{padding:60px 40px;max-width:1000px;margin:0 auto;text-align:center}
+.pricing h2{color:#00d9ff;margin-bottom:40px;font-size:2rem}
+.price-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px}
+.price-card{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:30px}
+.price-card.popular{border-color:#00d9ff;background:rgba(0,217,255,0.05)}
+.price-card h3{color:#8892b0;margin-bottom:10px}
+.price-card .credits{font-size:2.5rem;font-weight:700;color:#fff}
+.price-card .price{color:#00d9ff;font-size:1.3rem;margin:10px 0}
+.price-card .save{color:#22c55e;font-size:0.85rem}
+.warning-section{background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);max-width:800px;margin:40px auto;border-radius:16px;padding:30px}
+.warning-section h3{color:#ef4444;margin-bottom:15px}
+.warning-section p{color:#ccc;font-size:0.95rem;line-height:1.6}
+.sms-terms{background:rgba(0,217,255,0.1);border:1px solid rgba(0,217,255,0.3);max-width:800px;margin:40px auto;border-radius:16px;padding:30px}
+.sms-terms h3{color:#00d9ff;margin-bottom:15px}
+.sms-terms ul{color:#8892b0;margin-left:20px;line-height:1.8}
+footer{text-align:center;padding:40px;color:#666;border-top:1px solid rgba(255,255,255,0.1);margin-top:60px}
+footer a{color:#00d9ff;text-decoration:none;margin:0 15px}
+.loading-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:#0a0a0f;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:1000}
+.loading-overlay.hidden{display:none}
+.spinner{width:40px;height:40px;border:3px solid #333;border-top-color:#00d9ff;border-radius:50%;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading-text{color:#8892b0;margin-top:15px}
 </style>
 </head>
 <body>
+
+<!-- Loading overlay for OAuth callback -->
+<div class="loading-overlay hidden" id="loadingOverlay">
+<div class="spinner"></div>
+<div class="loading-text">Signing you in...</div>
+</div>
+
+<nav>
+<div class="logo">📞 ProbationCall</div>
+<button class="nav-btn" id="navBtn" onclick="handleAuth()">Sign In</button>
+</nav>
+
 <section class="hero">
-  <div class="logo">📞</div>
-  <h1>Never Miss a Check-In</h1>
-  <p class="subtitle">ProbationCall automatically calls your reporting hotline daily and sends you the results. Know if you need to test without calling yourself.</p>
-  <a href="/login" class="btn">Get Started Free</a>
+<h1>Never Miss a <span>Probation Check-In</span> Again</h1>
+<p>Automated daily calls to your probation hotline with instant notifications. Know if you need to test before you even wake up.</p>
+<button class="cta-btn" onclick="handleAuth()">Get Started →</button>
 </section>
 
 <section class="features">
-  <div class="feature">
-    <div class="feature-icon">🤖</div>
-    <h3>Automated Calls</h3>
-    <p>We call the hotline for you every day at your scheduled time</p>
-  </div>
-  <div class="feature">
-    <div class="feature-icon">📧</div>
-    <h3>Instant Alerts</h3>
-    <p>Get notified via Email, SMS, or WhatsApp with your results</p>
-  </div>
-  <div class="feature">
-    <div class="feature-icon">⏰</div>
-    <h3>Set & Forget</h3>
-    <p>Schedule once and never worry about missing a check-in</p>
-  </div>
+<div class="feature">
+<div class="feature-icon">📞</div>
+<h3>Automated Calls</h3>
+<p>We call the hotline for you every morning and listen to the recorded message.</p>
+</div>
+<div class="feature">
+<div class="feature-icon">🔔</div>
+<h3>Instant Alerts</h3>
+<p>Get notified immediately via email if you need to report for testing.</p>
+</div>
+<div class="feature">
+<div class="feature-icon">⏰</div>
+<h3>Scheduled Daily</h3>
+<p>Set your preferred time and we handle the rest. Wake up knowing your status.</p>
+</div>
+<div class="feature">
+<div class="feature-icon">🔄</div>
+<h3>Auto-Retry</h3>
+<p>If we can't determine the result, we automatically try again in 5 minutes.</p>
+</div>
+</section>
+
+<section class="how-it-works">
+<h2>How It Works</h2>
+<div class="steps">
+<div class="step">
+<div class="step-num">1</div>
+<div class="step-content">
+<h3>Sign Up & Add Your Info</h3>
+<p>Enter your probation hotline number and 6-digit PIN code.</p>
+</div>
+</div>
+<div class="step">
+<div class="step-num">2</div>
+<div class="step-content">
+<h3>Set Your Schedule</h3>
+<p>Choose what time you want us to call (between 6 AM - 3 PM).</p>
+</div>
+</div>
+<div class="step">
+<div class="step-num">3</div>
+<div class="step-content">
+<h3>Get Notified</h3>
+<p>Receive an email with your result - no test required or report for testing.</p>
+</div>
+</div>
+</div>
 </section>
 
 <section class="pricing">
-  <h2>Simple Pricing</h2>
-  <div class="pricing-cards">
-    <div class="pricing-card">
-      <h3>Starter</h3>
-      <div class="credits">30</div>
-      <div class="price">$9.99</div>
-      <p style="color:#8892b0">~1 month of daily calls</p>
-    </div>
-    <div class="pricing-card popular">
-      <h3>Standard</h3>
-      <div class="credits">90</div>
-      <div class="price">$24.99</div>
-      <p class="save">Save 17%</p>
-      <p style="color:#8892b0">~3 months of daily calls</p>
-    </div>
-    <div class="pricing-card">
-      <h3>Value</h3>
-      <div class="credits">180</div>
-      <div class="price">$39.99</div>
-      <p class="save">Save 33%</p>
-      <p style="color:#8892b0">~6 months of daily calls</p>
-    </div>
-  </div>
-</section>
-
-<section class="sms-disclosure">
-  <h2>SMS Notification Terms</h2>
-  <p>When you sign up for ProbationCall and opt in to SMS notifications, you agree to receive text messages about your call results.</p>
-  
-  <div class="highlight">
-    <p><strong>📱 How to Opt-In:</strong> Create an account, go to Settings, enter your phone number, and select "SMS" as your notification method.</p>
-    <p><strong>📊 Message Frequency:</strong> You will receive up to 1 message per scheduled call (typically 1 per day).</p>
-    <p><strong>💰 Rates:</strong> Message and data rates may apply.</p>
-    <p><strong>🛑 Opt-Out:</strong> Reply STOP to any message to unsubscribe.</p>
-    <p><strong>❓ Help:</strong> Reply HELP for assistance or email probationreportingapp@gmail.com</p>
-  </div>
-  
-  <p>We will never share your phone number with third parties for marketing purposes. See our <a href="/privacy.html" style="color:#00d9ff">Privacy Policy</a> for details.</p>
-</section>
-
-<div class="disclaimer">
-  <p>⚠️ <strong>Legal Disclaimer:</strong> ProbationCall is a convenience tool only. Results may not always be accurate due to voice recognition limitations. Always verify important information by calling the hotline directly. ProbationCall is not affiliated with any government agency, court, or probation office. Use of this service does not guarantee compliance with your probation terms. You are solely responsible for meeting all requirements of your probation.</p>
+<h2>Simple Pricing</h2>
+<p style="color:#8892b0;margin-bottom:30px">1 credit = 1 automated call</p>
+<div class="price-cards">
+<div class="price-card">
+<h3>Starter</h3>
+<div class="credits">30</div>
+<div class="price">$9.99</div>
+<p style="color:#8892b0;font-size:0.85rem">~1 month</p>
 </div>
+<div class="price-card popular">
+<h3>Standard</h3>
+<div class="credits">90</div>
+<div class="price">$24.99</div>
+<div class="save">Save 17%</div>
+<p style="color:#8892b0;font-size:0.85rem">~3 months</p>
+</div>
+<div class="price-card">
+<h3>Value</h3>
+<div class="credits">180</div>
+<div class="price">$39.99</div>
+<div class="save">Save 33%</div>
+<p style="color:#8892b0;font-size:0.85rem">~6 months</p>
+</div>
+</div>
+</section>
+
+<section class="warning-section">
+<h3>⚠️ Important Disclaimer</h3>
+<p>ProbationCall is a convenience tool only and is NOT a substitute for personally calling your probation hotline. Technology can fail - calls may not connect, speech recognition may be inaccurate. You are solely responsible for your probation compliance. Always verify your status through official channels. By using this service, you accept all risks. <a href="/terms.html" style="color:#00d9ff">Read full Terms of Service</a></p>
+</section>
+
+<section class="sms-terms">
+<h3>📱 SMS Notification Terms</h3>
+<ul>
+<li><strong>Brand:</strong> ProbationCall</li>
+<li><strong>Message Frequency:</strong> Up to 1 message per scheduled call (typically daily)</li>
+<li><strong>Message and data rates may apply</strong></li>
+<li><strong>Reply STOP</strong> to unsubscribe at any time</li>
+<li><strong>Reply HELP</strong> for assistance</li>
+<li><strong>Contact:</strong> probationreportingapp@gmail.com</li>
+</ul>
+</section>
 
 <footer>
-  <a href="/terms.html">Terms of Service</a>
-  <a href="/privacy.html">Privacy Policy</a>
-  <a href="mailto:probationreportingapp@gmail.com">Contact</a>
-  <p>© 2025 ProbationCall. All rights reserved.</p>
+<p>© 2025 ProbationCall. All rights reserved.</p>
+<div style="margin-top:15px">
+<a href="/terms.html">Terms of Service</a>
+<a href="/privacy.html">Privacy Policy</a>
+<a href="/sms-consent.html">SMS Consent</a>
+</div>
 </footer>
+
+<script>
+var SUPA_URL = 'https://xvpuqeaowvlkcyywgaaq.supabase.co';
+var SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh2cHVxZWFvd3Zsa2N5eXdnYWFxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQyNzc1MjcsImV4cCI6MjA3OTg1MzUyN30.y90odNDSU0zZcVGMK9C39gSFDL9NJcy5E4yBkgcFc8w';
+var supabase = window.supabase.createClient(SUPA_URL, SUPA_KEY);
+
+// Handle OAuth callback if returning from Google
+async function handleOAuthCallback() {
+  if (window.location.hash && window.location.hash.includes('access_token')) {
+    // Show loading
+    document.getElementById('loadingOverlay').classList.remove('hidden');
+    
+    // Wait for session to be established
+    var maxAttempts = 20;
+    var attempts = 0;
+    
+    var checkSession = async function() {
+      attempts++;
+      var result = await supabase.auth.getSession();
+      
+      if (result.data.session) {
+        // Clear the hash and redirect
+        window.location.replace('/dashboard');
+        return;
+      }
+      
+      if (attempts < maxAttempts) {
+        setTimeout(checkSession, 250);
+      } else {
+        // Failed, hide loading and let user try again
+        document.getElementById('loadingOverlay').classList.add('hidden');
+        alert('Login failed. Please try again.');
+      }
+    };
+    
+    setTimeout(checkSession, 500);
+    return true;
+  }
+  return false;
+}
+
+// Check if already logged in
+async function checkSession() {
+  var result = await supabase.auth.getSession();
+  if (result.data.session) {
+    document.getElementById('navBtn').textContent = 'Dashboard';
+  }
+}
+
+// Handle auth button click
+async function handleAuth() {
+  // Check if already logged in
+  var result = await supabase.auth.getSession();
+  if (result.data.session) {
+    window.location.href = '/dashboard';
+    return;
+  }
+  
+  // Not logged in, start OAuth
+  document.getElementById('loadingOverlay').classList.remove('hidden');
+  
+  var authResult = await supabase.auth.signInWithOAuth({
+    provider: 'google',
+    options: {
+      redirectTo: window.location.origin + '/'
+    }
+  });
+  
+  if (authResult.error) {
+    document.getElementById('loadingOverlay').classList.add('hidden');
+    alert('Login failed: ' + authResult.error.message);
+  }
+}
+
+// Listen for auth changes
+supabase.auth.onAuthStateChange(function(event, session) {
+  if (event === 'SIGNED_IN' && session) {
+    window.location.replace('/dashboard');
+  }
+});
+
+// Initialize
+async function init() {
+  // First check for OAuth callback
+  var isCallback = await handleOAuthCallback();
+  if (!isCallback) {
+    // Not a callback, just check if logged in
+    await checkSession();
+  }
+}
+
+init();
+</script>
 </body>
 </html>
