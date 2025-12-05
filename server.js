@@ -45,6 +45,11 @@ const MAX_HOUR = 14;
 // Stagger calls over this many minutes to prevent server overload
 const STAGGER_MINUTES = 15;
 
+// Affiliate settings
+const AFFILIATE_COMMISSION_PERCENT = 30; // 30% commission
+const MIN_PAYOUT_CENTS = 2000; // $20 minimum payout
+const REFERRED_BONUS_CREDITS = 5; // Bonus credits for new users who use referral
+
 const PACKAGES = {
   starter: { name: 'Starter', credits: 30, price: 999 },
   standard: { name: 'Standard', credits: 90, price: 2499 },
@@ -58,6 +63,15 @@ const KEYWORDS = {
 
 function isDev(email) {
   return DEV_EMAILS.includes(email.toLowerCase());
+}
+
+function generateReferralCode() {
+  var chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  var code = '';
+  for (var i = 0; i < 6; i++) {
+    code += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return code;
 }
 
 function log(callId, msg, type) {
@@ -97,9 +111,24 @@ async function auth(req, res, next) {
     var profile = profileResult.data;
     
     if (!profile) {
+      var referralCode = generateReferralCode();
       var startCredits = isDev(user.email) ? 9999 : 1;
-      await supabase.from('profiles').insert({ id: user.id, email: user.email, credits: startCredits });
-      profile = { id: user.id, email: user.email, credits: startCredits };
+      await supabase.from('profiles').insert({ 
+        id: user.id, 
+        email: user.email, 
+        credits: startCredits,
+        referral_code: referralCode,
+        affiliate_balance_cents: 0,
+        affiliate_total_earned_cents: 0
+      });
+      profile = { id: user.id, email: user.email, credits: startCredits, referral_code: referralCode };
+    }
+    
+    // Generate referral code if user doesn't have one
+    if (!profile.referral_code) {
+      var newCode = generateReferralCode();
+      await supabase.from('profiles').update({ referral_code: newCode }).eq('id', user.id);
+      profile.referral_code = newCode;
     }
     
     if (isDev(user.email)) {
@@ -121,16 +150,148 @@ app.get('/login', function(req, res) { res.sendFile(path.join(__dirname, 'public
 app.get('/dashboard', function(req, res) { res.sendFile(path.join(__dirname, 'public', 'dashboard.html')); });
 app.get('/health', function(req, res) { res.json({ status: 'ok', scheduledJobs: scheduledJobs.size, activeConnections: wsClients.size }); });
 
+// Referral landing page
+app.get('/r/:code', function(req, res) {
+  res.redirect('/?ref=' + req.params.code);
+});
+
 app.get('/api/user', auth, async function(req, res) {
   var historyResult = await supabase.from('call_history').select('*').eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(30);
   var scheduleResult = await supabase.from('user_schedules').select('*').eq('user_id', req.user.id).single();
+  
+  // Get referral stats
+  var referralResult = await supabase.from('referrals').select('*').eq('referrer_id', req.user.id);
+  var referrals = referralResult.data || [];
+  
+  // Get earnings history
+  var earningsResult = await supabase.from('affiliate_earnings').select('*').eq('affiliate_id', req.user.id).order('created_at', { ascending: false }).limit(20);
+  
+  // Get payout history
+  var payoutsResult = await supabase.from('payout_requests').select('*').eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(10);
+  
   res.json({ 
     user: req.user, 
     profile: req.profile, 
     history: historyResult.data || [], 
     schedule: scheduleResult.data,
-    isDev: isDev(req.user.email)
+    isDev: isDev(req.user.email),
+    affiliate: {
+      referralCode: req.profile.referral_code,
+      balance: req.profile.affiliate_balance_cents || 0,
+      totalEarned: req.profile.affiliate_total_earned_cents || 0,
+      minPayout: MIN_PAYOUT_CENTS,
+      commissionPercent: AFFILIATE_COMMISSION_PERCENT,
+      referrals: referrals,
+      earnings: earningsResult.data || [],
+      payouts: payoutsResult.data || [],
+      payoutEmail: req.profile.payout_email
+    }
   });
+});
+
+// Apply referral code (called during signup or first visit)
+app.post('/api/apply-referral', auth, async function(req, res) {
+  var code = req.body.code;
+  if (!code) return res.status(400).json({ error: 'No code provided' });
+  
+  // Check if user already used a referral
+  if (req.profile.referred_by) {
+    return res.status(400).json({ error: 'You already used a referral code' });
+  }
+  
+  // Find referrer
+  var referrerResult = await supabase.from('profiles').select('id, email').eq('referral_code', code.toUpperCase()).single();
+  if (!referrerResult.data) {
+    return res.status(404).json({ error: 'Invalid referral code' });
+  }
+  
+  // Can't refer yourself
+  if (referrerResult.data.id === req.user.id) {
+    return res.status(400).json({ error: 'Cannot use your own referral code' });
+  }
+  
+  // Update referred user with bonus credits
+  await supabase.from('profiles').update({ 
+    referred_by: code.toUpperCase(),
+    credits: req.profile.credits + REFERRED_BONUS_CREDITS
+  }).eq('id', req.user.id);
+  
+  // Create referral record
+  await supabase.from('referrals').insert({
+    referrer_id: referrerResult.data.id,
+    referred_id: req.user.id,
+    referral_code: code.toUpperCase(),
+    status: 'signed_up'
+  });
+  
+  console.log('[AFFILIATE] User ' + req.user.email + ' signed up with code ' + code);
+  
+  res.json({ success: true, bonusCredits: REFERRED_BONUS_CREDITS });
+});
+
+// Set payout email
+app.post('/api/affiliate/payout-email', auth, async function(req, res) {
+  var email = req.body.email;
+  if (!email) return res.status(400).json({ error: 'Email required' });
+  
+  await supabase.from('profiles').update({ payout_email: email }).eq('id', req.user.id);
+  res.json({ success: true });
+});
+
+// Request payout
+app.post('/api/affiliate/request-payout', auth, async function(req, res) {
+  var balance = req.profile.affiliate_balance_cents || 0;
+  var payoutEmail = req.profile.payout_email;
+  var method = req.body.method || 'paypal';
+  
+  if (!payoutEmail) {
+    return res.status(400).json({ error: 'Please set your PayPal email first' });
+  }
+  
+  if (balance < MIN_PAYOUT_CENTS) {
+    return res.status(400).json({ error: 'Minimum payout is $' + (MIN_PAYOUT_CENTS / 100).toFixed(2) });
+  }
+  
+  // Check for pending payout
+  var pendingResult = await supabase.from('payout_requests').select('id').eq('user_id', req.user.id).eq('status', 'pending').single();
+  if (pendingResult.data) {
+    return res.status(400).json({ error: 'You already have a pending payout request' });
+  }
+  
+  // Create payout request
+  await supabase.from('payout_requests').insert({
+    user_id: req.user.id,
+    amount_cents: balance,
+    payout_email: payoutEmail,
+    payout_method: method,
+    status: 'pending'
+  });
+  
+  // Reset balance to 0 (moved to pending)
+  await supabase.from('profiles').update({ affiliate_balance_cents: 0 }).eq('id', req.user.id);
+  
+  // Notify you (the owner) about payout request
+  if (process.env.SENDGRID_API_KEY) {
+    await sgMail.send({
+      to: 'whatnissan@gmail.com',
+      from: FROM_EMAIL,
+      subject: '💰 New Payout Request - ProbationCall',
+      text: 'New payout request:\n\nUser: ' + req.user.email + '\nAmount: $' + (balance / 100).toFixed(2) + '\nPayPal: ' + payoutEmail
+    });
+  }
+  
+  console.log('[AFFILIATE] Payout requested: $' + (balance / 100).toFixed(2) + ' to ' + payoutEmail);
+  
+  res.json({ success: true, amount: balance });
+});
+
+app.post("/api/accept-terms", auth, async function(req, res) { 
+  try { 
+    await supabase.from("profiles").update({ terms_accepted_at: new Date().toISOString() }).eq("id", req.user.id); 
+    res.json({ success: true }); 
+  } catch (e) { 
+    res.status(500).json({ error: e.message }); 
+  } 
 });
 
 app.post('/api/redeem', auth, async function(req, res) {
@@ -252,8 +413,6 @@ async function loadAllSchedules() {
   }
 }
 
-app.post("/api/accept-terms", auth, async function(req, res) { try { await supabase.from("profiles").update({ terms_accepted_at: new Date().toISOString() }).eq("id", req.user.id); res.json({ success: true }); } catch (e) { res.status(500).json({ error: e.message }); } });
-
 app.post('/api/checkout', auth, async function(req, res) {
   var pkg = PACKAGES[req.body.packageId];
   if (!pkg) return res.status(400).json({ error: 'Invalid package' });
@@ -279,10 +438,59 @@ app.post('/webhook/stripe', async function(req, res) {
   
   if (event.type === 'checkout.session.completed') {
     var s = event.data.object;
-    var profileResult = await supabase.from('profiles').select('credits').eq('id', s.metadata.user_id).single();
-    var currentCredits = profileResult.data ? profileResult.data.credits : 0;
+    var profileResult = await supabase.from('profiles').select('*').eq('id', s.metadata.user_id).single();
+    var profile = profileResult.data;
+    var currentCredits = profile ? profile.credits : 0;
+    
     await supabase.from('profiles').update({ credits: currentCredits + parseInt(s.metadata.credits) }).eq('id', s.metadata.user_id);
-    await supabase.from('purchases').insert({ user_id: s.metadata.user_id, stripe_session_id: s.id, package_name: s.metadata.package_id, credits_purchased: parseInt(s.metadata.credits), amount_cents: s.amount_total });
+    
+    var purchaseResult = await supabase.from('purchases').insert({ 
+      user_id: s.metadata.user_id, 
+      stripe_session_id: s.id, 
+      package_name: s.metadata.package_id, 
+      credits_purchased: parseInt(s.metadata.credits), 
+      amount_cents: s.amount_total 
+    }).select().single();
+    
+    // AFFILIATE COMMISSION - if user was referred, give affiliate their cut
+    if (profile && profile.referred_by) {
+      var referrerResult = await supabase.from('profiles')
+        .select('id, affiliate_balance_cents, affiliate_total_earned_cents')
+        .eq('referral_code', profile.referred_by)
+        .single();
+      
+      if (referrerResult.data) {
+        // Calculate commission (30% of sale)
+        var commission = Math.floor(s.amount_total * AFFILIATE_COMMISSION_PERCENT / 100);
+        
+        // Update referrer's balance
+        var newBalance = (referrerResult.data.affiliate_balance_cents || 0) + commission;
+        var newTotal = (referrerResult.data.affiliate_total_earned_cents || 0) + commission;
+        
+        await supabase.from('profiles').update({ 
+          affiliate_balance_cents: newBalance,
+          affiliate_total_earned_cents: newTotal
+        }).eq('id', referrerResult.data.id);
+        
+        // Record the earning
+        await supabase.from('affiliate_earnings').insert({
+          affiliate_id: referrerResult.data.id,
+          referred_id: s.metadata.user_id,
+          purchase_id: purchaseResult.data ? purchaseResult.data.id : null,
+          amount_cents: commission,
+          purchase_amount_cents: s.amount_total,
+          status: 'credited'
+        });
+        
+        // Update referral status to converted
+        await supabase.from('referrals')
+          .update({ status: 'converted' })
+          .eq('referred_id', s.metadata.user_id)
+          .eq('status', 'signed_up');
+        
+        console.log('[AFFILIATE] Commission: $' + (commission / 100).toFixed(2) + ' for referrer of ' + profile.email);
+      }
+    }
   }
   res.json({ received: true });
 });
@@ -591,6 +799,8 @@ server.listen(PORT, function() {
   console.log('WhatsApp: ' + WHATSAPP_NUMBER);
   console.log('Call Hours: ' + MIN_HOUR + ':00 AM - ' + MAX_HOUR + ':59 PM');
   console.log('Stagger Window: ' + STAGGER_MINUTES + ' minutes');
+  console.log('Affiliate Commission: ' + AFFILIATE_COMMISSION_PERCENT + '%');
+  console.log('Min Payout: $' + (MIN_PAYOUT_CENTS / 100));
   console.log('========================================');
   loadAllSchedules();
 });
