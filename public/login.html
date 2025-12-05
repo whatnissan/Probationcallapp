@@ -3,63 +3,137 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sign In - ProbationCall</title>
+<title>Login - ProbationCall</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,sans-serif;background:linear-gradient(135deg,#0a0a0f,#1a1a2e);min-height:100vh;display:flex;align-items:center;justify-content:center;color:#fff}
-.card{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:40px;width:100%;max-width:400px;text-align:center}
-.logo{font-size:2.5rem;margin-bottom:15px}
-h1{font-size:1.5rem;margin-bottom:10px}
-.subtitle{color:#8892b0;margin-bottom:30px}
-.btn{display:flex;align-items:center;justify-content:center;gap:12px;width:100%;padding:14px;border-radius:10px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.05);color:#fff;font-size:1rem;cursor:pointer}
-.btn:hover{background:rgba(255,255,255,0.1)}
+body{font-family:-apple-system,sans-serif;background:#0a0a0f;color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center}
+.container{text-align:center;padding:40px}
+.logo{font-size:3rem;margin-bottom:10px}
+h1{color:#00d9ff;margin-bottom:10px}
+p{color:#8892b0;margin-bottom:30px}
+.btn{display:inline-flex;align-items:center;gap:10px;background:#fff;color:#000;border:none;padding:14px 28px;border-radius:8px;font-size:1rem;font-weight:600;cursor:pointer}
+.btn:hover{background:#eee}
 .btn img{width:20px;height:20px}
-.info{color:#555;margin-top:20px;font-size:0.85rem}
-.error{color:#ef4444;margin-top:15px}
-.back{color:#8892b0;text-decoration:none;display:block;margin-top:20px}
+.loading{display:none;color:#8892b0;margin-top:20px}
+.spinner{width:30px;height:30px;border:3px solid #333;border-top-color:#00d9ff;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 10px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.status{margin-top:20px;padding:10px;border-radius:8px;font-size:0.9rem}
+.status.error{background:rgba(239,68,68,0.2);color:#ef4444}
 </style>
 </head>
 <body>
-<div class="card">
-  <div class="logo">📞</div>
-  <h1>ProbationCall</h1>
-  <p class="subtitle">Sign in to manage your automated check-ins</p>
-  <button class="btn" onclick="signIn()">
-    <img src="https://www.google.com/favicon.ico" alt="">
-    Continue with Google
-  </button>
-  <p class="info">New users get 1 free credit!</p>
-  <p class="error" id="error"></p>
-  <a href="/" class="back">← Back to Home</a>
+<div class="container">
+<div class="logo">📞</div>
+<h1>ProbationCall</h1>
+<p>Sign in to manage your automated calls</p>
+<button class="btn" id="loginBtn" onclick="login()">
+<img src="https://www.google.com/favicon.ico" alt="Google">
+Sign in with Google
+</button>
+<div class="loading" id="loading">
+<div class="spinner"></div>
+<div>Signing you in...</div>
 </div>
+<div class="status" id="status" style="display:none"></div>
+</div>
+
 <script>
-var supabase = window.supabase.createClient(
-  'https://xvpuqeaowvlkcyywgaaq.supabase.co',
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh2cHVxZWFvd3Zsa2N5eXdnYWFxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQyNzc1MjcsImV4cCI6MjA3OTg1MzUyN30.y90odNDSU0zZcVGMK9C39gSFDL9NJcy5E4yBkgcFc8w'
-);
+var SUPA_URL = 'https://xvpuqeaowvlkcyywgaaq.supabase.co';
+var SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh2cHVxZWFvd3Zsa2N5eXdnYWFxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQyNzc1MjcsImV4cCI6MjA3OTg1MzUyN30.y90odNDSU0zZcVGMK9C39gSFDL9NJcy5E4yBkgcFc8w';
+var supabase = window.supabase.createClient(SUPA_URL, SUPA_KEY);
+
+// Check if returning from OAuth with token in URL
+async function handleOAuthCallback() {
+  // Check for hash fragment (OAuth callback)
+  if (window.location.hash && window.location.hash.includes('access_token')) {
+    document.getElementById('loginBtn').style.display = 'none';
+    document.getElementById('loading').style.display = 'block';
+    
+    // Wait for Supabase to process the hash
+    var maxAttempts = 20;
+    var attempts = 0;
+    
+    var checkSession = async function() {
+      attempts++;
+      var result = await supabase.auth.getSession();
+      
+      if (result.data.session) {
+        // Session established, redirect to dashboard
+        window.location.href = '/dashboard';
+        return;
+      }
+      
+      if (attempts < maxAttempts) {
+        setTimeout(checkSession, 250);
+      } else {
+        // Failed after all attempts
+        showError('Login failed. Please try again.');
+      }
+    };
+    
+    // Give Supabase a moment to process the hash, then check
+    setTimeout(checkSession, 500);
+    return true;
+  }
+  return false;
+}
 
 // Check if already logged in
-supabase.auth.getSession().then(function(result) {
+async function checkExistingSession() {
+  var result = await supabase.auth.getSession();
   if (result.data.session) {
+    window.location.href = '/dashboard';
+    return true;
+  }
+  return false;
+}
+
+function showError(msg) {
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('loginBtn').style.display = 'inline-flex';
+  var status = document.getElementById('status');
+  status.style.display = 'block';
+  status.className = 'status error';
+  status.textContent = msg;
+}
+
+async function login() {
+  document.getElementById('loginBtn').style.display = 'none';
+  document.getElementById('loading').style.display = 'block';
+  document.getElementById('status').style.display = 'none';
+  
+  var result = await supabase.auth.signInWithOAuth({
+    provider: 'google',
+    options: {
+      redirectTo: window.location.origin + '/login'
+    }
+  });
+  
+  if (result.error) {
+    showError(result.error.message);
+  }
+}
+
+// Listen for auth state changes
+supabase.auth.onAuthStateChange(function(event, session) {
+  console.log('Auth event:', event);
+  if (event === 'SIGNED_IN' && session) {
     window.location.href = '/dashboard';
   }
 });
 
-function signIn() {
-  supabase.auth.signInWithOAuth({
-    provider: 'google',
-    options: {
-      redirectTo: window.location.origin + '/dashboard'
-    }
-  });
+// Initialize
+async function init() {
+  // First check if this is an OAuth callback
+  var isCallback = await handleOAuthCallback();
+  if (isCallback) return;
+  
+  // Otherwise check if already logged in
+  await checkExistingSession();
 }
 
-// Check for error in URL
-var params = new URLSearchParams(window.location.search);
-if (params.get('error_description')) {
-  document.getElementById('error').textContent = params.get('error_description');
-}
+init();
 </script>
 </body>
 </html>
