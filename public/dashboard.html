@@ -471,7 +471,7 @@ function loadUser() {
     .then(function(r) { return r.json(); })
     .then(function(d) {
       // Check if terms accepted
-      termsAccepted = d.termsAccepted;
+      termsAccepted = d.profile && d.profile.terms_accepted_at ? true : false;
       showDisclaimerIfNeeded();
       
       document.getElementById('userEmail').textContent = d.user.email;
