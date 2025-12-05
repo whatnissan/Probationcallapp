@@ -34,7 +34,7 @@ nav{display:flex;justify-content:space-between;align-items:center;margin-bottom:
 label{display:block;margin-bottom:5px;color:#8892b0;font-size:0.85rem}
 input,select{width:100%;padding:10px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#fff;font-size:1rem}
 .btn{width:100%;padding:12px;border-radius:8px;border:none;background:linear-gradient(135deg,#00d9ff,#0099cc);color:#000;font-size:1rem;font-weight:600;cursor:pointer;margin-top:8px}
-.btn:disabled{opacity:0.5}
+.btn:disabled{opacity:0.5;cursor:not-allowed}
 .btn-secondary{background:rgba(255,255,255,0.1);color:#fff}
 .btn-danger{background:#ef4444}
 .status{padding:12px;border-radius:8px;margin-top:12px;text-align:center}
@@ -101,7 +101,7 @@ small{color:#666;font-size:0.75rem}
 .checkbox-group label{color:#fff;font-size:0.9rem;cursor:pointer;flex:1}
 .checkbox-group small{display:block;color:#8892b0;font-size:0.75rem;margin-top:3px}
 .time-note{background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:8px;padding:10px;margin:10px 0;font-size:0.8rem;color:#f59e0b}
-/* Disclaimer Modal Styles */
+/* Disclaimer Modal */
 .disclaimer-modal{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.95);display:none;align-items:center;justify-content:center;z-index:200;padding:20px;overflow-y:auto}
 .disclaimer-modal.active{display:flex}
 .disclaimer-content{background:#1a1a2e;border-radius:16px;padding:30px;max-width:600px;width:100%;max-height:90vh;overflow-y:auto}
@@ -118,11 +118,12 @@ small{color:#666;font-size:0.75rem}
 .agree-btn{width:100%;padding:15px;border-radius:8px;border:none;background:#22c55e;color:#000;font-size:1.1rem;font-weight:700;cursor:pointer}
 .agree-btn:disabled{background:#666;cursor:not-allowed}
 .decline-btn{width:100%;padding:12px;border-radius:8px;border:1px solid rgba(255,255,255,0.2);background:transparent;color:#8892b0;font-size:0.9rem;cursor:pointer;margin-top:10px}
+.warning-strip{background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.3);border-radius:8px;padding:10px 15px;margin-bottom:15px;font-size:0.8rem;color:#ef4444}
 </style>
 </head>
 <body>
 
-<!-- DISCLAIMER MODAL - Shows first time -->
+<!-- DISCLAIMER MODAL -->
 <div class="disclaimer-modal" id="disclaimerModal">
 <div class="disclaimer-content">
 <h2>⚠️ Important Disclaimer</h2>
@@ -177,8 +178,8 @@ small{color:#666;font-size:0.75rem}
 <span>I have read and agree to the <a href="/terms.html" target="_blank" style="color:#00d9ff">Terms of Service</a> and <a href="/privacy.html" target="_blank" style="color:#00d9ff">Privacy Policy</a>.</span>
 </label>
 
-<button class="agree-btn" id="agreeBtn" disabled onclick="acceptDisclaimer()">I Understand and Accept All Risks</button>
-<button class="decline-btn" onclick="declineDisclaimer()">I Do Not Agree - Exit</button>
+<button class="agree-btn" id="agreeBtn" disabled onclick="acceptTerms()">I Understand and Accept All Risks</button>
+<button class="decline-btn" onclick="declineTerms()">I Do Not Agree - Exit</button>
 </div>
 </div>
 </div>
@@ -194,8 +195,7 @@ small{color:#666;font-size:0.75rem}
     </div>
   </nav>
   
-  <!-- Persistent Warning Banner -->
-  <div style="background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.3);border-radius:8px;padding:10px 15px;margin-bottom:15px;font-size:0.8rem;color:#ef4444">
+  <div class="warning-strip">
     ⚠️ <strong>Reminder:</strong> Always verify your status by calling the hotline yourself. This service is not guaranteed.
   </div>
   
@@ -217,7 +217,6 @@ small{color:#666;font-size:0.75rem}
     <div class="tab" onclick="showTab('test')">🧪 Test</div>
   </div>
   
-  <!-- CALL TAB -->
   <div id="callTab" class="tab-content active">
     <div class="card">
       <h2>Make a Call</h2>
@@ -243,11 +242,8 @@ small{color:#666;font-size:0.75rem}
         
         <div class="consent-box" id="smsConsentBox" style="display:none">
           <h4>📱 SMS Notification Consent</h4>
-          <p>By checking the box below, you agree to receive SMS text messages from ProbationCall about your call results. Message frequency: up to 1 message per scheduled call. Message and data rates may apply. Reply STOP to unsubscribe. Reply HELP for help.</p>
-          <label>
-            <input type="checkbox" id="smsConsent" required>
-            <span>I agree to receive SMS messages from ProbationCall and have read the <a href="/terms.html" target="_blank">Terms of Service</a> and <a href="/privacy.html" target="_blank">Privacy Policy</a>.</span>
-          </label>
+          <p>By checking the box below, you agree to receive SMS text messages from ProbationCall. Message frequency: up to 1 per call. Msg & data rates may apply. Reply STOP to unsubscribe.</p>
+          <label><input type="checkbox" id="smsConsent"><span>I agree to receive SMS messages and have read the <a href="/terms.html" target="_blank">Terms</a> and <a href="/privacy.html" target="_blank">Privacy Policy</a>.</span></label>
         </div>
         
         <button type="submit" class="btn" id="callBtn">📞 Call Now</button>
@@ -257,7 +253,6 @@ small{color:#666;font-size:0.75rem}
     </div>
   </div>
   
-  <!-- SCHEDULE TAB -->
   <div id="scheduleTab" class="tab-content">
     <div class="card">
       <h2>Daily Schedule</h2>
@@ -292,11 +287,8 @@ small{color:#666;font-size:0.75rem}
         
         <div class="consent-box" id="schedSmsConsentBox" style="display:none">
           <h4>📱 SMS Notification Consent</h4>
-          <p>By checking the box below, you agree to receive SMS text messages from ProbationCall about your daily call results. Message frequency: 1 message per day. Message and data rates may apply. Reply STOP to unsubscribe at any time. Reply HELP for help.</p>
-          <label>
-            <input type="checkbox" id="schedSmsConsent" required>
-            <span>I agree to receive SMS messages from ProbationCall and have read the <a href="/terms.html" target="_blank">Terms of Service</a> and <a href="/privacy.html" target="_blank">Privacy Policy</a>.</span>
-          </label>
+          <p>By checking the box below, you agree to receive daily SMS messages from ProbationCall. Msg & data rates may apply. Reply STOP to unsubscribe.</p>
+          <label><input type="checkbox" id="schedSmsConsent"><span>I agree to receive SMS messages and have read the <a href="/terms.html" target="_blank">Terms</a> and <a href="/privacy.html" target="_blank">Privacy Policy</a>.</span></label>
         </div>
         
         <div class="form-group">
@@ -330,63 +322,39 @@ small{color:#666;font-size:0.75rem}
     </div>
   </div>
   
-  <!-- HISTORY TAB -->
   <div id="historyTab" class="tab-content">
     <div class="card"><h2>Call History</h2><div id="historyList"></div></div>
   </div>
   
-  <!-- TEST TAB -->
   <div id="testTab" class="tab-content">
     <div class="card">
       <h2>🧪 Test Notifications</h2>
       <div class="info-box"><strong>Email</strong> is the most reliable method.</div>
-      
       <h3 style="margin:20px 0 10px;font-size:1rem">Test Email</h3>
       <div class="form-group"><input type="email" id="testEmail" placeholder="you@example.com"></div>
       <button class="btn" onclick="testEmail()">📧 Send Test Email</button>
-      
       <h3 style="margin:20px 0 10px;font-size:1rem">Test SMS</h3>
       <div class="form-group"><input type="tel" id="testPhone" placeholder="+1234567890"></div>
       <button class="btn btn-secondary" onclick="testSMS()">💬 Send Test SMS</button>
-      
       <h3 style="margin:20px 0 10px;font-size:1rem">Test WhatsApp</h3>
       <div class="info-box warning"><strong>First:</strong> Message <strong>+1 555 896 5863</strong> from WhatsApp, then test.</div>
       <button class="btn btn-secondary" onclick="testWhatsApp()">📱 Send Test WhatsApp</button>
-      
       <div id="testStatus" class="status" style="display:none;margin-top:15px"></div>
     </div>
   </div>
 </div>
 
-<!-- BUY CREDITS MODAL -->
 <div class="modal" id="buyModal">
   <div class="modal-content">
     <button class="modal-close" onclick="closeBuyModal()">&times;</button>
     <h2 style="margin-bottom:10px">Buy Credits</h2>
     <p style="color:#8892b0;margin-bottom:5px">1 credit = 1 automated call</p>
     <div class="packages">
-      <div class="package" onclick="buyPackage('starter')">
-        <div class="package-name">Starter</div>
-        <div class="package-credits">30</div>
-        <div class="package-price">$9.99</div>
-      </div>
-      <div class="package popular" onclick="buyPackage('standard')">
-        <div class="package-name">Standard</div>
-        <div class="package-credits">90</div>
-        <div class="package-price">$24.99</div>
-        <div class="package-save">Save 17%</div>
-      </div>
-      <div class="package" onclick="buyPackage('value')">
-        <div class="package-name">Value</div>
-        <div class="package-credits">180</div>
-        <div class="package-price">$39.99</div>
-        <div class="package-save">Save 33%</div>
-      </div>
+      <div class="package" onclick="buyPackage('starter')"><div class="package-name">Starter</div><div class="package-credits">30</div><div class="package-price">$9.99</div></div>
+      <div class="package popular" onclick="buyPackage('standard')"><div class="package-name">Standard</div><div class="package-credits">90</div><div class="package-price">$24.99</div><div class="package-save">Save 17%</div></div>
+      <div class="package" onclick="buyPackage('value')"><div class="package-name">Value</div><div class="package-credits">180</div><div class="package-price">$39.99</div><div class="package-save">Save 33%</div></div>
     </div>
-    <div class="promo-input">
-      <input type="text" id="promoCode" placeholder="Promo code">
-      <button class="btn" onclick="redeemPromo()">Apply</button>
-    </div>
+    <div class="promo-input"><input type="text" id="promoCode" placeholder="Promo code"><button class="btn" onclick="redeemPromo()">Apply</button></div>
     <div id="promoStatus" class="status" style="display:none;margin-top:10px"></div>
   </div>
 </div>
@@ -396,8 +364,9 @@ var SUPA_URL = 'https://xvpuqeaowvlkcyywgaaq.supabase.co';
 var SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh2cHVxZWFvd3Zsa2N5eXdnYWFxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQyNzc1MjcsImV4cCI6MjA3OTg1MzUyN30.y90odNDSU0zZcVGMK9C39gSFDL9NJcy5E4yBkgcFc8w';
 var supabase = window.supabase.createClient(SUPA_URL, SUPA_KEY);
 var token = null;
+var termsAccepted = false;
 
-// Check all disclaimer checkboxes
+// Checkbox listeners for disclaimer
 document.querySelectorAll('#agreeCheck1, #agreeCheck2, #agreeCheck3').forEach(function(cb) {
   cb.addEventListener('change', function() {
     var allChecked = document.getElementById('agreeCheck1').checked && 
@@ -407,19 +376,35 @@ document.querySelectorAll('#agreeCheck1, #agreeCheck2, #agreeCheck3').forEach(fu
   });
 });
 
-function acceptDisclaimer() {
-  localStorage.setItem('disclaimerAccepted', 'true');
-  localStorage.setItem('disclaimerDate', new Date().toISOString());
-  document.getElementById('disclaimerModal').classList.remove('active');
+function acceptTerms() {
+  document.getElementById('agreeBtn').disabled = true;
+  document.getElementById('agreeBtn').textContent = 'Saving...';
+  
+  fetch('/api/accept-terms', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.success) {
+      termsAccepted = true;
+      document.getElementById('disclaimerModal').classList.remove('active');
+    } else {
+      alert('Failed to save. Please try again.');
+      document.getElementById('agreeBtn').disabled = false;
+      document.getElementById('agreeBtn').textContent = 'I Understand and Accept All Risks';
+    }
+  }).catch(function() {
+    alert('Failed to save. Please try again.');
+    document.getElementById('agreeBtn').disabled = false;
+    document.getElementById('agreeBtn').textContent = 'I Understand and Accept All Risks';
+  });
 }
 
-function declineDisclaimer() {
+function declineTerms() {
   window.location.href = '/';
 }
 
-function checkDisclaimer() {
-  var accepted = localStorage.getItem('disclaimerAccepted');
-  if (!accepted) {
+function showDisclaimerIfNeeded() {
+  if (!termsAccepted) {
     document.getElementById('disclaimerModal').classList.add('active');
   }
 }
@@ -447,7 +432,6 @@ supabase.auth.onAuthStateChange(function(event, session) {
 function showDashboard() {
   document.getElementById('loading').style.display = 'none';
   document.getElementById('app').style.display = 'block';
-  checkDisclaimer();
   loadUser();
   connectWS();
   
@@ -471,7 +455,6 @@ function selectMethod(method) {
   document.getElementById('emailGroup').style.display = method === 'email' ? 'block' : 'none';
   document.getElementById('phoneGroup').style.display = method !== 'email' ? 'block' : 'none';
   document.getElementById('smsConsentBox').style.display = method === 'sms' ? 'block' : 'none';
-  if (method !== 'sms') document.getElementById('smsConsent').checked = false;
 }
 
 function selectSchedMethod(method) {
@@ -481,13 +464,16 @@ function selectSchedMethod(method) {
   document.getElementById('schedEmailGroup').style.display = method === 'email' ? 'block' : 'none';
   document.getElementById('schedPhoneGroup').style.display = method !== 'email' ? 'block' : 'none';
   document.getElementById('schedSmsConsentBox').style.display = method === 'sms' ? 'block' : 'none';
-  if (method !== 'sms') document.getElementById('schedSmsConsent').checked = false;
 }
 
 function loadUser() {
   fetch('/api/user', { headers: { Authorization: 'Bearer ' + token } })
     .then(function(r) { return r.json(); })
     .then(function(d) {
+      // Check if terms accepted
+      termsAccepted = d.termsAccepted;
+      showDisclaimerIfNeeded();
+      
       document.getElementById('userEmail').textContent = d.user.email;
       document.getElementById('credits').textContent = d.isDev ? '∞' : d.profile.credits;
       if (d.isDev) document.getElementById('devBadge').style.display = 'inline';
@@ -566,11 +552,9 @@ function redeemPromo() {
   var code = document.getElementById('promoCode').value;
   var st = document.getElementById('promoStatus');
   if (!code) return;
-  
   st.style.display = 'block';
   st.className = 'status calling';
   st.textContent = 'Applying...';
-  
   fetch('/api/redeem', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
@@ -597,23 +581,15 @@ function connectWS() {
     if (d.type === 'result') {
       var st = document.getElementById('callStatus');
       st.style.display = 'block';
-      if (d.result === 'NO_TEST') {
-        st.className = 'status success';
-        st.textContent = '✅ No test today!';
-      } else if (d.result === 'MUST_TEST') {
-        st.className = 'status error';
-        st.textContent = '🚨 TEST REQUIRED!';
-      } else if (d.result === 'RETRY_PENDING') {
-        st.className = 'status retry';
-        st.textContent = '🔄 Unknown result - retrying in 5 minutes...';
-      } else {
-        st.className = 'status warning';
-        st.textContent = '⚠️ Unknown result';
-      }
+      if (d.result === 'NO_TEST') { st.className = 'status success'; st.textContent = '✅ No test today!'; }
+      else if (d.result === 'MUST_TEST') { st.className = 'status error'; st.textContent = '🚨 TEST REQUIRED!'; }
+      else if (d.result === 'RETRY_PENDING') { st.className = 'status retry'; st.textContent = '🔄 Retrying in 5 min...'; }
+      else { st.className = 'status warning'; st.textContent = '⚠️ Unknown result'; }
       loadUser();
     }
   };
-  ws.onclose = function() { setTimeout(connectWS, 3000); };
+  ws.onclose = function() { setTimeout(connectWS, 5000); };
+  ws.onerror = function() {};
 }
 
 function addLog(msg, type) {
@@ -625,12 +601,10 @@ function addLog(msg, type) {
 document.getElementById('callForm').onsubmit = function(e) {
   e.preventDefault();
   var method = document.getElementById('notifyMethod').value;
-  
   if (method === 'sms' && !document.getElementById('smsConsent').checked) {
-    alert('Please agree to receive SMS messages by checking the consent box.');
+    alert('Please agree to receive SMS messages.');
     return;
   }
-  
   var btn = document.getElementById('callBtn');
   var st = document.getElementById('callStatus');
   btn.disabled = true;
@@ -639,7 +613,6 @@ document.getElementById('callForm').onsubmit = function(e) {
   st.className = 'status calling';
   st.textContent = 'Calling...';
   document.getElementById('console').innerHTML = '';
-  
   fetch('/api/call', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
@@ -661,23 +634,18 @@ document.getElementById('callForm').onsubmit = function(e) {
 document.getElementById('scheduleForm').onsubmit = function(e) {
   e.preventDefault();
   var method = document.getElementById('schedMethod').value;
-  
   if (method === 'sms' && !document.getElementById('schedSmsConsent').checked) {
-    alert('Please agree to receive SMS messages by checking the consent box.');
+    alert('Please agree to receive SMS messages.');
     return;
   }
-  
   var hour = parseInt(document.getElementById('schedHour').value);
   var minute = parseInt(document.getElementById('schedMin').value);
-  
   if (hour < 6 || hour > 14) {
     alert('Schedule time must be between 6:00 AM and 2:59 PM');
     return;
   }
-  
   var btn = document.getElementById('schedBtn');
   btn.disabled = true;
-  
   fetch('/api/schedule', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
@@ -709,7 +677,7 @@ function testEmail() {
   var st = document.getElementById('testStatus');
   st.style.display = 'block';
   st.className = 'status calling';
-  st.textContent = 'Sending email...';
+  st.textContent = 'Sending...';
   fetch('/api/test-email', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
@@ -724,7 +692,7 @@ function testSMS() {
   var st = document.getElementById('testStatus');
   st.style.display = 'block';
   st.className = 'status calling';
-  st.textContent = 'Sending SMS...';
+  st.textContent = 'Sending...';
   fetch('/api/test-sms', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
@@ -741,7 +709,7 @@ function testWhatsApp() {
   var st = document.getElementById('testStatus');
   st.style.display = 'block';
   st.className = 'status calling';
-  st.textContent = 'Sending WhatsApp...';
+  st.textContent = 'Sending...';
   fetch('/api/test-whatsapp', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
