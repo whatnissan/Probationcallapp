@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ProbationCall - SMS Enrollment</title>
+    <style>
+        body { font-family: sans-serif; background: #0a0a0f; color: #fff; padding: 20px; display: flex; justify-content: center; }
+        .container { max-width: 500px; background: rgba(255,255,255,0.05); padding: 30px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); }
+        h1 { color: #00d9ff; }
+        .form-group { margin-bottom: 20px; }
+        label { display: block; margin-bottom: 8px; color: #8892b0; }
+        input[type="tel"] { width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #333; background: #000; color: #fff; }
+        .consent-box { background: rgba(0,217,255,0.1); border: 1px solid rgba(0,217,255,0.3); padding: 15px; border-radius: 8px; font-size: 0.85rem; line-height: 1.5; color: #ccc; }
+        .checkbox-wrapper { display: flex; gap: 10px; align-items: flex-start; margin-top: 10px; }
+        input[type="checkbox"] { margin-top: 4px; }
+        button { background: #00d9ff; color: #000; padding: 10px 20px; border: none; border-radius: 6px; font-weight: bold; width: 100%; margin-top: 20px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>ProbationCall SMS Enrollment</h1>
+        <p>Enter your phone number to enable daily check-in notifications.</p>
+        
+        <div class="form-group">
+            <label>Mobile Number</label>
+            <input type="tel" placeholder="+1 (555) 000-0000">
+        </div>
+
+        <div class="consent-box">
+            <div class="checkbox-wrapper">
+                <input type="checkbox" id="consent">
+                <label for="consent" style="color: #fff; display:inline;">
+                    I agree to receive daily automated text messages from <strong>ProbationCall</strong> regarding my probation check-in status. 
+                    <br><br>
+                    <strong>Message frequency varies (max 1/day). Message and data rates may apply.</strong>
+                    <br><br>
+                    Reply <strong>STOP</strong> to unsubscribe at any time. 
+                    Reply <strong>HELP</strong> for help.
+                    <br><br>
+                    View our <a href="/terms.html" style="color:#00d9ff">Terms of Service</a> and <a href="/privacy.html" style="color:#00d9ff">Privacy Policy</a>.
+                </label>
+            </div>
+        </div>
+
+        <button>Subscribe</button>
+    </div>
+</body>
+</html>
