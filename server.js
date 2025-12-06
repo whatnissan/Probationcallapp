@@ -804,5 +804,196 @@ server.listen(PORT, function() {
   console.log('========================================');
   loadAllSchedules();
 });
+// ========== ADMIN ROUTES ==========
+
+async function adminAuth(req, res, next) {
+  var authHeader = req.headers.authorization;
+  var tkn = authHeader ? authHeader.replace('Bearer ', '') : null;
+  if (!tkn) return res.status(401).json({ error: 'No token' });
+  try {
+    var result = await supabase.auth.getUser(tkn);
+    if (result.error || !result.data.user) return res.status(401).json({ error: 'Invalid' });
+    var pr = await supabase.from('profiles').select('*').eq('id', result.data.user.id).single();
+    if (!pr.data || !pr.data.is_admin) return res.status(403).json({ error: 'Not admin' });
+    req.user = result.data.user;
+    req.profile = pr.data;
+    next();
+  } catch(e) {
+    res.status(500).json({ error: 'Auth error' });
+  }
+}
+
+app.get('/api/admin/check', auth, async function(req, res) {
+  res.json({ isAdmin: req.profile.is_admin === true });
+});
+
+app.get('/api/admin/dashboard', adminAuth, async function(req, res) {
+  try {
+    var usersResult = await supabase.from('profiles').select('*').order('created_at', { ascending: false });
+    var users = usersResult.data || [];
+    
+    var schedulesResult = await supabase.from('user_schedules').select('*');
+    var schedules = schedulesResult.data || [];
+    
+    var callsResult = await supabase.from('call_history').select('*, profiles(email)').order('created_at', { ascending: false }).limit(500);
+    var calls = (callsResult.data || []).map(function(c) {
+      return Object.assign({}, c, { user_email: c.profiles ? c.profiles.email : null });
+    });
+    
+    var purchasesResult = await supabase.from('purchases').select('*, profiles(email)').order('created_at', { ascending: false }).limit(500);
+    var purchases = (purchasesResult.data || []).map(function(p) {
+      return Object.assign({}, p, { user_email: p.profiles ? p.profiles.email : null });
+    });
+    
+    var payoutsResult = await supabase.from('payout_requests').select('*, profiles(email)').order('created_at', { ascending: false });
+    var payouts = (payoutsResult.data || []).map(function(p) {
+      return Object.assign({}, p, { user_email: p.profiles ? p.profiles.email : null });
+    });
+    
+    var promosResult = await supabase.from('promo_codes').select('*').order('created_at', { ascending: false });
+    var promos = promosResult.data || [];
+    
+    var totalRevenue = 0;
+    for (var i = 0; i < purchases.length; i++) {
+      totalRevenue += purchases[i].amount_cents || 0;
+    }
+    
+    var pendingPayouts = 0;
+    for (var i = 0; i < payouts.length; i++) {
+      if (payouts[i].status === 'pending') pendingPayouts++;
+    }
+    
+    var affiliateOwed = 0;
+    for (var i = 0; i < users.length; i++) {
+      affiliateOwed += users[i].affiliate_balance_cents || 0;
+    }
+    
+    var termsAgreed = 0;
+    for (var i = 0; i < users.length; i++) {
+      if (users[i].terms_accepted_at) termsAgreed++;
+    }
+    
+    var disabledUsers = 0;
+    for (var i = 0; i < users.length; i++) {
+      if (users[i].is_disabled) disabledUsers++;
+    }
+    
+    var activeSchedules = 0;
+    for (var i = 0; i < schedules.length; i++) {
+      if (schedules[i].enabled) activeSchedules++;
+    }
+    
+    res.json({
+      stats: {
+        totalUsers: users.length,
+        activeSchedules: activeSchedules,
+        totalCalls: calls.length,
+        totalRevenue: totalRevenue,
+        pendingPayouts: pendingPayouts,
+        affiliateOwed: affiliateOwed,
+        termsAgreed: termsAgreed,
+        disabledUsers: disabledUsers
+      },
+      users: users,
+      schedules: schedules,
+      calls: calls,
+      purchases: purchases,
+      payouts: payouts,
+      promos: promos
+    });
+  } catch(e) {
+    console.error('Admin error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/admin/user/:id/credits', adminAuth, async function(req, res) {
+  try {
+    var userId = req.params.id;
+    var action = req.body.action;
+    var amount = parseInt(req.body.amount) || 0;
+    var ur = await supabase.from('profiles').select('credits').eq('id', userId).single();
+    var curr = ur.data ? ur.data.credits : 0;
+    var newC;
+    if (action === 'add') {
+      newC = curr + amount;
+    } else if (action === 'remove') {
+      newC = Math.max(0, curr - amount);
+    } else if (action === 'set') {
+      newC = amount;
+    } else {
+      newC = curr;
+    }
+    await supabase.from('profiles').update({ credits: newC }).eq('id', userId);
+    console.log('[ADMIN] Credits updated: ' + userId.slice(0,8) + ' ' + curr + ' -> ' + newC);
+    res.json({ success: true });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/admin/user/:id/admin', adminAuth, async function(req, res) {
+  try {
+    await supabase.from('profiles').update({ is_admin: req.body.isAdmin }).eq('id', req.params.id);
+    console.log('[ADMIN] Admin status changed: ' + req.params.id.slice(0,8));
+    res.json({ success: true });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/admin/user/:id/disable', adminAuth, async function(req, res) {
+  try {
+    await supabase.from('profiles').update({ is_disabled: req.body.disabled }).eq('id', req.params.id);
+    console.log('[ADMIN] Disabled status changed: ' + req.params.id.slice(0,8));
+    res.json({ success: true });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/admin/payout/:id', adminAuth, async function(req, res) {
+  try {
+    await supabase.from('payout_requests').update({
+      status: req.body.status,
+      processed_at: new Date().toISOString()
+    }).eq('id', req.params.id);
+    console.log('[ADMIN] Payout processed: ' + req.params.id.slice(0,8) + ' -> ' + req.body.status);
+    res.json({ success: true });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/admin/promo', adminAuth, async function(req, res) {
+  try {
+    await supabase.from('promo_codes').insert({
+      code: req.body.code.toUpperCase(),
+      credits: req.body.credits,
+      max_uses: req.body.maxUses,
+      times_used: 0
+    });
+    console.log('[ADMIN] Promo created: ' + req.body.code);
+    res.json({ success: true });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/admin/promo/:id', adminAuth, async function(req, res) {
+  try {
+    await supabase.from('promo_codes').delete().eq('id', req.params.id);
+    console.log('[ADMIN] Promo deleted: ' + req.params.id.slice(0,8));
+    res.json({ success: true });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/admin', function(req, res) {
+  res.sendFile(path.join(__dirname, 'public', 'admin.html'));
+});
+
+// ========== END ADMIN ROUTES ==========
 
 module.exports = app;
