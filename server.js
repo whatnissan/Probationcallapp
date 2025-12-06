@@ -818,7 +818,7 @@ async function adminAuth(req, res, next) {
     req.user = result.data.user;
     req.profile = pr.data;
     // Track last login
-    supabase.from("profiles").update({ last_login: new Date().toISOString() }).eq("id", user.id);
+    supabase.from("profiles").update({ last_login: new Date().toISOString() }).eq("id", result.data.user.id);
     next();
   } catch(e) {
     res.status(500).json({ error: 'Auth error' });
