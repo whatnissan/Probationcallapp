@@ -863,6 +863,7 @@ function logout() {
 }
 
 init();
+fetch('/api/admin/check',{headers:{Authorization:'Bearer '+token}}).then(function(r){return r.json()}).then(function(d){if(d.isAdmin){var el=document.getElementById('adminLink');if(el)el.style.display='inline-block';}}).catch(function(){});
 </script>
 </body>
 </html>
