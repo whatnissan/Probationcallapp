@@ -527,7 +527,7 @@ function loadUser() {
       termsAccepted = d.profile && d.profile.terms_accepted_at ? true : false;
       showDisclaimerIfNeeded();
       
-      document.getElementById('userEmail').textContent = d.user.email;
+      document.getElementById('userEmail').textContent = d.user.email; fetch('/api/admin/check',{headers:{Authorization:'Bearer '+token}}).then(function(r){return r.json()}).then(function(d){if(d.isAdmin){var el=document.getElementById('adminLink');if(el)el.style.display='inline-block';}}).catch(function(){});
       document.getElementById('credits').textContent = d.isDev ? '∞' : d.profile.credits;
       if (d.isDev) document.getElementById('devBadge').style.display = 'inline';
       
