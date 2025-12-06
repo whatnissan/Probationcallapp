@@ -817,6 +817,8 @@ async function adminAuth(req, res, next) {
     if (!pr.data || !pr.data.is_admin) return res.status(403).json({ error: 'Not admin' });
     req.user = result.data.user;
     req.profile = pr.data;
+    // Track last login
+    supabase.from("profiles").update({ last_login: new Date().toISOString() }).eq("id", user.id);
     next();
   } catch(e) {
     res.status(500).json({ error: 'Auth error' });
