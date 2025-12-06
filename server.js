@@ -138,6 +138,8 @@ async function auth(req, res, next) {
     
     req.user = user;
     req.profile = profile;
+    // Track last login
+    supabase.from('profiles').update({ last_login: new Date().toISOString() }).eq('id', user.id);
     next();
   } catch(e) {
     console.error('Auth error:', e);
