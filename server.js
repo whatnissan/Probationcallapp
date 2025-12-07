@@ -836,6 +836,20 @@ app.get('/api/admin/dashboard', adminAuth, async function(req, res) {
     var usersResult = await supabase.from('profiles').select('*').order('created_at', { ascending: false });
     var users = usersResult.data || [];
     
+    // Get auth users data for created_at and last_sign_in_at
+    var authUsersResult = await supabase.auth.admin.listUsers();
+    var authUsers = authUsersResult.data ? authUsersResult.data.users : [];
+    
+    // Merge auth data into profiles
+    users = users.map(function(u) {
+      var authUser = authUsers.find(function(a) { return a.id === u.id; });
+      if (authUser) {
+        u.auth_created_at = authUser.created_at;
+        u.last_sign_in_at = authUser.last_sign_in_at;
+      }
+      return u;
+    });
+    
     var schedulesResult = await supabase.from('user_schedules').select('*');
     var schedules = schedulesResult.data || [];
     
