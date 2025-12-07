@@ -994,6 +994,30 @@ app.delete('/api/admin/promo/:id', adminAuth, async function(req, res) {
   }
 });
 
+
+app.delete('/api/admin/user/:id', adminAuth, async function(req, res) {
+  try {
+    var userId = req.params.id;
+    // Delete from user_schedules first
+    await supabase.from('user_schedules').delete().eq('user_id', userId);
+    // Delete from call_history
+    await supabase.from('call_history').delete().eq('user_id', userId);
+    // Delete from purchases
+    await supabase.from('purchases').delete().eq('user_id', userId);
+    // Delete from payout_requests
+    await supabase.from('payout_requests').delete().eq('user_id', userId);
+    // Delete from profiles
+    await supabase.from('profiles').delete().eq('id', userId);
+    // Delete from auth (requires service role)
+    await supabase.auth.admin.deleteUser(userId);
+    console.log('[ADMIN] Deleted user: ' + userId.slice(0,8));
+    res.json({ success: true });
+  } catch(e) {
+    console.error('Delete user error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/admin', function(req, res) {
   res.sendFile(path.join(__dirname, 'public', 'admin.html'));
 });
