@@ -518,14 +518,14 @@ app.post('/api/call', auth, async function(req, res) {
     return res.status(402).json({ error: 'No credits' });
   }
   
-  var targetNumber = req.body.targetNumber;
+  var county = req.body.county || "montgomery"; var targetNumber = getCountyConfig(county).number;
   var pin = req.body.pin;
   var notifyNumber = req.body.notifyNumber;
   var notifyEmail = req.body.notifyEmail;
   var notifyMethod = req.body.notifyMethod || 'email';
   var retryOnUnknown = req.body.retryOnUnknown || false;
   
-  if (!targetNumber || !pin) return res.status(400).json({ error: 'Missing fields' });
+  if (!pin) return res.status(400).json({ error: 'Missing fields' });
   if (!/^\+\d{10,15}$/.test(targetNumber)) return res.status(400).json({ error: 'Invalid phone format' });
   if (pin.length !== 6 || !/^\d+$/.test(pin)) return res.status(400).json({ error: 'PIN must be 6 digits' });
   
