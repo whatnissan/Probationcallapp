@@ -229,7 +229,7 @@ small{color:#666;font-size:0.75rem}
     <div class="card">
       <h2>Make a Call</h2>
       <form id="callForm">
-        <div class="form-group"><label>Hotline</label><input type="tel" id="targetNumber" value="+19362834848" required></div>
+        <div class="form-group"><label>County</label><select id="county"><option value="montgomery">Montgomery County</option></select></div>
         <div class="form-group"><label>6-Digit PIN</label><input type="text" id="pin" maxlength="6" placeholder="123456" required></div>
         <div class="form-group">
           <label>How should we notify you?</label>
@@ -267,7 +267,7 @@ small{color:#666;font-size:0.75rem}
         <table>
           <tr><td>Time:</td><td id="schedDisplayTime"></td></tr>
           <tr><td>Timezone:</td><td id="schedDisplayTZ"></td></tr>
-          <tr><td>Hotline:</td><td id="schedDisplayTarget"></td></tr>
+          <tr><td>County:</td><td id="schedDisplayCounty">Montgomery County</td></tr>
           <tr><td>PIN:</td><td id="schedDisplayPin"></td></tr>
           <tr><td>Notify:</td><td id="schedDisplayNotify"></td></tr>
           <tr><td>Method:</td><td id="schedDisplayMethod"></td></tr>
@@ -277,7 +277,7 @@ small{color:#666;font-size:0.75rem}
       </div>
       <div class="info-box" id="noSchedInfo"><strong>No schedule.</strong> Set up auto-calls below.</div>
       <form id="scheduleForm">
-        <div class="form-group"><label>Hotline</label><input type="tel" id="schedTarget" value="+19362834848" required></div>
+        <div class="form-group"><label>County</label><select id="schedCounty"><option value="montgomery">Montgomery County</option></select></div>
         <div class="form-group"><label>6-Digit PIN</label><input type="text" id="schedPin" maxlength="6" placeholder="123456" required></div>
         <div class="form-group">
           <label>Notification Method</label>
