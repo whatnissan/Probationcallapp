@@ -583,7 +583,7 @@ function loadUser() {
         document.getElementById('noSchedule').classList.remove('active');
         document.getElementById('schedDisplayTime').textContent = t;
         document.getElementById('schedDisplayTZ').textContent = d.schedule.timezone;
-        document.getElementById('schedDisplayTarget').textContent = d.schedule.target_number;
+        document.getElementById('schedDisplayCounty').textContent = d.schedule.target_number;
         document.getElementById('schedDisplayPin').textContent = d.schedule.pin;
         document.getElementById('schedDisplayNotify').textContent = d.schedule.notify_email || d.schedule.notify_number || '-';
         document.getElementById('schedDisplayMethod').textContent = (d.schedule.notify_method || 'email').toUpperCase();
@@ -591,7 +591,7 @@ function loadUser() {
         document.getElementById('scheduleDetails').style.display = 'block';
         document.getElementById('noSchedInfo').style.display = 'none';
         document.getElementById('schedBtn').textContent = '💾 Update Schedule';
-        document.getElementById('schedTarget').value = d.schedule.target_number;
+        document.getElementById('schedCounty').value = d.schedule.target_number;
         document.getElementById('schedPin').value = d.schedule.pin;
         document.getElementById('schedHour').value = d.schedule.hour;
         document.getElementById('schedMin').value = d.schedule.minute;
@@ -788,7 +788,7 @@ document.getElementById('scheduleForm').onsubmit = function(e) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
     body: JSON.stringify({
-      county: document.getElementById('schedTarget').value,
+      county: document.getElementById('schedCounty').value,
       pin: document.getElementById('schedPin').value,
       notifyNumber: document.getElementById('schedNotify').value,
       notifyEmail: document.getElementById('schedEmail').value,
