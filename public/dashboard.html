@@ -755,7 +755,7 @@ document.getElementById('callForm').onsubmit = function(e) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
     body: JSON.stringify({
-      targetNumber: document.getElementById('targetNumber').value,
+      county: document.getElementById('county').value,
       pin: document.getElementById('pin').value,
       notifyNumber: document.getElementById('notifyNumber').value,
       notifyEmail: document.getElementById('notifyEmail').value,
@@ -788,7 +788,7 @@ document.getElementById('scheduleForm').onsubmit = function(e) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
     body: JSON.stringify({
-      targetNumber: document.getElementById('schedTarget').value,
+      county: document.getElementById('schedTarget').value,
       pin: document.getElementById('schedPin').value,
       notifyNumber: document.getElementById('schedNotify').value,
       notifyEmail: document.getElementById('schedEmail').value,

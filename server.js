@@ -45,6 +45,21 @@ const MAX_HOUR = 14;
 // Stagger calls over this many minutes to prevent server overload
 const STAGGER_MINUTES = 15;
 
+// Supported Counties Configuration
+const COUNTIES = {
+  'montgomery': {
+    name: 'Montgomery County',
+    number: '+19362834848',
+    process: 'standard'
+  }
+};
+
+function getCountyConfig(countyId) {
+  return COUNTIES[countyId] || COUNTIES['montgomery'];
+}
+
+
+
 // Affiliate settings
 const AFFILIATE_COMMISSION_PERCENT = 30; // 30% commission
 const MIN_PAYOUT_CENTS = 2000; // $20 minimum payout
@@ -325,7 +340,8 @@ app.post('/api/schedule', auth, async function(req, res) {
   
   var data = {
     user_id: req.user.id,
-    target_number: req.body.targetNumber,
+    county: req.body.county || 'montgomery',
+    target_number: getCountyConfig(req.body.county || 'montgomery').number,
     pin: req.body.pin,
     notify_number: req.body.notifyNumber,
     notify_email: req.body.notifyEmail || null,
