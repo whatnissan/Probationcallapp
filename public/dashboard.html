@@ -242,7 +242,7 @@ small{color:#666;font-size:0.75rem}
         </div>
         <div class="form-group" id="emailGroup"><label>Your Email</label><input type="email" id="notifyEmail" placeholder="you@example.com"></div>
         <div class="form-group" id="phoneGroup" style="display:none"><label>Your Phone Number</label><input type="tel" id="notifyNumber" placeholder="+1234567890"></div>
-        <div class="checkbox-group" onclick="document.getElementById('retryOnUnknown').click()">
+        <div class="checkbox-group">
           <input type="checkbox" id="retryOnUnknown">
           <label for="retryOnUnknown">Auto-retry on unknown result<small>If we can't determine the result, automatically try again in 5 minutes (max 2 retries)</small></label>
         </div>
@@ -309,7 +309,7 @@ small{color:#666;font-size:0.75rem}
             <select id="schedTZ"><option value="America/Chicago">Central</option><option value="America/New_York">Eastern</option><option value="America/Denver">Mountain</option><option value="America/Los_Angeles">Pacific</option></select>
           </div>
         </div>
-        <div class="checkbox-group" onclick="document.getElementById('schedRetry').click()">
+        <div class="checkbox-group">
           <input type="checkbox" id="schedRetry">
           <label for="schedRetry">Auto-retry on unknown result<small>If we can't determine the result, automatically try again in 5 minutes (max 2 retries)</small></label>
         </div>
