@@ -229,7 +229,7 @@ small{color:#666;font-size:0.75rem}
     <div class="card">
       <h2>Make a Call</h2>
       <form id="callForm">
-        <div class="form-group"><label>County</label><select id="county"><option value="montgomery">Montgomery County</option></select></div>
+        <div class="form-group"><label>County</label><select id="county"><option value="montgomery">Montgomery County</option><option value="ftbend">Fort Bend County</option></select></div>
         <div class="form-group"><label>6-Digit PIN</label><input type="text" id="pin" maxlength="6" placeholder="123456" required></div>
         <div class="form-group">
           <label>How should we notify you?</label>
@@ -277,7 +277,7 @@ small{color:#666;font-size:0.75rem}
       </div>
       <div class="info-box" id="noSchedInfo"><strong>No schedule.</strong> Set up auto-calls below.</div>
       <form id="scheduleForm">
-        <div class="form-group"><label>County</label><select id="schedCounty"><option value="montgomery">Montgomery County</option></select></div>
+        <div class="form-group"><label>County</label><select id="schedCounty"><option value="montgomery">Montgomery County</option><option value="ftbend">Fort Bend County</option></select></div>
         <div class="form-group"><label>6-Digit PIN</label><input type="text" id="schedPin" maxlength="6" placeholder="123456" required></div>
         <div class="form-group">
           <label>Notification Method</label>
@@ -864,6 +864,23 @@ function logout() {
 
 init();
 fetch('/api/admin/check',{headers:{Authorization:'Bearer '+token}}).then(function(r){return r.json()}).then(function(d){if(d.isAdmin){var el=document.getElementById('adminLink');if(el)el.style.display='inline-block';}}).catch(function(){});
+
+// Toggle PIN field based on county
+function updateCountyUI(selectId, pinId) {
+  var county = document.getElementById(selectId).value;
+  var pinGroup = document.getElementById(pinId).parentElement;
+  if (county === 'ftbend') {
+    pinGroup.style.display = 'none';
+    document.getElementById(pinId).required = false;
+  } else {
+    pinGroup.style.display = 'block';
+    document.getElementById(pinId).required = true;
+  }
+}
+document.getElementById('county').addEventListener('change', function() { updateCountyUI('county', 'pin'); });
+if (document.getElementById('schedCounty')) {
+  document.getElementById('schedCounty').addEventListener('change', function() { updateCountyUI('schedCounty', 'schedPin'); });
+}
 </script>
 </body>
 </html>

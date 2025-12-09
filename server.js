@@ -50,9 +50,39 @@ const COUNTIES = {
   'montgomery': {
     name: 'Montgomery County',
     number: '+19362834848',
-    process: 'standard'
+    process: 'standard',
+    minHour: 6,
+    maxHour: 14
+  },
+  'ftbend': {
+    name: 'Fort Bend County',
+    number: '+12812383668',
+    process: 'color',
+    minHour: 5,
+    maxHour: 9
   }
 };
+
+// Fort Bend County colors for detection
+const FTBEND_COLORS = [
+  'amber', 'apricot', 'aqua', 'auburn', 'beaver', 'black', 'blue', 'brown', 'burgundy',
+  'canary', 'cherry', 'chestnut', 'coral', 'copper', 'cream', 'crimson', 'cyan',
+  'emerald', 'forest', 'fuchsia', 'gold', 'gray', 'grey', 'green',
+  'ivory', 'jade', 'lavender', 'lemon', 'lilac', 'lime', 'magenta', 'maroon',
+  'navy', 'olive', 'orange', 'orchid', 'peach', 'pearl', 'pink', 'plum', 'purple',
+  'red', 'rose', 'ruby', 'rust', 'salmon', 'sapphire', 'scarlet', 'silver',
+  'tan', 'teal', 'turquoise', 'violet', 'white', 'wine', 'yellow'
+];
+
+function detectColor(transcript) {
+  var lower = transcript.toLowerCase();
+  for (var i = 0; i < FTBEND_COLORS.length; i++) {
+    if (lower.includes(FTBEND_COLORS[i])) {
+      return FTBEND_COLORS[i].charAt(0).toUpperCase() + FTBEND_COLORS[i].slice(1);
+    }
+  }
+  return null;
+}
 
 function getCountyConfig(countyId) {
   return COUNTIES[countyId] || COUNTIES['montgomery'];
@@ -530,7 +560,7 @@ app.post('/api/call', auth, async function(req, res) {
   if (pin.length !== 6 || !/^\d+$/.test(pin)) return res.status(400).json({ error: 'PIN must be 6 digits' });
   
   try {
-    var result = await initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notifyMethod, req.user.id, retryOnUnknown, 0);
+    var result = await initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notifyMethod, req.user.id, retryOnUnknown, 0, county);
     if (!req.profile.isDev) {
       await supabase.from('profiles').update({ credits: req.profile.credits - 1 }).eq('id', req.user.id);
     }
@@ -540,13 +570,14 @@ app.post('/api/call', auth, async function(req, res) {
   }
 });
 
-async function initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notifyMethod, userId, retryOnUnknown, retryCount) {
+async function initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notifyMethod, userId, retryOnUnknown, retryCount, county) {
   var callId = 'call_' + Date.now();
   log(callId, 'Starting call to ' + targetNumber + (retryCount > 0 ? ' (retry #' + retryCount + ')' : ''), 'info');
   
   pendingCalls.set(callId, { 
     targetNumber: targetNumber, 
-    pin: pin, 
+    pin: pin,
+    county: county, 
     notifyNumber: notifyNumber,
     notifyEmail: notifyEmail,
     notifyMethod: notifyMethod,
