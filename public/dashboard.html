@@ -223,6 +223,7 @@ select option { background: #1a1a2e; color: #fff; }
     <div class="tab" onclick="showTab('schedule')">⏰ Schedule</div>
     <div class="tab" onclick="showTab('history')">📜 History</div>
     <div class="tab" onclick="showTab('affiliate')">💰 Earn Cash</div>
+    <div class="tab" onclick="showTab('ftbend')">🎨 Ft Bend</div>
     <div class="tab" onclick="showTab('test')">🧪 Test</div>
   </div>
   
@@ -315,6 +316,10 @@ select option { background: #1a1a2e; color: #fff; }
           <input type="checkbox" id="schedRetry">
           <label for="schedRetry">Auto-retry on unknown result<small>If we can't determine the result, automatically try again in 5 minutes (max 2 retries)</small></label>
         </div>
+        <div class="checkbox-group">
+          <input type="checkbox" id="schedQuiet">
+          <label for="schedQuiet">Quiet mode<small>Only notify when you MUST test. Results still saved to history.</small></label>
+        </div>
         <button type="submit" class="btn" id="schedBtn">💾 Save Schedule</button>
       </form>
     </div>
@@ -387,6 +392,25 @@ select option { background: #1a1a2e; color: #fff; }
     </div>
   </div>
   
+  
+  <!-- FT BEND TAB -->
+  <div id="ftbendTab" class="tab-content">
+    <div class="card">
+      <h2>🎨 Fort Bend County - Today's Color</h2>
+      <div id="todayColor" style="text-align:center;padding:30px">
+        <div style="font-size:3rem;margin-bottom:10px" id="colorDisplay">Loading...</div>
+        <div style="color:#8892b0" id="colorDate"></div>
+      </div>
+      <div class="info-box">
+        <strong>How it works:</strong> We call the Fort Bend hotline at 5:05 AM daily and detect the announced color. All users with Fort Bend schedules get notified automatically.
+      </div>
+    </div>
+    <div class="card">
+      <h2>📅 Color History (Last 90 Days)</h2>
+      <div id="colorHistory" style="max-height:400px;overflow-y:auto"></div>
+    </div>
+  </div>
+
   <!-- TEST TAB -->
   <div id="testTab" class="tab-content">
     <div class="card">
@@ -522,6 +546,37 @@ function selectSchedMethod(method) {
   document.getElementById('schedSmsConsentBox').style.display = method === 'sms' ? 'block' : 'none';
 }
 
+
+function loadFtbendColors() {
+  fetch('/api/ftbend/today')
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      var el = document.getElementById('colorDisplay');
+      if (d.color && d.color !== 'UNKNOWN') {
+        el.innerHTML = '<span style="color:#22c55e;text-transform:uppercase;font-weight:700">' + d.color + '</span>';
+      } else if (d.color === 'UNKNOWN') {
+        el.innerHTML = '<span style="color:#f59e0b">Not detected yet</span>';
+      } else {
+        el.innerHTML = '<span style="color:#8892b0">Waiting for 5:05 AM call...</span>';
+      }
+      document.getElementById('colorDate').textContent = d.date;
+    });
+  
+  fetch('/api/ftbend/colors', { headers: { Authorization: 'Bearer ' + token } })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      var el = document.getElementById('colorHistory');
+      if (!d.colors || d.colors.length === 0) {
+        el.innerHTML = '<p style="color:#666;text-align:center">No color history yet</p>';
+        return;
+      }
+      el.innerHTML = d.colors.map(function(c) {
+        var colorStyle = c.color === 'UNKNOWN' ? 'color:#f59e0b' : 'color:#22c55e;text-transform:uppercase';
+        return '<div class="history-item"><div>' + c.date + '</div><span style="' + colorStyle + ';font-weight:600">' + c.color + '</span></div>';
+      }).join('');
+    });
+}
+
 function loadUser() {
   fetch('/api/user', { headers: { Authorization: 'Bearer ' + token } })
     .then(function(r) { return r.json(); })
@@ -593,12 +648,13 @@ function loadUser() {
         document.getElementById('scheduleDetails').style.display = 'block';
         document.getElementById('noSchedInfo').style.display = 'none';
         document.getElementById('schedBtn').textContent = '💾 Update Schedule';
-        document.getElementById('schedCounty').value = d.schedule.target_number;
+        document.getElementById('schedCounty').value = d.schedule.county || 'montgomery';
         document.getElementById('schedPin').value = d.schedule.pin;
         document.getElementById('schedHour').value = d.schedule.hour;
         document.getElementById('schedMin').value = d.schedule.minute;
         document.getElementById('schedTZ').value = d.schedule.timezone;
         document.getElementById('schedRetry').checked = d.schedule.retry_on_unknown || false;
+        document.getElementById('schedQuiet').checked = d.schedule.quiet_mode || false;
         if (d.schedule.notify_email) document.getElementById('schedEmail').value = d.schedule.notify_email;
         if (d.schedule.notify_number) document.getElementById('schedNotify').value = d.schedule.notify_number;
       } else {
@@ -625,6 +681,7 @@ function showTab(name) {
   document.querySelectorAll('.tab-content').forEach(function(t) { t.classList.remove('active'); });
   event.target.classList.add('active');
   document.getElementById(name + 'Tab').classList.add('active');
+  if (name === 'ftbend') loadFtbendColors();
 }
 
 function showBuyModal() { document.getElementById('buyModal').classList.add('active'); }
@@ -798,7 +855,8 @@ document.getElementById('scheduleForm').onsubmit = function(e) {
       hour: hour,
       minute: minute,
       timezone: document.getElementById('schedTZ').value,
-      retryOnUnknown: document.getElementById('schedRetry').checked
+      retryOnUnknown: document.getElementById('schedRetry').checked,
+      quietMode: document.getElementById('schedQuiet').checked
     })
   }).then(function(r) { return r.json(); }).then(function(d) {
     btn.disabled = false;
