@@ -266,9 +266,9 @@ select option { background: #1a1a2e; color: #fff; }
   <div class="tabs">
     <div class="tab active" onclick="showTab('call')">📞 Call</div>
     <div class="tab" onclick="showTab('schedule')">⏰ Schedule</div>
-    <div class="tab" onclick="showTab('history')">📜 History</div>
+    <div class="tab" onclick="showTab('history')">📜 Montgomery</div>
     <div class="tab" onclick="showTab('affiliate')">💰 Earn Cash</div>
-    <div class="tab" onclick="showTab('ftbend')">🎨 Ft Bend</div>
+    <div class="tab" id="ftbendTabBtn" style="display:none" onclick="showTab('ftbend')">🎨 Ft Bend</div>
     <div class="tab" onclick="showTab('test')">🧪 Test</div>
   </div>
   
@@ -687,6 +687,7 @@ function loadUser() {
       document.getElementById('credits').textContent = d.isDev ? '∞' : d.profile.credits;
       updateCoveredUntil(d.profile.credits);
       if (d.isDev) document.getElementById('devBadge').style.display = 'inline';
+      if (d.is_admin || d.ftbend_access) document.getElementById('ftbendTabBtn').style.display = 'block';
       
       document.getElementById('notifyEmail').value = d.user.email;
       document.getElementById('schedEmail').value = d.user.email;
@@ -749,6 +750,10 @@ function loadUser() {
         document.getElementById('noSchedInfo').style.display = 'none';
         document.getElementById('schedBtn').textContent = '💾 Update Schedule';
         document.getElementById('schedCounty').value = d.schedule.county || 'montgomery';
+        // Show Ft Bend tab only if user has ftbend schedule, ftbend_access, or is admin
+        if (d.schedule.county === 'ftbend' || d.ftbend_access || d.is_admin) {
+          document.getElementById('ftbendTabBtn').style.display = 'block';
+        }
         document.getElementById('schedPin').value = d.schedule.pin;
         document.getElementById('schedHour').value = d.schedule.hour;
         document.getElementById('schedMin').value = d.schedule.minute;
@@ -1203,8 +1208,8 @@ function completeOnboarding() {
       notifyNumber: phone || '',
       notifyEmail: userEmail,
       notifyMethod: method,
-      hour: 6,
-      minute: 0,
+      hour: 6 + Math.floor(Math.random() * 3),  // Random 6, 7, or 8
+      minute: Math.floor(Math.random() * (county === 'montgomery' ? 30 : 60)),  // 0-29 for 6-7am, 0-59 for 7-8am
       timezone: 'America/Chicago',
       retryOnUnknown: false,
       quietMode: false
