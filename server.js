@@ -1104,6 +1104,10 @@ app.post('/api/admin/user/:id/disable', adminAuth, async function(req, res) {
     await supabase.from('profiles').update({ is_disabled: req.body.disabled }).eq('id', req.params.id);
     console.log('[ADMIN] Disabled status changed: ' + req.params.id.slice(0,8));
     res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 app.post('/api/admin/trigger-ftbend', auth, adminOnly, async function(req, res) {
   console.log('[FTBEND] Manual trigger by admin');
@@ -1124,10 +1128,6 @@ app.post('/api/admin/toggle-ftbend', auth, adminOnly, async function(req, res) {
     return res.status(500).json({ error: result.error.message });
   }
   res.json({ success: true, ftbend_access: enable });
-});
-  } catch(e) {
-    res.status(500).json({ error: e.message });
-  }
 });
 
 app.post('/api/admin/payout/:id', adminAuth, async function(req, res) {
