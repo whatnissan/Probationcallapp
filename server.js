@@ -338,9 +338,14 @@ app.post('/api/affiliate/request-payout', auth, async function(req, res) {
 
 app.post("/api/accept-terms", auth, async function(req, res) { 
   try { 
-    await supabase.from("profiles").update({ terms_accepted_at: new Date().toISOString() }).eq("id", req.user.id); 
+    var result = await supabase.from("profiles").update({ terms_accepted_at: new Date().toISOString() }).eq("id", req.user.id);
+    if (result.error) {
+      console.error('[TERMS] Error:', result.error);
+      return res.status(500).json({ error: result.error.message }); 
+    }
     res.json({ success: true }); 
   } catch (e) { 
+    console.error('[TERMS] Exception:', e);
     res.status(500).json({ error: e.message }); 
   } 
 });
