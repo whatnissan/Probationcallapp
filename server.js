@@ -1379,27 +1379,26 @@ app.get('/api/ftbend/colors', auth, async function(req, res) {
   res.json({ colors: result.data || [] });
 });
 
-app.get('/api/recording/:recordingSid', async function(req, res) {
-  try {
-    var recordingSid = req.params.recordingSid;
-    var url = 'https://api.twilio.com/2010-04-01/Accounts/' + process.env.TWILIO_ACCOUNT_SID + '/Recordings/' + recordingSid + '.mp3';
-    
-    var response = await fetch(url, {
-      headers: {
-        'Authorization': 'Basic ' + Buffer.from(process.env.TWILIO_ACCOUNT_SID + ':' + process.env.TWILIO_AUTH_TOKEN).toString('base64')
-      }
-    });
-    
-    if (!response.ok) {
+app.get('/api/recording/:recordingSid', function(req, res) {
+  var recordingSid = req.params.recordingSid;
+  var https = require('https');
+  
+  var options = {
+    hostname: 'api.twilio.com',
+    path: '/2010-04-01/Accounts/' + process.env.TWILIO_ACCOUNT_SID + '/Recordings/' + recordingSid + '.mp3',
+    auth: process.env.TWILIO_ACCOUNT_SID + ':' + process.env.TWILIO_AUTH_TOKEN
+  };
+  
+  https.get(options, function(twilioRes) {
+    if (twilioRes.statusCode !== 200) {
       return res.status(404).json({ error: 'Recording not found' });
     }
-    
     res.set('Content-Type', 'audio/mpeg');
-    response.body.pipe(res);
-  } catch (e) {
+    twilioRes.pipe(res);
+  }).on('error', function(e) {
     console.error('[RECORDING] Proxy error:', e.message);
     res.status(500).json({ error: e.message });
-  }
+  });
 });
 
 app.get('/api/ftbend/today', async function(req, res) {
