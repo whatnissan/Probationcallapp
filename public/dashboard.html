@@ -1237,12 +1237,16 @@ function calculateExactCredits() {
   
   // Pricing: bulk rate of $0.22/credit, minimum $5
   var credits = days;
-  // Tiered pricing matching packages
-  var ratePerCredit;
-  if (credits <= 30) ratePerCredit = 33;      // $0.33 (Starter rate)
-  else if (credits <= 90) ratePerCredit = 28; // $0.28 (Standard rate)
-  else ratePerCredit = 22;                    // $0.22 (Value rate)
-  var priceCents = Math.max(500, credits * ratePerCredit);
+  // Graduated pricing (like tax brackets)
+  var priceCents = 0;
+  if (credits <= 30) {
+    priceCents = credits * 33;                           // First 30 at $0.33
+  } else if (credits <= 90) {
+    priceCents = (30 * 33) + ((credits - 30) * 28);      // First 30 at $0.33, rest at $0.28
+  } else {
+    priceCents = (30 * 33) + (60 * 28) + ((credits - 90) * 22); // First 30 at $0.33, next 60 at $0.28, rest at $0.22
+  }
+  priceCents = Math.max(500, priceCents);
   
   document.getElementById('exactDays').textContent = days;
   document.getElementById('exactCredits').textContent = credits;
