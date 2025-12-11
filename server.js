@@ -1206,6 +1206,22 @@ app.post('/api/admin/set-referral-code', adminAuth, async function(req, res) {
   res.json({ success: true, code: code });
 });
 
+// Unlock user from affiliate
+app.post('/api/admin/unlock-user', adminAuth, async function(req, res) {
+  var userId = req.body.userId;
+  
+  var result = await supabase.from('profiles')
+    .update({ referred_by: null })
+    .eq('id', userId);
+  
+  if (result.error) {
+    return res.status(500).json({ error: result.error.message });
+  }
+  
+  console.log('[ADMIN] Unlocked user ' + userId.slice(0,8) + ' from affiliate');
+  res.json({ success: true });
+});
+
 app.post('/api/admin/payout/:id', adminAuth, async function(req, res) {
   try {
     await supabase.from('payout_requests').update({
