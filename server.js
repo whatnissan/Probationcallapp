@@ -385,6 +385,63 @@ app.post('/api/check-affiliate-code', auth, async function(req, res) {
   }
 });
 
+// Stripe Connect - Create onboarding link for affiliates
+app.post('/api/affiliate/connect', auth, async function(req, res) {
+  try {
+    // Check if user already has a connected account
+    if (req.profile.stripe_connect_id) {
+      // Create login link for existing account
+      var loginLink = await stripe.accounts.createLoginLink(req.profile.stripe_connect_id);
+      return res.json({ url: loginLink.url });
+    }
+    
+    // Create new connected account
+    var account = await stripe.accounts.create({
+      type: 'standard',
+      email: req.user.email,
+      metadata: { user_id: req.user.id }
+    });
+    
+    // Save the account ID
+    await supabase.from('profiles')
+      .update({ stripe_connect_id: account.id })
+      .eq('id', req.user.id);
+    
+    // Create onboarding link
+    var accountLink = await stripe.accountLinks.create({
+      account: account.id,
+      refresh_url: process.env.BASE_URL + '/dashboard?connect=refresh',
+      return_url: process.env.BASE_URL + '/dashboard?connect=success',
+      type: 'account_onboarding'
+    });
+    
+    console.log('[CONNECT] Created account for ' + req.user.email + ': ' + account.id);
+    res.json({ url: accountLink.url });
+  } catch (e) {
+    console.error('[CONNECT] Error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Check Stripe Connect status
+app.get('/api/affiliate/connect-status', auth, async function(req, res) {
+  if (!req.profile.stripe_connect_id) {
+    return res.json({ connected: false });
+  }
+  
+  try {
+    var account = await stripe.accounts.retrieve(req.profile.stripe_connect_id);
+    res.json({ 
+      connected: true, 
+      charges_enabled: account.charges_enabled,
+      payouts_enabled: account.payouts_enabled,
+      account_id: account.id
+    });
+  } catch (e) {
+    res.json({ connected: false, error: e.message });
+  }
+});
+
 app.post('/api/schedule', auth, async function(req, res) {
   var hour = parseInt(req.body.hour) || 6;
   var minute = parseInt(req.body.minute) || 0;
@@ -573,9 +630,11 @@ app.post('/webhook/stripe', async function(req, res) {
     
     // AFFILIATE COMMISSION - check for checkout promo code OR previous referral
     var affiliateId = s.metadata.affiliate_id || null;
+    var affiliateCode = s.metadata.affiliate_code || null;
     
     // If no checkout code, check if user was previously referred
     if (!affiliateId && profile && profile.referred_by) {
+      affiliateCode = profile.referred_by;
       var refResult = await supabase.from('profiles')
         .select('id')
         .eq('referral_code', profile.referred_by)
@@ -585,7 +644,7 @@ app.post('/webhook/stripe', async function(req, res) {
     
     if (affiliateId) {
       var referrerResult = await supabase.from('profiles')
-        .select('id, affiliate_balance_cents, affiliate_total_earned_cents')
+        .select('id, affiliate_balance_cents, affiliate_total_earned_cents, stripe_connect_id')
         .eq('id', affiliateId)
         .single();
       
@@ -609,8 +668,23 @@ app.post('/webhook/stripe', async function(req, res) {
           purchase_id: purchaseResult.data ? purchaseResult.data.id : null,
           amount_cents: commission,
           purchase_amount_cents: s.amount_total,
-          status: 'credited'
+          status: referrerResult.data.stripe_connect_id ? 'transferred' : 'credited'
         });
+        
+        // If affiliate has Stripe Connect, transfer immediately
+        if (referrerResult.data.stripe_connect_id) {
+          try {
+            var transfer = await stripe.transfers.create({
+              amount: commission,
+              currency: 'usd',
+              destination: referrerResult.data.stripe_connect_id,
+              description: 'Affiliate commission for referral'
+            });
+            console.log('[CONNECT] Transferred $' + (commission / 100).toFixed(2) + ' to ' + referrerResult.data.stripe_connect_id);
+          } catch (te) {
+            console.error('[CONNECT] Transfer failed:', te.message);
+          }
+        }
         
         // Update referral status to converted
         await supabase.from('referrals')

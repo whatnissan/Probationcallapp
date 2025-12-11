@@ -915,6 +915,39 @@ function shareQR() {
   }
 }
 
+function setupStripeConnect() {
+  document.getElementById('connectBtn').textContent = 'Loading...';
+  document.getElementById('connectBtn').disabled = true;
+  fetch('/api/affiliate/connect', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + token }
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.url) {
+      window.location.href = d.url;
+    } else {
+      alert('Error: ' + (d.error || 'Could not create connect link'));
+      document.getElementById('connectBtn').textContent = 'Connect Bank Account';
+      document.getElementById('connectBtn').disabled = false;
+    }
+  });
+}
+
+function checkConnectStatus() {
+  fetch('/api/affiliate/connect-status', {
+    headers: { Authorization: 'Bearer ' + token }
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    var statusEl = document.getElementById('connectStatus');
+    var btnEl = document.getElementById('connectBtn');
+    if (d.connected && d.payouts_enabled) {
+      statusEl.innerHTML = '<span style="color:#22c55e">✅ Connected - You will receive payouts automatically!</span>';
+      btnEl.textContent = 'Manage Account';
+    } else if (d.connected) {
+      statusEl.innerHTML = '<span style="color:#f59e0b">⚠️ Setup incomplete - Click below to finish</span>';
+      btnEl.textContent = 'Complete Setup';
+    }
+  });
+}
+
 function copyReferralLink() {
   var input = document.getElementById('referralLink');
   input.select();
