@@ -217,7 +217,11 @@ select option { background: #1a1a2e; color: #fff; }
   <div class="no-schedule" id="noSchedule">⚠️ No schedule set. Set up daily auto-calls in the Schedule tab.</div>
   
   <div class="credits-card">
-    <div><div class="credits-num" id="credits">0</div><div class="credits-label">Credits</div></div>
+    <div>
+      <div class="credits-num" id="credits">0</div>
+      <div class="credits-label">Credits</div>
+      <div id="coveredUntil" style="font-size:0.8rem;color:rgba(0,0,0,0.7);margin-top:5px"></div>
+    </div>
     <button class="buy-btn" onclick="showBuyModal()">Buy Credits</button>
   </div>
   
@@ -465,7 +469,28 @@ select option { background: #1a1a2e; color: #fff; }
       <div class="package popular" onclick="buyPackage('standard')"><div class="package-name">Standard</div><div class="package-credits">90</div><div class="package-price">$24.99</div><div class="package-save">Save 17%</div></div>
       <div class="package" onclick="buyPackage('value')"><div class="package-name">Value</div><div class="package-credits">180</div><div class="package-price">$39.99</div><div class="package-save">Save 33%</div></div>
     </div>
-    <div class="promo-input"><input type="text" id="promoCode" placeholder="Promo code"><button class="btn" onclick="redeemPromo()">Apply</button></div>
+    <div style="margin-top:20px;padding-top:20px;border-top:1px solid rgba(255,255,255,0.1)">
+      <h3 style="color:#22c55e;margin-bottom:10px">🎯 Buy Exact Credits for Your Probation</h3>
+      <p style="color:#8892b0;font-size:0.85rem;margin-bottom:15px">Enter your probation end date and pay once - you're covered!</p>
+      <div class="form-group">
+        <input type="date" id="buyEndDate" onchange="calculateExactCredits()">
+      </div>
+      <div id="exactCalc" style="display:none;background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:8px;padding:15px;margin:15px 0">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <span id="exactDays" style="font-size:1.3rem;font-weight:700;color:#fff">0</span> <span style="color:#8892b0">days</span><br>
+            <span style="color:#8892b0;font-size:0.85rem">= <span id="exactCredits">0</span> credits needed</span>
+          </div>
+          <div style="text-align:right">
+            <div id="exactPrice" style="font-size:1.8rem;font-weight:700;color:#22c55e">$0</div>
+            <div style="color:#8892b0;font-size:0.75rem">one-time payment</div>
+          </div>
+        </div>
+        <button class="btn btn-green" onclick="buyExactCredits()" style="width:100%;margin-top:15px">🎯 Buy & Be Covered</button>
+      </div>
+    </div>
+    
+    <div class="promo-input" style="margin-top:15px"><input type="text" id="promoCode" placeholder="Promo code"><button class="btn" onclick="redeemPromo()">Apply</button></div>
     <div id="promoStatus" class="status" style="display:none;margin-top:10px"></div>
   </div>
 </div>
@@ -609,6 +634,23 @@ function loadFtbendColors() {
     });
 }
 
+
+function updateCoveredUntil(credits) {
+  var el = document.getElementById('coveredUntil');
+  if (!el || credits < 1) { if(el) el.textContent = ''; return; }
+  
+  var today = new Date();
+  var coveredDate = new Date(today);
+  coveredDate.setDate(today.getDate() + credits);
+  
+  var options = { month: 'short', day: 'numeric' };
+  if (coveredDate.getFullYear() !== today.getFullYear()) {
+    options.year = 'numeric';
+  }
+  
+  el.textContent = '✓ Covered until ' + coveredDate.toLocaleDateString('en-US', options);
+}
+
 function loadUser() {
   fetch('/api/user', { headers: { Authorization: 'Bearer ' + token } })
     .then(function(r) { return r.json(); })
@@ -625,6 +667,7 @@ function loadUser() {
       probationEndDate = d.probationEndDate || d.profile.probation_end_date;
       updateProbationDisplay(); fetch('/api/admin/check',{headers:{Authorization:'Bearer '+token}}).then(function(r){return r.json()}).then(function(d){if(d.isAdmin){var el=document.getElementById('adminLink');if(el)el.style.display='inline-block';}}).catch(function(){});
       document.getElementById('credits').textContent = d.isDev ? '∞' : d.profile.credits;
+      updateCoveredUntil(d.profile.credits);
       if (d.isDev) document.getElementById('devBadge').style.display = 'inline';
       
       document.getElementById('notifyEmail').value = d.user.email;
@@ -1172,6 +1215,62 @@ function completeOnboarding() {
   loadUser();
 }
 
+
+
+function calculateExactCredits() {
+  var endDate = document.getElementById('buyEndDate').value;
+  if (!endDate) {
+    document.getElementById('exactCalc').style.display = 'none';
+    return;
+  }
+  
+  var end = new Date(endDate);
+  var today = new Date();
+  today.setHours(0, 0, 0, 0);
+  
+  var days = Math.ceil((end - today) / (1000 * 60 * 60 * 24));
+  if (days < 1) {
+    document.getElementById('exactCalc').style.display = 'none';
+    alert('Please select a future date');
+    return;
+  }
+  
+  // Pricing: bulk rate of $0.22/credit, minimum $5
+  var credits = days;
+  var priceCents = Math.max(500, credits * 22);
+  
+  document.getElementById('exactDays').textContent = days;
+  document.getElementById('exactCredits').textContent = credits;
+  document.getElementById('exactPrice').textContent = '$' + (priceCents / 100).toFixed(2);
+  document.getElementById('exactCalc').style.display = 'block';
+  
+  // Store for purchase
+  window.exactPurchase = { credits: credits, priceCents: priceCents, endDate: endDate };
+}
+
+function buyExactCredits() {
+  if (!window.exactPurchase) return;
+  
+  // Save probation end date
+  fetch('/api/profile/probation-end', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({ endDate: window.exactPurchase.endDate })
+  });
+  
+  // Checkout for exact credits
+  fetch('/api/checkout/custom', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({ 
+      credits: window.exactPurchase.credits, 
+      priceCents: window.exactPurchase.priceCents 
+    })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.url) window.location.href = d.url;
+    else if (d.error) alert('Error: ' + d.error);
+  });
+}
 
 init();
 // Admin check moved to loadUser()
