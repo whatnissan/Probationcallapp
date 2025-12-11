@@ -400,7 +400,12 @@ select option { background: #1a1a2e; color: #fff; }
         <div style="text-align:center;margin-top:15px">
           <p style="color:#8892b0;font-size:0.85rem;margin-bottom:10px">Or share this QR code:</p>
           <img id="qrCode" src="" alt="QR Code" style="background:#fff;padding:10px;border-radius:8px;max-width:170px">
-          <p style="color:#666;font-size:0.75rem;margin-top:5px">Pro tip: People can also enter your code at checkout!</p>
+          <div style="margin-top:10px">
+            <button onclick="downloadQR()" style="background:#00d9ff;color:#000;border:none;padding:8px 15px;border-radius:6px;cursor:pointer;margin:5px">📥 Download</button>
+            <button onclick="shareQR()" style="background:#22c55e;color:#000;border:none;padding:8px 15px;border-radius:6px;cursor:pointer;margin:5px">📤 Share</button>
+          </div>
+          <p style="color:#22c55e;font-size:0.85rem;margin-top:10px;font-weight:bold">💡 Customers can enter your code at checkout!</p>
+          <p style="color:#666;font-size:0.75rem">Your code: <span id="refCodeDisplay" style="color:#00d9ff;font-weight:bold"></span></p>
         </div>
       </div>
       
@@ -734,7 +739,7 @@ function loadUser() {
       // Load affiliate data
       if (d.affiliate) {
         affiliateData = d.affiliate;
-        document.getElementById('referralLink').value = 'https://www.probationcall.com/r/' + d.affiliate.referralCode; document.getElementById('qrCode').src = 'https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=' + encodeURIComponent('https://www.probationcall.com/r/' + d.affiliate.referralCode);
+        document.getElementById('referralLink').value = 'https://www.probationcall.com/r/' + d.affiliate.referralCode; document.getElementById('qrCode').src = 'https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=' + encodeURIComponent('https://www.probationcall.com/r/' + d.affiliate.referralCode); document.getElementById('refCodeDisplay').textContent = d.affiliate.referralCode;
         document.getElementById('affiliateBalance').textContent = '$' + (d.affiliate.balance / 100).toFixed(2);
         document.getElementById('totalEarned').textContent = '$' + (d.affiliate.totalEarned / 100).toFixed(2);
         document.getElementById('totalReferred').textContent = d.affiliate.referrals ? d.affiliate.referrals.length : 0;
@@ -876,6 +881,28 @@ function redeemPromo() {
 }
 
 // Affiliate functions
+function downloadQR() {
+  var link = document.createElement('a');
+  link.href = document.getElementById('qrCode').src;
+  link.download = 'probationcall-qr-code.png';
+  link.click();
+}
+
+function shareQR() {
+  var refCode = document.getElementById('refCodeDisplay').textContent;
+  var shareData = {
+    title: 'ProbationCall',
+    text: 'Never miss a probation check-in! Use my code ' + refCode + ' at checkout for a bonus.',
+    url: document.getElementById('referralLink').value
+  };
+  if (navigator.share) {
+    navigator.share(shareData);
+  } else {
+    navigator.clipboard.writeText(shareData.text + ' ' + shareData.url);
+    alert('Link copied to clipboard!');
+  }
+}
+
 function copyReferralLink() {
   var input = document.getElementById('referralLink');
   input.select();
