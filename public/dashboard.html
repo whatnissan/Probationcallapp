@@ -494,9 +494,10 @@ select option { background: #1a1a2e; color: #fff; }
     <h2 style="margin-bottom:10px">Buy Credits</h2>
     <p style="color:#8892b0;margin-bottom:5px">1 credit = 1 automated call</p>
     <div class="packages">
-      <div style="margin-bottom:20px">
-        <label style="color:#8892b0;font-size:0.9rem">Have a promo code?</label>
-        <input type="text" id="affiliateCodeInput" placeholder="Enter code (optional)" style="width:100%;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#fff;margin-top:5px;text-transform:uppercase">
+      <div style="margin-bottom:15px;padding:10px;background:rgba(0,217,255,0.05);border:1px solid rgba(0,217,255,0.2);border-radius:8px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <input type="text" id="affiliateCodeInput" placeholder="Promo code (optional)" style="flex:1;padding:8px 12px;border-radius:6px;border:1px solid rgba(255,255,255,0.2);background:rgba(0,0,0,0.3);color:#fff;text-transform:uppercase;font-size:0.9rem">
+        </div>
       </div>
       <div class="package" onclick="buyPackage('starter')"><div class="package-name">Starter</div><div class="package-credits">30</div><div class="package-price">$9.99</div></div>
       <div class="package popular" onclick="buyPackage('standard')"><div class="package-name">Standard</div><div class="package-credits">90</div><div class="package-price">$24.99</div><div class="package-save">Save 17%</div></div>

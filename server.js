@@ -501,6 +501,14 @@ app.post('/api/checkout', auth, async function(req, res) {
     if (affiliateResult.data) {
       affiliateId = affiliateResult.data.id;
       console.log('[CHECKOUT] Affiliate code ' + affiliateCode + ' found: ' + affiliateId.slice(0,8));
+      
+      // Lock this user to the affiliate if not already locked
+      if (!req.profile.referred_by) {
+        await supabase.from('profiles')
+          .update({ referred_by: affiliateCode })
+          .eq('id', req.user.id);
+        console.log('[CHECKOUT] Locked user ' + req.user.id.slice(0,8) + ' to affiliate ' + affiliateCode);
+      }
     } else {
       console.log('[CHECKOUT] Affiliate code ' + affiliateCode + ' not found');
     }
