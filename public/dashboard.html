@@ -791,7 +791,12 @@ function loadUser() {
           var txt = h.result === 'NO_TEST' ? '✅ No Test' : h.result === 'MUST_TEST' ? '🚨 Must Test' : h.result === 'RETRY_PENDING' ? '🔄 Retrying...' : '⚠️ Unknown';
           var county = h.county === 'ftbend' ? 'Ft Bend' : 'Montgomery';
           var pin = h.pin_used ? '<br><small>PIN: ' + h.pin_used + '</small>' : '';
-          var recording = h.recording_url ? '<div class="audio-player"><audio controls preload="none" src="' + h.recording_url + '"></audio></div>' : '';
+          var recUrl = h.recording_url;
+          if (recUrl && recUrl.includes('Recordings/')) {
+            var sid = recUrl.match(/Recordings\/([A-Za-z0-9]+)/);
+            if (sid) recUrl = '/api/recording/' + sid[1];
+          }
+          var recording = h.recording_url ? '<div class="audio-player"><audio controls preload="none" src="' + recUrl + '"></audio></div>' : '';
           var transcript = h.transcript ? '<div class="history-transcript">"' + h.transcript + '"</div>' : '';
           return '<div class="history-item"><div class="history-header"><div><span class="history-date">' + new Date(h.created_at).toLocaleString() + '</span><span class="history-county">' + county + '</span>' + pin + '</div><span class="history-result ' + h.result + '">' + txt + '</span></div>' + recording + transcript + '</div>';
         }).join('');
