@@ -882,7 +882,7 @@ document.getElementById('scheduleForm').onsubmit = function(e) {
       minute: minute,
       timezone: document.getElementById('schedTZ').value,
       retryOnUnknown: document.getElementById('schedRetry').checked,
-      quietMode: document.getElementById('schedQuiet').checked
+      quietMode: document.getElementById('schedQuiet') ? document.getElementById('schedQuiet').checked : false
     })
   }).then(function(r) { return r.json(); }).then(function(d) {
     btn.disabled = false;
@@ -953,9 +953,11 @@ var probationEndDate = null;
 var calcData = null;
 
 function showProbationModal() {
-  document.getElementById('probationModal').classList.add('active');
-  if (probationEndDate) {
-    document.getElementById('probationEndDate').value = probationEndDate;
+  var modal = document.getElementById('probationModal');
+  var input = document.getElementById('probationEndDate');
+  if (modal) modal.classList.add('active');
+  if (input && probationEndDate) {
+    input.value = probationEndDate;
     calculateCreditsNeeded();
   }
 }
@@ -965,9 +967,12 @@ function closeProbationModal() {
 }
 
 function calculateCreditsNeeded() {
-  var endDate = document.getElementById('probationEndDate').value;
+  var el = document.getElementById('probationEndDate');
+  if (!el) return;
+  var endDate = el.value;
+  var calcEl = document.getElementById('probationCalc');
   if (!endDate) {
-    document.getElementById('probationCalc').style.display = 'none';
+    if (calcEl) calcEl.style.display = 'none';
     return;
   }
   
@@ -985,7 +990,9 @@ function calculateCreditsNeeded() {
 // Event listener added in modal
 
 function saveProbationDate() {
-  var endDate = document.getElementById('probationEndDate').value;
+  var el = document.getElementById('probationEndDate');
+  if (!el) return;
+  var endDate = el.value;
   var st = document.getElementById('probationStatus');
   
   if (!endDate) {
