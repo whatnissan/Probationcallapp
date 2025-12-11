@@ -487,13 +487,38 @@ app.post('/api/checkout', auth, async function(req, res) {
   var pkg = PACKAGES[req.body.packageId];
   if (!pkg) return res.status(400).json({ error: 'Invalid package' });
   
+  // Check for affiliate/promo code
+  var affiliateCode = req.body.affiliateCode ? req.body.affiliateCode.toUpperCase() : null;
+  var affiliateId = null;
+  
+  if (affiliateCode) {
+    // Look up affiliate by their referral code
+    var affiliateResult = await supabase.from('profiles')
+      .select('id')
+      .eq('referral_code', affiliateCode)
+      .single();
+    
+    if (affiliateResult.data) {
+      affiliateId = affiliateResult.data.id;
+      console.log('[CHECKOUT] Affiliate code ' + affiliateCode + ' found: ' + affiliateId.slice(0,8));
+    } else {
+      console.log('[CHECKOUT] Affiliate code ' + affiliateCode + ' not found');
+    }
+  }
+  
   var session = await stripe.checkout.sessions.create({
     payment_method_types: ['card'],
     line_items: [{ price_data: { currency: 'usd', product_data: { name: pkg.name + ' - ' + pkg.credits + ' Credits' }, unit_amount: pkg.price }, quantity: 1 }],
     mode: 'payment',
     success_url: process.env.BASE_URL + '/dashboard?success=true',
     cancel_url: process.env.BASE_URL + '/dashboard?canceled=true',
-    metadata: { user_id: req.user.id, package_id: req.body.packageId, credits: String(pkg.credits) }
+    metadata: { 
+      user_id: req.user.id, 
+      package_id: req.body.packageId, 
+      credits: String(pkg.credits),
+      affiliate_code: affiliateCode || '',
+      affiliate_id: affiliateId || ''
+    }
   });
   res.json({ url: session.url });
 });

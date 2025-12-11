@@ -314,6 +314,14 @@ supabase.auth.onAuthStateChange(function(event, session) {
 
 // Initialize
 async function init() {
+  // Save referral code from URL if present
+  var urlParams = new URLSearchParams(window.location.search);
+  var refCode = urlParams.get('ref');
+  if (refCode) {
+    localStorage.setItem('referralCode', refCode.toUpperCase());
+    console.log('Saved referral code:', refCode);
+  }
+  
   // First check for OAuth callback
   var isCallback = await handleOAuthCallback();
   if (!isCallback) {

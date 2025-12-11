@@ -684,6 +684,21 @@ function updateCoveredUntil(credits) {
 }
 
 function loadUser() {
+  // Apply saved referral code if present
+  var savedRef = localStorage.getItem('referralCode');
+  if (savedRef) {
+    fetch('/api/apply-referral', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+      body: JSON.stringify({ code: savedRef })
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      if (d.success) {
+        console.log('Referral applied:', savedRef);
+        localStorage.removeItem('referralCode');
+      }
+    }).catch(function() {});
+  }
+  
   fetch('/api/user', { headers: { Authorization: 'Bearer ' + token } })
     .then(function(r) { return r.json(); })
     .then(function(d) {
