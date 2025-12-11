@@ -982,7 +982,7 @@ function calculateCreditsNeeded() {
     });
 }
 
-document.getElementById('probationEndDate').addEventListener('change', calculateCreditsNeeded);
+// Event listener added in modal
 
 function saveProbationDate() {
   var endDate = document.getElementById('probationEndDate').value;
@@ -1119,13 +1119,18 @@ fetch('/api/admin/check',{headers:{Authorization:'Bearer '+token}}).then(functio
 // Toggle PIN field based on county
 function updateCountyUI(selectId, pinId) {
   var county = document.getElementById(selectId).value;
-  var pinGroup = document.getElementById(pinId).parentElement;
+  var pinEl = document.getElementById(pinId);
+  if (!pinEl) return;
+  var pinGroup = pinEl.closest('.form-group');
+  if (!pinGroup) pinGroup = pinEl.parentElement;
+  
   if (county === 'ftbend') {
     pinGroup.style.display = 'none';
-    document.getElementById(pinId).required = false;
+    pinEl.required = false;
+    pinEl.value = '';
   } else {
     pinGroup.style.display = 'block';
-    document.getElementById(pinId).required = true;
+    pinEl.required = true;
   }
 }
 document.getElementById('county').addEventListener('change', function() { updateCountyUI('county', 'pin'); });
