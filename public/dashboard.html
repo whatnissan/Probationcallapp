@@ -1208,8 +1208,8 @@ function completeOnboarding() {
       notifyNumber: phone || '',
       notifyEmail: userEmail,
       notifyMethod: method,
-      hour: (function() { var t = 360 + Math.floor(Math.random() * 150); return Math.floor(t / 60); })(),  // Random 6:00-8:29 AM
-      minute: (function() { var t = 360 + Math.floor(Math.random() * 150); return t % 60; })()
+      hour: 6 + Math.floor(Math.random() * 3),  // Random 6, 7, or 8
+      minute: Math.floor(Math.random() * (county === 'montgomery' ? 30 : 60)),  // 0-29 for 6-7am, 0-59 for 7-8am
       timezone: 'America/Chicago',
       retryOnUnknown: false,
       quietMode: false
