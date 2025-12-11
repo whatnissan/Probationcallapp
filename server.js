@@ -1166,6 +1166,38 @@ app.post('/api/admin/toggle-ftbend', adminAuth, async function(req, res) {
   res.json({ success: true, ftbend_access: enable });
 });
 
+// Set custom referral code for affiliates
+app.post('/api/admin/set-referral-code', adminAuth, async function(req, res) {
+  var userId = req.body.userId;
+  var code = req.body.code.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  
+  if (code.length < 3 || code.length > 15) {
+    return res.status(400).json({ error: 'Code must be 3-15 characters' });
+  }
+  
+  // Check if code already exists
+  var existing = await supabase.from('profiles')
+    .select('id')
+    .eq('referral_code', code)
+    .neq('id', userId)
+    .single();
+  
+  if (existing.data) {
+    return res.status(400).json({ error: 'Code already in use' });
+  }
+  
+  var result = await supabase.from('profiles')
+    .update({ referral_code: code })
+    .eq('id', userId);
+  
+  if (result.error) {
+    return res.status(500).json({ error: result.error.message });
+  }
+  
+  console.log('[ADMIN] Set referral code for ' + userId.slice(0,8) + ': ' + code);
+  res.json({ success: true, code: code });
+});
+
 app.post('/api/admin/payout/:id', adminAuth, async function(req, res) {
   try {
     await supabase.from('payout_requests').update({
