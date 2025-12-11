@@ -841,7 +841,7 @@ function showBuyModal() { document.getElementById('buyModal').classList.add('act
 function closeBuyModal() { document.getElementById('buyModal').classList.remove('active'); }
 
 function buyPackage(packageId) {
-  var affiliateCode = document.getElementById('promoCode').value.trim();
+  var affiliateCode = savedAffiliateCode || document.getElementById('promoCode').value.trim();
   fetch('/api/checkout', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },

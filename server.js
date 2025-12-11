@@ -1238,6 +1238,22 @@ app.post('/api/admin/unlock-user', adminAuth, async function(req, res) {
   res.json({ success: true });
 });
 
+// Delete user schedule
+app.delete('/api/admin/schedule/:userId', adminAuth, async function(req, res) {
+  var userId = req.params.userId;
+  
+  var result = await supabase.from('user_schedules')
+    .delete()
+    .eq('user_id', userId);
+  
+  if (result.error) {
+    return res.status(500).json({ error: result.error.message });
+  }
+  
+  console.log('[ADMIN] Deleted schedule for user ' + userId.slice(0,8));
+  res.json({ success: true });
+});
+
 app.post('/api/admin/payout/:id', adminAuth, async function(req, res) {
   try {
     await supabase.from('payout_requests').update({
