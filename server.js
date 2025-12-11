@@ -369,6 +369,22 @@ app.post('/api/redeem', auth, async function(req, res) {
   res.json({ success: true, credits: promo.credits });
 });
 
+// Check if affiliate code is valid
+app.post('/api/check-affiliate-code', auth, async function(req, res) {
+  var code = req.body.code ? req.body.code.toUpperCase() : '';
+  
+  var result = await supabase.from('profiles')
+    .select('id, referral_code')
+    .eq('referral_code', code)
+    .single();
+  
+  if (result.data) {
+    res.json({ valid: true, code: code });
+  } else {
+    res.json({ valid: false });
+  }
+});
+
 app.post('/api/schedule', auth, async function(req, res) {
   var hour = parseInt(req.body.hour) || 6;
   var minute = parseInt(req.body.minute) || 0;
