@@ -383,6 +383,7 @@ app.post('/api/schedule', auth, async function(req, res) {
     minute: minute,
     timezone: req.body.timezone || 'America/Chicago',
     retry_on_unknown: req.body.retryOnUnknown || false,
+    quiet_mode: req.body.quietMode || false,
     enabled: true,
     updated_at: new Date().toISOString()
   };
