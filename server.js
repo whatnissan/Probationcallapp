@@ -218,7 +218,10 @@ app.get('/api/user', auth, async function(req, res) {
   
   res.json({ 
     user: req.user, 
-    profile: req.profile, 
+    profile: req.profile,
+    probationEndDate: req.profile.probation_end_date,
+    userColor: req.profile.user_color,
+    onboardingComplete: req.profile.onboarding_complete, 
     history: historyResult.data || [], 
     schedule: scheduleResult.data,
     isDev: isDev(req.user.email),
@@ -1265,5 +1268,95 @@ app.get('/api/ftbend/today', async function(req, res) {
 });
 
 // ========== END FT BEND SYSTEM ==========
+
+
+// Save probation end date
+app.post('/api/profile/probation-end', auth, async function(req, res) {
+  var endDate = req.body.endDate;
+  if (!endDate) return res.status(400).json({ error: 'End date required' });
+  
+  await supabase.from('profiles').update({ 
+    probation_end_date: endDate 
+  }).eq('id', req.user.id);
+  
+  res.json({ success: true });
+});
+
+// Save user's assigned color (for Ft Bend)
+app.post('/api/profile/color', auth, async function(req, res) {
+  var color = req.body.color;
+  if (!color) return res.status(400).json({ error: 'Color required' });
+  
+  await supabase.from('profiles').update({ 
+    user_color: color.toLowerCase() 
+  }).eq('id', req.user.id);
+  
+  res.json({ success: true });
+});
+
+// Calculate credits needed for remaining probation
+app.get('/api/calculate-credits', auth, async function(req, res) {
+  var endDate = req.query.endDate;
+  if (!endDate) return res.status(400).json({ error: 'End date required' });
+  
+  var end = new Date(endDate);
+  var today = new Date();
+  today.setHours(0, 0, 0, 0);
+  
+  var daysRemaining = Math.ceil((end - today) / (1000 * 60 * 60 * 24));
+  if (daysRemaining < 0) daysRemaining = 0;
+  
+  // Pricing: roughly $0.33 per credit at bulk rate
+  var creditsNeeded = daysRemaining;
+  var pricePerCredit = 22; // cents (bulk rate ~$0.22/credit)
+  var totalCents = creditsNeeded * pricePerCredit;
+  
+  // Minimum $5
+  if (totalCents < 500 && totalCents > 0) totalCents = 500;
+  
+  res.json({
+    daysRemaining: daysRemaining,
+    creditsNeeded: creditsNeeded,
+    priceCents: totalCents,
+    priceDisplay: '$' + (totalCents / 100).toFixed(2)
+  });
+});
+
+// Custom credits purchase for exact probation length
+app.post('/api/checkout/custom', auth, async function(req, res) {
+  var credits = parseInt(req.body.credits);
+  var priceCents = parseInt(req.body.priceCents);
+  
+  if (!credits || credits < 1) return res.status(400).json({ error: 'Invalid credits' });
+  if (!priceCents || priceCents < 500) return res.status(400).json({ error: 'Minimum $5' });
+  
+  var session = await stripe.checkout.sessions.create({
+    payment_method_types: ['card'],
+    line_items: [{
+      price_data: {
+        currency: 'usd',
+        product_data: { name: 'ProbationCall - ' + credits + ' Credits (Custom)' },
+        unit_amount: priceCents
+      },
+      quantity: 1
+    }],
+    mode: 'payment',
+    success_url: process.env.BASE_URL + '/dashboard?success=true',
+    cancel_url: process.env.BASE_URL + '/dashboard?canceled=true',
+    metadata: { user_id: req.user.id, package_id: 'custom', credits: String(credits) }
+  });
+  
+  res.json({ url: session.url });
+});
+
+// Mark onboarding complete
+app.post('/api/profile/onboarding-complete', auth, async function(req, res) {
+  await supabase.from('profiles').update({ 
+    onboarding_complete: true 
+  }).eq('id', req.user.id);
+  
+  res.json({ success: true });
+});
+
 
 module.exports = app;

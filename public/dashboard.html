@@ -148,6 +148,9 @@ small{color:#666;font-size:0.75rem}
 .payout-item .status.paid{background:rgba(34,197,94,0.2);color:#22c55e}
 
 select option { background: #1a1a2e; color: #fff; }
+
+.onboard-step { animation: fadeIn 0.3s ease; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 </style>
 </head>
 <body>
@@ -218,6 +221,27 @@ select option { background: #1a1a2e; color: #fff; }
     <button class="buy-btn" onclick="showBuyModal()">Buy Credits</button>
   </div>
   
+  <div class="card" id="probationCard" style="display:none">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <h3 style="color:#00d9ff;margin-bottom:5px">⏰ Probation Countdown</h3>
+        <div id="probationCountdown" style="font-size:1.8rem;font-weight:700;color:#fff">-- days left</div>
+        <div id="probationEndDisplay" style="color:#8892b0;font-size:0.85rem"></div>
+      </div>
+      <button class="btn btn-secondary" onclick="showProbationModal()" style="width:auto;padding:10px 15px">Edit</button>
+    </div>
+  </div>
+  
+  <div class="card" id="noProbationCard" style="display:none;background:rgba(245,158,11,0.1);border-color:rgba(245,158,11,0.3)">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <h3 style="color:#f59e0b;margin-bottom:5px">📅 Set Your Probation End Date</h3>
+        <p style="color:#8892b0;font-size:0.85rem;margin:0">Know exactly how many credits you need!</p>
+      </div>
+      <button class="btn" onclick="showProbationModal()" style="width:auto;padding:10px 15px;background:#f59e0b">Set Date</button>
+    </div>
+  </div>
+
   <div class="tabs">
     <div class="tab active" onclick="showTab('call')">📞 Call</div>
     <div class="tab" onclick="showTab('schedule')">⏰ Schedule</div>
@@ -584,7 +608,9 @@ function loadUser() {
       termsAccepted = d.profile && d.profile.terms_accepted_at ? true : false;
       showDisclaimerIfNeeded();
       
-      document.getElementById('userEmail').textContent = d.user.email; fetch('/api/admin/check',{headers:{Authorization:'Bearer '+token}}).then(function(r){return r.json()}).then(function(d){if(d.isAdmin){var el=document.getElementById('adminLink');if(el)el.style.display='inline-block';}}).catch(function(){});
+      document.getElementById('userEmail').textContent = d.user.email;
+      probationEndDate = d.probationEndDate || d.profile.probation_end_date;
+      updateProbationDisplay(); fetch('/api/admin/check',{headers:{Authorization:'Bearer '+token}}).then(function(r){return r.json()}).then(function(d){if(d.isAdmin){var el=document.getElementById('adminLink');if(el)el.style.display='inline-block';}}).catch(function(){});
       document.getElementById('credits').textContent = d.isDev ? '∞' : d.profile.credits;
       if (d.isDev) document.getElementById('devBadge').style.display = 'inline';
       
@@ -922,6 +948,171 @@ function logout() {
   supabase.auth.signOut().then(function() { window.location.href = '/'; });
 }
 
+
+var probationEndDate = null;
+var calcData = null;
+
+function showProbationModal() {
+  document.getElementById('probationModal').classList.add('active');
+  if (probationEndDate) {
+    document.getElementById('probationEndDate').value = probationEndDate;
+    calculateCreditsNeeded();
+  }
+}
+
+function closeProbationModal() {
+  document.getElementById('probationModal').classList.remove('active');
+}
+
+function calculateCreditsNeeded() {
+  var endDate = document.getElementById('probationEndDate').value;
+  if (!endDate) {
+    document.getElementById('probationCalc').style.display = 'none';
+    return;
+  }
+  
+  fetch('/api/calculate-credits?endDate=' + endDate, { headers: { Authorization: 'Bearer ' + token } })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      calcData = d;
+      document.getElementById('calcDays').textContent = d.daysRemaining;
+      document.getElementById('calcCredits').textContent = d.creditsNeeded;
+      document.getElementById('calcPrice').textContent = d.priceDisplay;
+      document.getElementById('probationCalc').style.display = 'block';
+    });
+}
+
+document.getElementById('probationEndDate').addEventListener('change', calculateCreditsNeeded);
+
+function saveProbationDate() {
+  var endDate = document.getElementById('probationEndDate').value;
+  var st = document.getElementById('probationStatus');
+  
+  if (!endDate) {
+    st.style.display = 'block';
+    st.className = 'status error';
+    st.textContent = 'Please select a date';
+    return;
+  }
+  
+  fetch('/api/profile/probation-end', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({ endDate: endDate })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.success) {
+      st.style.display = 'block';
+      st.className = 'status success';
+      st.textContent = 'Saved!';
+      probationEndDate = endDate;
+      updateProbationDisplay();
+      setTimeout(closeProbationModal, 1000);
+    }
+  });
+}
+
+function buyExactCredits() {
+  if (!calcData) return;
+  
+  fetch('/api/checkout/custom', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({ credits: calcData.creditsNeeded, priceCents: calcData.priceCents })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.url) window.location.href = d.url;
+  });
+}
+
+function updateProbationDisplay() {
+  if (!probationEndDate) {
+    document.getElementById('probationCard').style.display = 'none';
+    document.getElementById('noProbationCard').style.display = 'block';
+    return;
+  }
+  
+  document.getElementById('noProbationCard').style.display = 'none';
+  document.getElementById('probationCard').style.display = 'block';
+  
+  var end = new Date(probationEndDate);
+  var today = new Date();
+  today.setHours(0, 0, 0, 0);
+  var days = Math.ceil((end - today) / (1000 * 60 * 60 * 24));
+  
+  if (days <= 0) {
+    document.getElementById('probationCountdown').innerHTML = '<span style="color:#22c55e">🎉 Complete!</span>';
+  } else if (days <= 7) {
+    document.getElementById('probationCountdown').innerHTML = '<span style="color:#22c55e">' + days + ' days left!</span>';
+  } else {
+    document.getElementById('probationCountdown').textContent = days + ' days left';
+  }
+  
+  document.getElementById('probationEndDisplay').textContent = 'Ends: ' + end.toLocaleDateString();
+}
+
+// Onboarding functions
+function checkOnboarding(profile) {
+  if (!profile.onboarding_complete && !profile.terms_accepted_at) {
+    // Show onboarding after terms
+  }
+}
+
+function onboardNext(step) {
+  document.querySelectorAll('.onboard-step').forEach(function(el) { el.style.display = 'none'; });
+  document.getElementById('onboardStep' + step).style.display = 'block';
+  
+  // Show/hide PIN vs Color based on county
+  if (step === 2) {
+    var county = document.getElementById('onboardCounty').value;
+    document.getElementById('onboardPinGroup').style.display = county === 'ftbend' ? 'none' : 'block';
+    document.getElementById('onboardColorGroup').style.display = county === 'ftbend' ? 'block' : 'none';
+  }
+}
+
+function selectOnboardMethod(method) {
+  document.querySelectorAll('#onboardingModal .method-option').forEach(function(el) { el.classList.remove('active'); });
+  event.target.closest('.method-option').classList.add('active');
+  document.getElementById('onboardMethod').value = method;
+  document.getElementById('onboardPhoneGroup').style.display = method === 'sms' ? 'block' : 'none';
+}
+
+function completeOnboarding() {
+  // Save all the onboarding data
+  var county = document.getElementById('onboardCounty').value;
+  var pin = document.getElementById('onboardPin').value;
+  var color = document.getElementById('onboardColor').value;
+  var method = document.getElementById('onboardMethod').value;
+  var phone = document.getElementById('onboardPhone').value;
+  var endDate = document.getElementById('onboardEndDate').value;
+  
+  // Save color if Ft Bend
+  if (county === 'ftbend' && color) {
+    fetch('/api/profile/color', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+      body: JSON.stringify({ color: color })
+    });
+  }
+  
+  // Save probation end date if provided
+  if (endDate) {
+    fetch('/api/profile/probation-end', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+      body: JSON.stringify({ endDate: endDate })
+    });
+  }
+  
+  // Mark onboarding complete
+  fetch('/api/profile/onboarding-complete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }
+  });
+  
+  document.getElementById('onboardingModal').classList.remove('active');
+  loadUser();
+}
+
+
 init();
 fetch('/api/admin/check',{headers:{Authorization:'Bearer '+token}}).then(function(r){return r.json()}).then(function(d){if(d.isAdmin){var el=document.getElementById('adminLink');if(el)el.style.display='inline-block';}}).catch(function(){});
 
@@ -942,5 +1133,94 @@ if (document.getElementById('schedCounty')) {
   document.getElementById('schedCounty').addEventListener('change', function() { updateCountyUI('schedCounty', 'schedPin'); });
 }
 </script>
+
+<!-- PROBATION MODAL -->
+<div class="modal" id="probationModal">
+  <div class="modal-content" style="max-width:450px">
+    <button class="modal-close" onclick="closeProbationModal()">&times;</button>
+    <h2 style="margin-bottom:20px">📅 Probation End Date</h2>
+    
+    <div class="form-group">
+      <label>When does your probation end?</label>
+      <input type="date" id="probationEndDate">
+    </div>
+    
+    <div id="probationCalc" style="display:none;margin:20px 0">
+      <div class="info-box green">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <strong id="calcDays">0</strong> days remaining<br>
+            <span style="color:#8892b0">= <strong id="calcCredits">0</strong> credits needed</span>
+          </div>
+          <div style="text-align:right">
+            <div style="font-size:1.5rem;font-weight:700;color:#22c55e" id="calcPrice">$0</div>
+            <div style="font-size:0.75rem;color:#8892b0">one-time</div>
+          </div>
+        </div>
+      </div>
+      <button class="btn btn-green" onclick="buyExactCredits()" style="margin-top:10px">Buy Exact Credits</button>
+    </div>
+    
+    <button class="btn" onclick="saveProbationDate()">💾 Save Date</button>
+    <div id="probationStatus" class="status" style="display:none;margin-top:10px"></div>
+  </div>
+</div>
+
+<!-- ONBOARDING MODAL -->
+<div class="modal" id="onboardingModal">
+  <div class="modal-content" style="max-width:500px">
+    <h2 style="color:#00d9ff;margin-bottom:20px">👋 Welcome to ProbationCall!</h2>
+    
+    <div id="onboardStep1" class="onboard-step">
+      <h3 style="margin-bottom:15px">Step 1: Select Your County</h3>
+      <div class="form-group">
+        <select id="onboardCounty" style="font-size:1.1rem;padding:15px">
+          <option value="">-- Select County --</option>
+          <option value="montgomery">Montgomery County</option>
+          <option value="ftbend">Fort Bend County</option>
+        </select>
+      </div>
+      <button class="btn" onclick="onboardNext(2)">Next →</button>
+    </div>
+    
+    <div id="onboardStep2" class="onboard-step" style="display:none">
+      <h3 style="margin-bottom:15px">Step 2: Your Details</h3>
+      <div class="form-group" id="onboardPinGroup">
+        <label>Your 6-Digit PIN</label>
+        <input type="text" id="onboardPin" maxlength="6" placeholder="123456" style="font-size:1.2rem;text-align:center;letter-spacing:5px">
+      </div>
+      <div class="form-group" id="onboardColorGroup" style="display:none">
+        <label>Your Assigned Color</label>
+        <input type="text" id="onboardColor" placeholder="e.g. Blue, Red, Green" style="font-size:1.1rem">
+      </div>
+      <button class="btn" onclick="onboardNext(3)">Next →</button>
+    </div>
+    
+    <div id="onboardStep3" class="onboard-step" style="display:none">
+      <h3 style="margin-bottom:15px">Step 3: Notification Preference</h3>
+      <div class="method-select">
+        <div class="method-option active" onclick="selectOnboardMethod('email')"><div class="icon">📧</div><div class="label">Email</div></div>
+        <div class="method-option" onclick="selectOnboardMethod('sms')"><div class="icon">💬</div><div class="label">SMS</div></div>
+      </div>
+      <input type="hidden" id="onboardMethod" value="email">
+      <div class="form-group" id="onboardPhoneGroup" style="display:none;margin-top:15px">
+        <label>Phone Number</label>
+        <input type="tel" id="onboardPhone" placeholder="+1234567890">
+      </div>
+      <button class="btn" onclick="onboardNext(4)">Next →</button>
+    </div>
+    
+    <div id="onboardStep4" class="onboard-step" style="display:none">
+      <h3 style="margin-bottom:15px">Step 4: Probation End Date (Optional)</h3>
+      <p style="color:#8892b0;margin-bottom:15px">This helps you buy the exact credits you need.</p>
+      <div class="form-group">
+        <input type="date" id="onboardEndDate">
+      </div>
+      <button class="btn btn-green" onclick="completeOnboarding()">🎉 Complete Setup</button>
+      <button class="btn btn-secondary" onclick="completeOnboarding()" style="margin-top:10px">Skip for now</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>
