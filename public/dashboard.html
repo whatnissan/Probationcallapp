@@ -424,8 +424,15 @@ select option { background: #1a1a2e; color: #fff; }
         </div>
       </div>
       
+      <div class="card" style="background:rgba(0,217,255,0.1);border-color:rgba(0,217,255,0.3);margin-bottom:20px">
+        <h3 style="color:#00d9ff;margin-bottom:15px">💳 Get Paid Automatically</h3>
+        <p style="color:#8892b0;font-size:0.85rem;margin-bottom:15px">Connect your bank account to receive commissions instantly when your referrals purchase.</p>
+        <div id="connectStatus" style="margin-bottom:10px"></div>
+        <button class="btn" id="connectBtn" onclick="setupStripeConnect()" style="background:#00d9ff;color:#000">Connect Bank Account</button>
+      </div>
+      
       <div class="card" style="background:rgba(34,197,94,0.1);border-color:rgba(34,197,94,0.3)">
-        <h3 style="color:#22c55e;margin-bottom:15px">💵 Request Payout</h3>
+        <h3 style="color:#22c55e;margin-bottom:15px">💵 Request Payout (Manual)</h3>
         <div class="form-group">
           <label>PayPal Email</label>
           <input type="email" id="payoutEmail" placeholder="your@paypal.email">
