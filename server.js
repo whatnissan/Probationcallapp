@@ -390,10 +390,16 @@ app.post('/api/schedule', auth, async function(req, res) {
   
   var existingResult = await supabase.from('user_schedules').select('id').eq('user_id', req.user.id).single();
   
+  var result;
   if (existingResult.data) {
-    await supabase.from('user_schedules').update(data).eq('user_id', req.user.id);
+    result = await supabase.from('user_schedules').update(data).eq('user_id', req.user.id);
   } else {
-    await supabase.from('user_schedules').insert(data);
+    result = await supabase.from('user_schedules').insert(data);
+  }
+  
+  if (result.error) {
+    console.error('[SCHEDULE] Error:', result.error);
+    return res.status(500).json({ error: result.error.message || 'Database error' });
   }
   
   rescheduleUser(req.user.id, data);
