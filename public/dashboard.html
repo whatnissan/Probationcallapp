@@ -640,7 +640,12 @@ function loadFtbendColors() {
       // Show recording if available
       var recEl = document.getElementById('ftbendRecording');
       if (d.recording_url) {
-        recEl.innerHTML = '<div class="ftbend-recording"><h4>🔊 Today\'s Recording</h4><audio controls src="' + d.recording_url + '"></audio></div>';
+        var recUrl = d.recording_url;
+        if (recUrl && recUrl.includes('Recordings/')) {
+          var sid = recUrl.match(/Recordings\/([A-Za-z0-9]+)/);
+          if (sid) recUrl = '/api/recording/' + sid[1];
+        }
+        recEl.innerHTML = '<div class="ftbend-recording"><h4>🔊 Today\'s Recording</h4><audio controls src="' + recUrl + '"></audio></div>';
       } else {
         recEl.innerHTML = '';
       }
