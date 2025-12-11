@@ -1121,7 +1121,7 @@ function completeOnboarding() {
 
 
 init();
-fetch('/api/admin/check',{headers:{Authorization:'Bearer '+token}}).then(function(r){return r.json()}).then(function(d){if(d.isAdmin){var el=document.getElementById('adminLink');if(el)el.style.display='inline-block';}}).catch(function(){});
+// Admin check moved to loadUser()
 
 // Toggle PIN field based on county
 function updateCountyUI(selectId, pinId) {
