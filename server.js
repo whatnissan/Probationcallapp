@@ -1109,13 +1109,13 @@ app.post('/api/admin/user/:id/disable', adminAuth, async function(req, res) {
   }
 });
 
-app.post('/api/admin/trigger-ftbend', auth, adminOnly, async function(req, res) {
+app.post('/api/admin/trigger-ftbend', adminAuth, async function(req, res) {
   console.log('[FTBEND] Manual trigger by admin');
   ftbendDailyColorCall();
   res.json({ success: true, message: 'Fort Bend call triggered' });
 });
 
-app.post('/api/admin/toggle-ftbend', auth, adminOnly, async function(req, res) {
+app.post('/api/admin/toggle-ftbend', adminAuth, async function(req, res) {
   var userId = req.body.userId;
   var enable = req.body.enable;
   
