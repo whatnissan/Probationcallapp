@@ -422,6 +422,12 @@ function rescheduleUser(userId, sched) {
   }
   if (!sched.enabled) return;
   
+  // Ft Bend users don't get individual calls - they get notified by the 5:05 AM system call
+  if (sched.county === 'ftbend') {
+    console.log('[SCHED] User ' + userId.slice(0,8) + '... is Ft Bend - will be notified by system call');
+    return;
+  }
+  
   var expr = sched.minute + ' ' + sched.hour + ' * * *';
   var staggerDelay = getStaggerDelay(userId);
   var staggerMinutes = Math.floor(staggerDelay / 60000);

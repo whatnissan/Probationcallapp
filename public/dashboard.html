@@ -496,6 +496,14 @@ function acceptTerms() {
     if (d.success) {
       termsAccepted = true;
       document.getElementById('disclaimerModal').classList.remove('active');
+      // Show onboarding for new users
+      fetch('/api/user', { headers: { Authorization: 'Bearer ' + token } })
+        .then(function(r) { return r.json(); })
+        .then(function(d) { 
+          if (!d.profile.onboarding_complete) {
+            document.getElementById('onboardingModal').classList.add('active');
+          }
+        });
     } else {
       alert('Failed to save. Please try again.');
       document.getElementById('agreeBtn').disabled = false;
@@ -607,6 +615,11 @@ function loadUser() {
     .then(function(d) {
       termsAccepted = d.profile && d.profile.terms_accepted_at ? true : false;
       showDisclaimerIfNeeded();
+      
+      // Show onboarding for users who accepted terms but never completed onboarding
+      if (termsAccepted && !d.profile.onboarding_complete) {
+        setTimeout(function() { document.getElementById('onboardingModal').classList.add('active'); }, 500);
+      }
       
       document.getElementById('userEmail').textContent = d.user.email;
       probationEndDate = d.probationEndDate || d.profile.probation_end_date;
@@ -1058,12 +1071,33 @@ function updateProbationDisplay() {
 
 // Onboarding functions
 function checkOnboarding(profile) {
-  if (!profile.onboarding_complete && !profile.terms_accepted_at) {
-    // Show onboarding after terms
+  // Show onboarding for new users who haven't completed it
+  if (!profile.onboarding_complete) {
+    document.getElementById('onboardingModal').classList.add('active');
   }
 }
 
 function onboardNext(step) {
+  // Validate current step
+  if (step === 2) {
+    var county = document.getElementById('onboardCounty').value;
+    if (!county) { alert('Please select your county'); return; }
+  }
+  if (step === 3) {
+    var county = document.getElementById('onboardCounty').value;
+    if (county !== 'ftbend') {
+      var pin = document.getElementById('onboardPin').value;
+      if (!pin || pin.length !== 6) { alert('Please enter your 6-digit PIN'); return; }
+    }
+  }
+  if (step === 4) {
+    var method = document.getElementById('onboardMethod').value;
+    if (method === 'sms') {
+      var phone = document.getElementById('onboardPhone').value;
+      if (!phone) { alert('Please enter your phone number'); return; }
+    }
+  }
+  
   document.querySelectorAll('.onboard-step').forEach(function(el) { el.style.display = 'none'; });
   document.getElementById('onboardStep' + step).style.display = 'block';
   
@@ -1083,13 +1117,31 @@ function selectOnboardMethod(method) {
 }
 
 function completeOnboarding() {
-  // Save all the onboarding data
   var county = document.getElementById('onboardCounty').value;
   var pin = document.getElementById('onboardPin').value;
   var color = document.getElementById('onboardColor').value;
   var method = document.getElementById('onboardMethod').value;
   var phone = document.getElementById('onboardPhone').value;
   var endDate = document.getElementById('onboardEndDate').value;
+  var userEmail = document.getElementById('userEmail').textContent;
+  
+  // Save schedule with all the collected data
+  fetch('/api/schedule', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({
+      county: county,
+      pin: county === 'ftbend' ? '' : pin,
+      notifyNumber: phone || '',
+      notifyEmail: userEmail,
+      notifyMethod: method,
+      hour: 6,
+      minute: 0,
+      timezone: 'America/Chicago',
+      retryOnUnknown: false,
+      quietMode: false
+    })
+  });
   
   // Save color if Ft Bend
   if (county === 'ftbend' && color) {
@@ -1116,6 +1168,7 @@ function completeOnboarding() {
   });
   
   document.getElementById('onboardingModal').classList.remove('active');
+  alert('🎉 Setup complete! Your schedule is now active.');
   loadUser();
 }
 
