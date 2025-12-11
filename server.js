@@ -610,6 +610,8 @@ async function initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notify
     url: process.env.BASE_URL + '/twiml/answer?callId=' + callId,
     statusCallback: process.env.BASE_URL + '/webhook/status?callId=' + callId,
     statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed'],
+    record: true,
+    recordingStatusCallback: process.env.BASE_URL + '/webhook/recording?callId=' + callId,
     timeout: 60
   });
   
@@ -740,6 +742,73 @@ app.post('/twiml/fallback', async function(req, res) {
   twiml.hangup();
   res.type('text/xml').send(twiml.toString());
 });
+
+app.post('/webhook/recording', async function(req, res) {
+  var callId = req.query.callId;
+  var recordingUrl = req.body.RecordingUrl;
+  
+  console.log('[RECORDING] CallId:', callId, 'URL:', recordingUrl);
+  
+  if (recordingUrl && callId) {
+    var mp3Url = recordingUrl + '.mp3';
+    var config = pendingCalls.get(callId);
+    
+    if (config) {
+      if (config.isFtbendDaily) {
+        // Fort Bend - save to daily_county_status (overwrites daily)
+        var today = new Date().toISOString().split('T')[0];
+        await supabase.from('daily_county_status')
+          .update({ recording_url: mp3Url })
+          .eq('county', 'ftbend')
+          .eq('date', today);
+        console.log('[RECORDING] Saved Fort Bend daily recording');
+      } else if (config.callSid) {
+        // Montgomery - save to call_history
+        await supabase.from('call_history')
+          .update({ recording_url: mp3Url })
+          .eq('call_sid', config.callSid);
+        console.log('[RECORDING] Saved Montgomery recording for', config.callSid);
+      }
+    }
+  }
+  res.sendStatus(200);
+});
+
+// Cron job to delete old recordings (runs daily at 3am)
+cron.schedule('0 3 * * *', async function() {
+  console.log('[CLEANUP] Deleting recordings older than 30 days...');
+  var cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - 30);
+  
+  // Get old recordings
+  var old = await supabase.from('call_history')
+    .select('recording_url')
+    .lt('created_at', cutoff.toISOString())
+    .not('recording_url', 'is', null);
+  
+  if (old.data) {
+    for (var i = 0; i < old.data.length; i++) {
+      var url = old.data[i].recording_url;
+      if (url) {
+        // Extract recording SID and delete from Twilio
+        var match = url.match(/RE[a-f0-9]{32}/);
+        if (match) {
+          try {
+            await twilioClient.recordings(match[0]).remove();
+            console.log('[CLEANUP] Deleted recording', match[0]);
+          } catch (e) {
+            console.log('[CLEANUP] Could not delete', match[0], e.message);
+          }
+        }
+      }
+    }
+    // Clear URLs from database
+    await supabase.from('call_history')
+      .update({ recording_url: null })
+      .lt('created_at', cutoff.toISOString());
+  }
+  console.log('[CLEANUP] Done');
+}, { timezone: 'America/Chicago' });
 
 app.post('/webhook/status', function(req, res) {
   var callId = req.query.callId;
@@ -1123,6 +1192,8 @@ async function ftbendDailyColorCall() {
       from: TWILIO_VOICE_NUMBER,
       url: process.env.BASE_URL + '/twiml/ftbend-answer?callId=' + callId,
       statusCallback: process.env.BASE_URL + '/webhook/status?callId=' + callId,
+      record: true,
+      recordingStatusCallback: process.env.BASE_URL + '/webhook/recording?callId=' + callId,
       timeout: 60
     });
     
@@ -1277,7 +1348,11 @@ app.get('/api/ftbend/today', async function(req, res) {
     .eq('date', today)
     .single();
   
-  res.json({ color: result.data ? result.data.color : null, date: today });
+  res.json({ 
+    color: result.data ? result.data.color : null, 
+    date: today,
+    recording_url: result.data ? result.data.recording_url : null
+  });
 });
 
 // ========== END FT BEND SYSTEM ==========
