@@ -104,6 +104,23 @@ small{color:#666;font-size:0.75rem}
 .checkbox-group label{color:#fff;font-size:0.9rem;cursor:pointer;flex:1}
 .checkbox-group small{display:block;color:#8892b0;font-size:0.75rem;margin-top:3px}
 .time-note{background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:8px;padding:10px;margin:10px 0;font-size:0.8rem;color:#f59e0b}
+.audio-player{margin-top:8px}
+.audio-player audio{width:100%;height:35px;border-radius:8px}
+.play-btn{background:linear-gradient(135deg,#00d4aa,#00b894);border:none;color:#fff;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:0.75rem;display:inline-flex;align-items:center;gap:5px}
+.play-btn:hover{opacity:0.9}
+.history-item{background:rgba(255,255,255,0.03);border-radius:10px;padding:12px 15px;margin-bottom:10px;border:1px solid rgba(255,255,255,0.05)}
+.history-item:hover{border-color:rgba(0,212,170,0.3)}
+.history-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px}
+.history-date{color:#8892b0;font-size:0.85rem}
+.history-county{font-size:0.7rem;color:#00d4aa;background:rgba(0,212,170,0.1);padding:2px 8px;border-radius:4px;margin-left:8px}
+.history-result{padding:4px 10px;border-radius:6px;font-size:0.8rem;font-weight:600}
+.history-result.NO_TEST{background:rgba(0,212,170,0.2);color:#00d4aa}
+.history-result.MUST_TEST{background:rgba(255,107,107,0.2);color:#ff6b6b}
+.history-result.UNKNOWN{background:rgba(245,158,11,0.2);color:#f59e0b}
+.history-result.RETRY_PENDING{background:rgba(100,100,255,0.2);color:#6b7fff}
+.history-transcript{font-size:0.75rem;color:#666;margin-top:8px;padding:8px;background:rgba(0,0,0,0.2);border-radius:6px;font-style:italic}
+.ftbend-recording{background:rgba(0,212,170,0.05);border:1px solid rgba(0,212,170,0.2);border-radius:10px;padding:15px;margin-top:15px}
+.ftbend-recording h4{color:#00d4aa;margin:0 0 10px 0;font-size:0.9rem}
 /* Disclaimer Modal */
 .disclaimer-modal{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.95);display:none;align-items:center;justify-content:center;z-index:200;padding:20px;overflow-y:auto}
 .disclaimer-modal.active{display:flex}
@@ -753,7 +770,11 @@ function loadUser() {
       } else {
         el.innerHTML = d.history.map(function(h) {
           var txt = h.result === 'NO_TEST' ? '✅ No Test' : h.result === 'MUST_TEST' ? '🚨 Must Test' : h.result === 'RETRY_PENDING' ? '🔄 Retrying...' : '⚠️ Unknown';
-          return '<div class="history-item"><div>' + new Date(h.created_at).toLocaleString() + '<br><small>PIN: ' + h.pin_used + '</small></div><span class="history-result ' + h.result + '">' + txt + '</span></div>';
+          var county = h.county === 'ftbend' ? 'Ft Bend' : 'Montgomery';
+          var pin = h.pin_used ? '<br><small>PIN: ' + h.pin_used + '</small>' : '';
+          var recording = h.recording_url ? '<div class="audio-player"><audio controls preload="none" src="' + h.recording_url + '"></audio></div>' : '';
+          var transcript = h.transcript ? '<div class="history-transcript">"' + h.transcript + '"</div>' : '';
+          return '<div class="history-item"><div class="history-header"><div><span class="history-date">' + new Date(h.created_at).toLocaleString() + '</span><span class="history-county">' + county + '</span>' + pin + '</div><span class="history-result ' + h.result + '">' + txt + '</span></div>' + recording + transcript + '</div>';
         }).join('');
       }
     });
