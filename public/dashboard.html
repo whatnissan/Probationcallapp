@@ -397,6 +397,11 @@ select option { background: #1a1a2e; color: #fff; }
           <input type="text" id="referralLink" readonly>
           <button onclick="copyReferralLink()">📋 Copy</button>
         </div>
+        <div style="text-align:center;margin-top:15px">
+          <p style="color:#8892b0;font-size:0.85rem;margin-bottom:10px">Or share this QR code:</p>
+          <img id="qrCode" src="" alt="QR Code" style="background:#fff;padding:10px;border-radius:8px;max-width:170px">
+          <p style="color:#666;font-size:0.75rem;margin-top:5px">Pro tip: People can also enter your code at checkout!</p>
+        </div>
       </div>
       
       <div class="stats-grid">
@@ -484,6 +489,10 @@ select option { background: #1a1a2e; color: #fff; }
     <h2 style="margin-bottom:10px">Buy Credits</h2>
     <p style="color:#8892b0;margin-bottom:5px">1 credit = 1 automated call</p>
     <div class="packages">
+      <div style="margin-bottom:20px">
+        <label style="color:#8892b0;font-size:0.9rem">Have a promo code?</label>
+        <input type="text" id="affiliateCodeInput" placeholder="Enter code (optional)" style="width:100%;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#fff;margin-top:5px;text-transform:uppercase">
+      </div>
       <div class="package" onclick="buyPackage('starter')"><div class="package-name">Starter</div><div class="package-credits">30</div><div class="package-price">$9.99</div></div>
       <div class="package popular" onclick="buyPackage('standard')"><div class="package-name">Standard</div><div class="package-credits">90</div><div class="package-price">$24.99</div><div class="package-save">Save 17%</div></div>
       <div class="package" onclick="buyPackage('value')"><div class="package-name">Value</div><div class="package-credits">180</div><div class="package-price">$39.99</div><div class="package-save">Save 33%</div></div>
@@ -725,7 +734,7 @@ function loadUser() {
       // Load affiliate data
       if (d.affiliate) {
         affiliateData = d.affiliate;
-        document.getElementById('referralLink').value = 'https://probationcall.com/r/' + d.affiliate.referralCode;
+        document.getElementById('referralLink').value = 'https://www.probationcall.com/r/' + d.affiliate.referralCode; document.getElementById('qrCode').src = 'https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=' + encodeURIComponent('https://www.probationcall.com/r/' + d.affiliate.referralCode);
         document.getElementById('affiliateBalance').textContent = '$' + (d.affiliate.balance / 100).toFixed(2);
         document.getElementById('totalEarned').textContent = '$' + (d.affiliate.totalEarned / 100).toFixed(2);
         document.getElementById('totalReferred').textContent = d.affiliate.referrals ? d.affiliate.referrals.length : 0;
@@ -831,10 +840,11 @@ function showBuyModal() { document.getElementById('buyModal').classList.add('act
 function closeBuyModal() { document.getElementById('buyModal').classList.remove('active'); }
 
 function buyPackage(packageId) {
+  var affiliateCode = document.getElementById('affiliateCodeInput').value.trim();
   fetch('/api/checkout', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
-    body: JSON.stringify({ packageId: packageId })
+    body: JSON.stringify({ packageId: packageId, affiliateCode: affiliateCode })
   }).then(function(r) { return r.json(); }).then(function(d) {
     if (d.url) window.location.href = d.url;
     else alert('Error: ' + (d.error || 'Unknown'));

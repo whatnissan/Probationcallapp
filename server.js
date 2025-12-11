@@ -547,11 +547,22 @@ app.post('/webhook/stripe', async function(req, res) {
       amount_cents: s.amount_total 
     }).select().single();
     
-    // AFFILIATE COMMISSION - if user was referred, give affiliate their cut
-    if (profile && profile.referred_by) {
+    // AFFILIATE COMMISSION - check for checkout promo code OR previous referral
+    var affiliateId = s.metadata.affiliate_id || null;
+    
+    // If no checkout code, check if user was previously referred
+    if (!affiliateId && profile && profile.referred_by) {
+      var refResult = await supabase.from('profiles')
+        .select('id')
+        .eq('referral_code', profile.referred_by)
+        .single();
+      if (refResult.data) affiliateId = refResult.data.id;
+    }
+    
+    if (affiliateId) {
       var referrerResult = await supabase.from('profiles')
         .select('id, affiliate_balance_cents, affiliate_total_earned_cents')
-        .eq('referral_code', profile.referred_by)
+        .eq('id', affiliateId)
         .single();
       
       if (referrerResult.data) {
