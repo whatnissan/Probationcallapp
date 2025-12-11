@@ -1293,27 +1293,39 @@ app.post('/twiml/ftbend-fallback', async function(req, res) {
 
 async function storeFtbendColor(color, transcript) {
   var today = new Date().toISOString().split('T')[0];
+  console.log('[FTBEND] Storing color:', color, 'for date:', today);
   
-  var existing = await supabase.from('daily_county_status')
-    .select('*')
-    .eq('county', 'ftbend')
-    .eq('date', today)
-    .single();
-  
-  if (existing.data) {
-    await supabase.from('daily_county_status')
-      .update({ color: color, transcript: transcript, updated_at: new Date().toISOString() })
-      .eq('id', existing.data.id);
-  } else {
-    await supabase.from('daily_county_status').insert({
-      county: 'ftbend',
-      date: today,
-      color: color,
-      transcript: transcript
-    });
+  try {
+    var existing = await supabase.from('daily_county_status')
+      .select('*')
+      .eq('county', 'ftbend')
+      .eq('date', today)
+      .single();
+    
+    var result;
+    if (existing.data) {
+      console.log('[FTBEND] Updating existing row:', existing.data.id);
+      result = await supabase.from('daily_county_status')
+        .update({ color: color, transcript: transcript, updated_at: new Date().toISOString() })
+        .eq('id', existing.data.id);
+    } else {
+      console.log('[FTBEND] Inserting new row');
+      result = await supabase.from('daily_county_status').insert({
+        county: 'ftbend',
+        date: today,
+        color: color,
+        transcript: transcript
+      });
+    }
+    
+    if (result.error) {
+      console.error('[FTBEND] Database error:', result.error);
+    } else {
+      console.log('[FTBEND] Stored color successfully for ' + today + ': ' + color);
+    }
+  } catch (e) {
+    console.error('[FTBEND] Exception in storeFtbendColor:', e.message);
   }
-  
-  console.log('[FTBEND] Stored color for ' + today + ': ' + color);
 }
 
 async function notifyAllFtbendUsers(color) {
