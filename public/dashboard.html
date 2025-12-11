@@ -853,12 +853,14 @@ function buyPackage(packageId) {
 }
 
 function redeemPromo() {
-  var code = document.getElementById('promoCode').value;
+  var code = document.getElementById('promoCode').value.trim().toUpperCase();
   var st = document.getElementById('promoStatus');
   if (!code) return;
   st.style.display = 'block';
   st.className = 'status calling';
-  st.textContent = 'Applying...';
+  st.textContent = 'Checking code...';
+  
+  // First try as free credits promo
   fetch('/api/redeem', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
@@ -870,8 +872,22 @@ function redeemPromo() {
       loadUser();
       setTimeout(closeBuyModal, 1500);
     } else {
-      st.className = 'status error';
-      st.textContent = '❌ ' + (d.error || 'Invalid code');
+      // Not a free credits code - check if affiliate code
+      fetch('/api/check-affiliate-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+        body: JSON.stringify({ code: code })
+      }).then(function(r) { return r.json(); }).then(function(d2) {
+        if (d2.valid) {
+          savedAffiliateCode = code;
+          st.className = 'status success';
+          st.textContent = '✅ Code "' + code + '" applied! Select a package.';
+          document.getElementById('promoCode').style.borderColor = '#22c55e';
+        } else {
+          st.className = 'status error';
+          st.textContent = '❌ Invalid code';
+        }
+      });
     }
   });
 }
