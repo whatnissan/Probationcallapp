@@ -289,7 +289,7 @@ select option { background: #1a1a2e; color: #fff; }
           <input type="hidden" id="notifyMethod" value="email">
         </div>
         <div class="form-group" id="emailGroup"><label>Your Email</label><input type="email" id="notifyEmail" placeholder="you@example.com"></div>
-        <div class="form-group" id="phoneGroup" style="display:none"><label>Your Phone Number</label><input type="tel" id="notifyNumber" placeholder="+1234567890"></div>
+        <div class="form-group" id="phoneGroup" style="display:none"><label>Your Phone Number</label><input type="tel" id="notifyNumber" placeholder="+1234567890" onblur="formatPhoneNumber(this)"></div>
         <div class="checkbox-group">
           <input type="checkbox" id="retryOnUnknown">
           <label for="retryOnUnknown">Auto-retry on unknown result<small>If we can't determine the result, automatically try again in 5 minutes (max 2 retries)</small></label>
@@ -337,7 +337,7 @@ select option { background: #1a1a2e; color: #fff; }
           <input type="hidden" id="schedMethod" value="email">
         </div>
         <div class="form-group" id="schedEmailGroup"><label>Your Email</label><input type="email" id="schedEmail" placeholder="you@example.com"></div>
-        <div class="form-group" id="schedPhoneGroup" style="display:none"><label>Your Phone</label><input type="tel" id="schedNotify" placeholder="+1234567890"></div>
+        <div class="form-group" id="schedPhoneGroup" style="display:none"><label>Your Phone</label><input type="tel" id="schedNotify" placeholder="+1234567890" onblur="formatPhoneNumber(this)"></div>
         <div class="consent-box" id="schedSmsConsentBox" style="display:none">
           <h4>📱 SMS Notification Consent</h4>
           <p>By checking the box below, you agree to receive daily SMS messages from ProbationCall. Msg & data rates may apply. Reply STOP to unsubscribe.</p>
@@ -1550,7 +1550,7 @@ if (document.getElementById('schedCounty')) {
       <input type="hidden" id="onboardMethod" value="email">
       <div class="form-group" id="onboardPhoneGroup" style="display:none;margin-top:15px">
         <label>Phone Number</label>
-        <input type="tel" id="onboardPhone" placeholder="+1234567890">
+        <input type="tel" id="onboardPhone" placeholder="+1234567890" onblur="formatPhoneNumber(this)">
       </div>
       <button class="btn" onclick="onboardNext(4)">Next →</button>
     </div>
