@@ -1304,6 +1304,25 @@ function updateCountyUI(selectId, pinId) {
     pinGroup.style.display = 'block';
     pinEl.required = true;
   }
+  
+  // Handle time picker for schedule form
+  if (selectId === 'schedCounty') {
+    var timeNote = document.getElementById('schedTimeNote');
+    var ftbendNote = document.getElementById('schedFtbendNote');
+    var schedHour = document.getElementById('schedHour');
+    if (timeNote && ftbendNote && schedHour) {
+      var timeRow = schedHour.closest('div[style*="flex"]');
+      if (county === 'ftbend') {
+        timeNote.style.display = 'none';
+        ftbendNote.style.display = 'block';
+        if (timeRow) timeRow.style.display = 'none';
+      } else {
+        timeNote.style.display = 'block';
+        ftbendNote.style.display = 'none';
+        if (timeRow) timeRow.style.display = 'flex';
+      }
+    }
+  }
 }
 document.getElementById('county').addEventListener('change', function() { updateCountyUI('county', 'pin'); });
 if (document.getElementById('schedCounty')) {
