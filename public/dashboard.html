@@ -671,22 +671,8 @@ function updateCoveredUntil(credits) {
 
 function loadUser() {
   fetch('/api/user', { headers: { Authorization: 'Bearer ' + token } })
-    .then(function(r) { 
-      if (!r.ok) {
-        console.error('API error:', r.status);
-        if (r.status === 401) {
-          // Token expired or invalid - redirect to login
-          window.location.href = '/login';
-          return null;
-        }
-      }
-      return r.json(); 
-    })
+    .then(function(r) { return r.json(); })
     .then(function(d) {
-      if (!d || d.error) {
-        console.error('User data error:', d);
-        return;
-      }
       termsAccepted = d.profile && d.profile.terms_accepted_at ? true : false;
       showDisclaimerIfNeeded();
       
