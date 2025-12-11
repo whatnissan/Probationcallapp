@@ -484,7 +484,7 @@ select option { background: #1a1a2e; color: #fff; }
       <div class="form-group"><input type="email" id="testEmail" placeholder="you@example.com"></div>
       <button class="btn" onclick="testEmail()">📧 Send Test Email</button>
       <h3 style="margin:20px 0 10px;font-size:1rem">Test SMS</h3>
-      <div class="form-group"><input type="tel" id="testPhone" placeholder="+1234567890"></div>
+      <div class="form-group"><input type="tel" id="testPhone" onblur="formatPhoneNumber(this)" placeholder="+1234567890"></div>
       <button class="btn btn-secondary" onclick="testSMS()">💬 Send Test SMS</button>
       <h3 style="margin:20px 0 10px;font-size:1rem">Test WhatsApp</h3>
       <div class="info-box warning"><strong>First:</strong> Message <strong>+1 555 896 5863</strong> from WhatsApp, then test.</div>

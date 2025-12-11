@@ -91,7 +91,18 @@ function getCountyConfig(countyId) {
 
 
 // Affiliate settings
-const AFFILIATE_COMMISSION_PERCENT = 30; // 30% commission
+const AFFILIATE_COMMISSION_PERCENT = 30;
+
+// Format phone to E.164 (+1XXXXXXXXXX)
+function formatPhone(phone) {
+  if (!phone) return phone;
+  var cleaned = phone.replace(/[^0-9]/g, '');
+  if (cleaned.length === 10) cleaned = '1' + cleaned;
+  if (cleaned.length === 11 && cleaned[0] === '1') {
+    return '+' + cleaned;
+  }
+  return phone.startsWith('+') ? phone : '+' + cleaned;
+} // 30% commission
 const MIN_PAYOUT_CENTS = 2000; // $20 minimum payout
 const REFERRED_BONUS_CREDITS = 5; // Bonus credits for new users who use referral
 
@@ -455,7 +466,7 @@ app.post('/api/schedule', auth, async function(req, res) {
     county: req.body.county || 'montgomery',
     target_number: getCountyConfig(req.body.county || 'montgomery').number,
     pin: req.body.pin,
-    notify_number: req.body.notifyNumber,
+    notify_number: formatPhone(req.body.notifyNumber),
     notify_email: req.body.notifyEmail || null,
     notify_method: req.body.notifyMethod || 'email',
     hour: hour,
