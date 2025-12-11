@@ -555,9 +555,10 @@ app.post('/api/call', auth, async function(req, res) {
   var notifyMethod = req.body.notifyMethod || 'email';
   var retryOnUnknown = req.body.retryOnUnknown || false;
   
-  if (!pin) return res.status(400).json({ error: 'Missing fields' });
+  var countyConfig = COUNTIES[county] || COUNTIES['montgomery'];
+  if (countyConfig.process !== 'color' && !pin) return res.status(400).json({ error: 'PIN required for this county' });
   if (!/^\+\d{10,15}$/.test(targetNumber)) return res.status(400).json({ error: 'Invalid phone format' });
-  if (pin.length !== 6 || !/^\d+$/.test(pin)) return res.status(400).json({ error: 'PIN must be 6 digits' });
+  if (pin && (pin.length !== 6 || !/^\d+$/.test(pin))) return res.status(400).json({ error: 'PIN must be 6 digits' });
   
   try {
     var result = await initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notifyMethod, req.user.id, retryOnUnknown, 0, county);
@@ -1084,5 +1085,185 @@ app.get('/admin', function(req, res) {
 });
 
 // ========== END ADMIN ROUTES ==========
+
+
+
+// ========== FT BEND DAILY COLOR SYSTEM ==========
+async function ftbendDailyColorCall() {
+  console.log('[FTBEND] Starting daily color detection call...');
+  
+  var callId = 'ftbend_daily_' + Date.now();
+  var targetNumber = COUNTIES.ftbend.number;
+  
+  pendingCalls.set(callId, {
+    isFtbendDaily: true,
+    targetNumber: targetNumber,
+    result: null
+  });
+  
+  try {
+    var call = await twilioClient.calls.create({
+      to: targetNumber,
+      from: TWILIO_VOICE_NUMBER,
+      url: process.env.BASE_URL + '/twiml/ftbend-answer?callId=' + callId,
+      statusCallback: process.env.BASE_URL + '/webhook/status?callId=' + callId,
+      timeout: 60
+    });
+    
+    pendingCalls.get(callId).callSid = call.sid;
+    console.log('[FTBEND] Call initiated: ' + call.sid);
+  } catch (e) {
+    console.error('[FTBEND] Call failed:', e.message);
+  }
+}
+
+app.post('/twiml/ftbend-answer', function(req, res) {
+  var callId = req.query.callId;
+  var twiml = new twilio.twiml.VoiceResponse();
+  
+  console.log('[FTBEND] Call answered, listening for color...');
+  twiml.pause({ length: 3 });
+  twiml.gather({
+    input: 'speech',
+    timeout: 20,
+    speechTimeout: 5,
+    action: process.env.BASE_URL + '/twiml/ftbend-result?callId=' + callId,
+    hints: FTBEND_COLORS.join(', ')
+  });
+  twiml.redirect(process.env.BASE_URL + '/twiml/ftbend-fallback?callId=' + callId);
+  
+  res.type('text/xml').send(twiml.toString());
+});
+
+app.post('/twiml/ftbend-result', async function(req, res) {
+  var callId = req.query.callId;
+  var speech = req.body.SpeechResult || '';
+  var config = pendingCalls.get(callId);
+  var twiml = new twilio.twiml.VoiceResponse();
+  
+  console.log('[FTBEND] Speech detected: "' + speech + '"');
+  
+  if (config && !config.result) {
+    var detectedColor = detectColor(speech);
+    
+    if (detectedColor) {
+      console.log('[FTBEND] Color detected: ' + detectedColor);
+      config.result = detectedColor;
+      await storeFtbendColor(detectedColor, speech);
+      await notifyAllFtbendUsers(detectedColor);
+    } else {
+      console.log('[FTBEND] No color detected in speech');
+      config.result = 'UNKNOWN';
+    }
+  }
+  
+  twiml.hangup();
+  res.type('text/xml').send(twiml.toString());
+});
+
+app.post('/twiml/ftbend-fallback', async function(req, res) {
+  var callId = req.query.callId;
+  var config = pendingCalls.get(callId);
+  
+  console.log('[FTBEND] Fallback - no speech detected');
+  
+  if (config && !config.result) {
+    config.result = 'UNKNOWN';
+    await storeFtbendColor('UNKNOWN', '');
+  }
+  
+  var twiml = new twilio.twiml.VoiceResponse();
+  twiml.hangup();
+  res.type('text/xml').send(twiml.toString());
+});
+
+async function storeFtbendColor(color, transcript) {
+  var today = new Date().toISOString().split('T')[0];
+  
+  var existing = await supabase.from('daily_county_status')
+    .select('*')
+    .eq('county', 'ftbend')
+    .eq('date', today)
+    .single();
+  
+  if (existing.data) {
+    await supabase.from('daily_county_status')
+      .update({ color: color, transcript: transcript, updated_at: new Date().toISOString() })
+      .eq('id', existing.data.id);
+  } else {
+    await supabase.from('daily_county_status').insert({
+      county: 'ftbend',
+      date: today,
+      color: color,
+      transcript: transcript
+    });
+  }
+  
+  console.log('[FTBEND] Stored color for ' + today + ': ' + color);
+}
+
+async function notifyAllFtbendUsers(color) {
+  var result = await supabase.from('user_schedules')
+    .select('*')
+    .eq('county', 'ftbend')
+    .eq('enabled', true);
+  
+  if (!result.data || result.data.length === 0) {
+    console.log('[FTBEND] No users to notify');
+    return;
+  }
+  
+  console.log('[FTBEND] Notifying ' + result.data.length + ' users about color: ' + color);
+  
+  var message = color === 'UNKNOWN'
+    ? '⚠️ ProbationCall: Could not detect today\'s color. Please call +1 (281) 238-3668'
+    : '🎨 Fort Bend Color: ' + color.toUpperCase() + '\n\nCheck if this is your assigned color.';
+  
+  for (var i = 0; i < result.data.length; i++) {
+    var sched = result.data[i];
+    
+    (function(s, delay) {
+      setTimeout(async function() {
+        if (!s.quiet_mode || color === 'UNKNOWN') {
+          await notify(s.notify_number, s.notify_email, s.notify_method, message, 'ftbend_daily');
+        }
+        await supabase.from('call_history').insert({
+          user_id: s.user_id,
+          target_number: COUNTIES.ftbend.number,
+          result: 'COLOR:' + color,
+          county: 'ftbend'
+        });
+      }, delay);
+    })(sched, i * 2000);
+  }
+}
+
+cron.schedule('5 5 * * *', function() {
+  console.log('[FTBEND] Cron triggered - starting daily color call');
+  ftbendDailyColorCall();
+}, { timezone: 'America/Chicago' });
+
+app.get('/api/ftbend/colors', auth, async function(req, res) {
+  var result = await supabase.from('daily_county_status')
+    .select('*')
+    .eq('county', 'ftbend')
+    .order('date', { ascending: false })
+    .limit(90);
+  
+  res.json({ colors: result.data || [] });
+});
+
+app.get('/api/ftbend/today', async function(req, res) {
+  var today = new Date().toISOString().split('T')[0];
+  var result = await supabase.from('daily_county_status')
+    .select('*')
+    .eq('county', 'ftbend')
+    .eq('date', today)
+    .single();
+  
+  res.json({ color: result.data ? result.data.color : null, date: today });
+});
+
+// ========== END FT BEND SYSTEM ==========
 
 module.exports = app;
