@@ -608,7 +608,7 @@ async function init() {
   } else {
     // Clear any stale token and redirect to login
     try { localStorage.removeItem('pb_token'); } catch(e) {}
-    window.location.href = '/login';
+    window.location.href = '/login?logout=true';
   }
 }
 
@@ -725,7 +725,7 @@ function loadUser() {
   if (!token) {
     console.log('No token, redirecting to login');
     localStorage.removeItem('pb_token');
-    window.location.href = '/login';
+    window.location.href = '/login?logout=true';
     return;
   }
   
@@ -749,7 +749,7 @@ function loadUser() {
       if (r.status === 401) {
         console.log('Token invalid, redirecting to login');
         localStorage.removeItem('pb_token');
-        window.location.href = '/login';
+        window.location.href = '/login?logout=true';
         throw new Error('Unauthorized');
       }
       return r.json();

@@ -73,6 +73,12 @@ async function handleOAuthCallback() {
 
 // Check if already logged in
 async function checkExistingSession() {
+  // Don't auto-redirect if user explicitly came to login
+  var params = new URLSearchParams(window.location.search);
+  if (params.get('logout') === 'true') {
+    return false;
+  }
+  
   var result = await supabase.auth.getSession();
   if (result.data.session) {
     window.location.href = '/dashboard';
