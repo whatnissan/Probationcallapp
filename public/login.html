@@ -73,14 +73,22 @@ async function handleOAuthCallback() {
 
 // Check if already logged in
 async function checkExistingSession() {
-  // Don't auto-redirect if user explicitly came to login
+  // Don't auto-redirect if user explicitly came to login or already redirecting
   var params = new URLSearchParams(window.location.search);
   if (params.get('logout') === 'true') {
+    sessionStorage.removeItem('redirecting');
+    await supabase.auth.signOut();
+    return false;
+  }
+  
+  if (sessionStorage.getItem('redirecting')) {
+    sessionStorage.removeItem('redirecting');
     return false;
   }
   
   var result = await supabase.auth.getSession();
   if (result.data.session) {
+    sessionStorage.setItem('redirecting', 'true');
     window.location.href = '/dashboard';
     return true;
   }
@@ -122,10 +130,11 @@ async function login() {
   }
 }
 
-// Listen for auth state changes
+// Listen for auth state changes - only redirect on new sign in, not page load
 supabase.auth.onAuthStateChange(function(event, session) {
   console.log('Auth event:', event);
-  if (event === 'SIGNED_IN' && session) {
+  if (event === 'SIGNED_IN' && session && !sessionStorage.getItem('redirecting')) {
+    sessionStorage.setItem('redirecting', 'true');
     window.location.href = '/dashboard';
   }
 });
