@@ -1381,22 +1381,55 @@ app.delete('/api/admin/promo/:id', adminAuth, async function(req, res) {
 app.delete('/api/admin/user/:id', adminAuth, async function(req, res) {
   try {
     var userId = req.params.id;
-    // Delete from user_schedules first
+    console.log('[ADMIN] Deleting user: ' + userId);
+    
+    // Delete from all related tables
     await supabase.from('user_schedules').delete().eq('user_id', userId);
-    // Delete from call_history
+    console.log('[ADMIN] Deleted user_schedules');
+    
     await supabase.from('call_history').delete().eq('user_id', userId);
-    // Delete from purchases
+    console.log('[ADMIN] Deleted call_history');
+    
     await supabase.from('purchases').delete().eq('user_id', userId);
-    // Delete from payout_requests
+    console.log('[ADMIN] Deleted purchases');
+    
     await supabase.from('payout_requests').delete().eq('user_id', userId);
+    console.log('[ADMIN] Deleted payout_requests');
+    
+    await supabase.from('referrals').delete().eq('referrer_id', userId);
+    await supabase.from('referrals').delete().eq('referred_id', userId);
+    console.log('[ADMIN] Deleted referrals');
+    
+    await supabase.from('affiliate_earnings').delete().eq('affiliate_id', userId);
+    await supabase.from('affiliate_earnings').delete().eq('referred_id', userId);
+    console.log('[ADMIN] Deleted affiliate_earnings');
+    
+    await supabase.from('promo_redemptions').delete().eq('user_id', userId);
+    console.log('[ADMIN] Deleted promo_redemptions');
+    
     // Delete from profiles
     await supabase.from('profiles').delete().eq('id', userId);
-    // Delete from auth (requires service role)
-    await supabase.auth.admin.deleteUser(userId);
-    console.log('[ADMIN] Deleted user: ' + userId.slice(0,8));
+    console.log('[ADMIN] Deleted profiles');
+    
+    // Delete from Supabase auth
+    var authResult = await supabase.auth.admin.deleteUser(userId);
+    if (authResult.error) {
+      console.error('[ADMIN] Auth delete error:', authResult.error);
+    } else {
+      console.log('[ADMIN] Deleted from auth');
+    }
+    
+    // Remove from scheduled jobs if exists
+    if (scheduledJobs.has(userId)) {
+      scheduledJobs.get(userId).stop();
+      scheduledJobs.delete(userId);
+      console.log('[ADMIN] Stopped scheduled job');
+    }
+    
+    console.log('[ADMIN] Successfully deleted user: ' + userId.slice(0,8));
     res.json({ success: true });
   } catch(e) {
-    console.error('Delete user error:', e);
+    console.error('[ADMIN] Delete user error:', e);
     res.status(500).json({ error: e.message });
   }
 });
