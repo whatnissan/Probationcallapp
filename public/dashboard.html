@@ -603,10 +603,18 @@ async function init() {
   var result = await supabase.auth.getSession();
   if (result.data.session) {
     token = result.data.session.access_token;
-    localStorage.setItem('pb_token', token);
+    try { localStorage.setItem('pb_token', token); } catch(e) { console.log('localStorage not available'); }
     showDashboard();
   } else {
-    window.location.href = '/login';
+    // Try localStorage backup for iOS
+    var savedToken = null;
+    try { savedToken = localStorage.getItem('pb_token'); } catch(e) {}
+    if (savedToken) {
+      token = savedToken;
+      showDashboard();
+    } else {
+      window.location.href = '/login';
+    }
   }
 }
 
@@ -719,6 +727,14 @@ function updateCoveredUntil(credits) {
 }
 
 function loadUser() {
+  // Check if we have a valid token
+  if (!token) {
+    console.log('No token, redirecting to login');
+    localStorage.removeItem('pb_token');
+    window.location.href = '/login';
+    return;
+  }
+  
   // Apply saved referral code if present
   var savedRef = localStorage.getItem('referralCode');
   if (savedRef) {
@@ -735,7 +751,15 @@ function loadUser() {
   }
   
   fetch('/api/user', { headers: { Authorization: 'Bearer ' + token } })
-    .then(function(r) { return r.json(); })
+    .then(function(r) {
+      if (r.status === 401) {
+        console.log('Token invalid, redirecting to login');
+        localStorage.removeItem('pb_token');
+        window.location.href = '/login';
+        throw new Error('Unauthorized');
+      }
+      return r.json();
+    })
     .then(function(d) {
       termsAccepted = d.profile && d.profile.terms_accepted_at ? true : false;
       showDisclaimerIfNeeded();
