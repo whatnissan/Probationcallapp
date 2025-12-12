@@ -566,12 +566,14 @@ function acceptTerms() {
           }
         });
     } else {
-      alert('Failed to save. Please try again.');
+      console.error('Terms error:', d);
+      alert('Failed to save: ' + (d.error || 'Unknown error'));
       document.getElementById('agreeBtn').disabled = false;
       document.getElementById('agreeBtn').textContent = 'I Understand and Accept All Risks';
     }
-  }).catch(function() {
-    alert('Failed to save. Please try again.');
+  }).catch(function(e) {
+    console.error('Terms error:', e);
+    alert('Failed to save: ' + e.message);
     document.getElementById('agreeBtn').disabled = false;
     document.getElementById('agreeBtn').textContent = 'I Understand and Accept All Risks';
   });
