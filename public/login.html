@@ -99,19 +99,28 @@ function showError(msg) {
 }
 
 async function login() {
-  document.getElementById('loginBtn').style.display = 'none';
-  document.getElementById('loading').style.display = 'block';
-  document.getElementById('status').style.display = 'none';
-  
-  var result = await supabase.auth.signInWithOAuth({
-    provider: 'google',
-    options: {
-      redirectTo: window.location.origin + '/login'
+  console.log('Login clicked');
+  try {
+    document.getElementById('loginBtn').style.display = 'none';
+    document.getElementById('loading').style.display = 'block';
+    document.getElementById('status').style.display = 'none';
+    
+    console.log('Calling signInWithOAuth...');
+    var result = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: window.location.origin + '/login'
+      }
+    });
+    
+    console.log('OAuth result:', result);
+    if (result.error) {
+      console.error('OAuth error:', result.error);
+      showError(result.error.message);
     }
-  });
-  
-  if (result.error) {
-    showError(result.error.message);
+  } catch(e) {
+    console.error('Login exception:', e);
+    showError(e.message);
   }
 }
 
