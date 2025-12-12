@@ -50,30 +50,22 @@ async function handleOAuthCallback() {
     document.getElementById('loginBtn').style.display = 'none';
     document.getElementById('loading').style.display = 'block';
     
-    // Wait for Supabase to process the hash
-    var maxAttempts = 20;
-    var attempts = 0;
+    // Let Supabase handle the hash automatically
+    await new Promise(function(r) { setTimeout(r, 1000); });
     
-    var checkSession = async function() {
-      attempts++;
-      var result = await supabase.auth.getSession();
-      
+    var result = await supabase.auth.getSession();
+    if (result.data.session) {
+      window.location.href = '/dashboard';
+    } else {
+      // Try one more time
+      await new Promise(function(r) { setTimeout(r, 1000); });
+      result = await supabase.auth.getSession();
       if (result.data.session) {
-        // Session established, redirect to dashboard
         window.location.href = '/dashboard';
-        return;
-      }
-      
-      if (attempts < maxAttempts) {
-        setTimeout(checkSession, 250);
       } else {
-        // Failed after all attempts
         showError('Login failed. Please try again.');
       }
-    };
-    
-    // Give Supabase a moment to process the hash, then check
-    setTimeout(checkSession, 500);
+    }
     return true;
   }
   return false;
