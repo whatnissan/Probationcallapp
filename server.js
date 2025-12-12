@@ -1611,16 +1611,26 @@ app.get('/api/recording/:recordingSid', function(req, res) {
 });
 
 app.get('/api/ftbend/today', async function(req, res) {
-  var today = new Date().toISOString().split('T')[0];
+  var now = new Date();
+  var cst = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
+  var hour = cst.getHours();
+  
+  // If before 4am CST, show yesterday's color
+  var dateToShow = new Date(cst);
+  if (hour < 4) {
+    dateToShow.setDate(dateToShow.getDate() - 1);
+  }
+  var dateStr = dateToShow.toISOString().split('T')[0];
+  
   var result = await supabase.from('daily_county_status')
     .select('*')
     .eq('county', 'ftbend')
-    .eq('date', today)
+    .eq('date', dateStr)
     .single();
   
   res.json({ 
     color: result.data ? result.data.color : null, 
-    date: today,
+    date: dateStr,
     recording_url: result.data ? result.data.recording_url : null
   });
 });
