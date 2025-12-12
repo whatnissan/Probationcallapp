@@ -535,7 +535,7 @@ select option { background: #1a1a2e; color: #fff; }
 var SUPA_URL = 'https://xvpuqeaowvlkcyywgaaq.supabase.co';
 var SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh2cHVxZWFvd3Zsa2N5eXdnYWFxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQyNzc1MjcsImV4cCI6MjA3OTg1MzUyN30.y90odNDSU0zZcVGMK9C39gSFDL9NJcy5E4yBkgcFc8w';
 var supabase = window.supabase.createClient(SUPA_URL, SUPA_KEY);
-var token = null;
+var token = localStorage.getItem('pb_token') || null;
 var termsAccepted = false;
 var affiliateData = null;
 
@@ -603,6 +603,7 @@ async function init() {
   var result = await supabase.auth.getSession();
   if (result.data.session) {
     token = result.data.session.access_token;
+    localStorage.setItem('pb_token', token);
     showDashboard();
   } else {
     window.location.href = '/login';
@@ -612,7 +613,11 @@ async function init() {
 supabase.auth.onAuthStateChange(function(event, session) {
   if (event === 'SIGNED_IN' && session) {
     token = session.access_token;
+    localStorage.setItem('pb_token', token);
     showDashboard();
+  } else if (event === 'SIGNED_OUT') {
+    localStorage.removeItem('pb_token');
+    token = null;
   }
 });
 
