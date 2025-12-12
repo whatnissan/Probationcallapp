@@ -550,10 +550,21 @@ document.querySelectorAll('#agreeCheck1, #agreeCheck2, #agreeCheck3').forEach(fu
 function acceptTerms() {
   document.getElementById('agreeBtn').disabled = true;
   document.getElementById('agreeBtn').textContent = 'Saving...';
+  
+  if (!token) {
+    alert('Session expired. Please refresh the page.');
+    window.location.reload();
+    return;
+  }
+  
   fetch('/api/accept-terms', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }
-  }).then(function(r) { return r.json(); }).then(function(d) {
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    credentials: 'same-origin'
+  }).then(function(r) { 
+    if (!r.ok) throw new Error('Server error: ' + r.status);
+    return r.json(); 
+  }).then(function(d) {
     if (d.success) {
       termsAccepted = true;
       document.getElementById('disclaimerModal').classList.remove('active');
