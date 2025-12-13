@@ -76,11 +76,61 @@ const FTBEND_COLORS = [
 
 function detectColor(transcript) {
   var lower = transcript.toLowerCase();
+  console.log('[FTBEND] Analyzing: "' + lower + '"');
+  
+  // Try to extract color from patterns like "color is X"
+  var patterns = [
+    /color\s+(?:is|for today is|today is|will be)\s+([a-z]+)/i,
+    /today(?:'s)?\s+color\s+(?:is\s+)?([a-z]+)/i,
+    /the\s+color\s+(?:is\s+)?([a-z]+)/i
+  ];
+  
+  for (var p = 0; p < patterns.length; p++) {
+    var match = lower.match(patterns[p]);
+    if (match && match[1]) {
+      var extracted = match[1].trim();
+      if (['the', 'a', 'is', 'for', 'to', 'and'].indexOf(extracted) === -1) {
+        console.log('[FTBEND] Pattern found: ' + extracted);
+        return extracted.charAt(0).toUpperCase() + extracted.slice(1);
+      }
+    }
+  }
+  
+  // Common misrecognitions
+  var fixes = {
+    'all of': 'olive', 'all live': 'olive', 'alive': 'olive',
+    'canaries': 'canary', 'can airy': 'canary',
+    'read': 'red', 'blew': 'blue', 'great': 'gray', 'grey': 'gray',
+    'why it': 'white', 'brow': 'brown', 'lack': 'black',
+    'goal': 'gold', 'pin': 'pink', 'purpose': 'purple',
+    'tell': 'teal', 'beach': 'peach', 'line': 'lime'
+  };
+  
+  for (var fix in fixes) {
+    if (lower.includes(fix)) {
+      console.log('[FTBEND] Misrecognition fix: ' + fix + ' -> ' + fixes[fix]);
+      return fixes[fix].charAt(0).toUpperCase() + fixes[fix].slice(1);
+    }
+  }
+  
+  // Check known colors
   for (var i = 0; i < FTBEND_COLORS.length; i++) {
     if (lower.includes(FTBEND_COLORS[i])) {
+      console.log('[FTBEND] Known color: ' + FTBEND_COLORS[i]);
       return FTBEND_COLORS[i].charAt(0).toUpperCase() + FTBEND_COLORS[i].slice(1);
     }
   }
+  
+  // Last resort - find word after "is" or "color"
+  var afterIs = lower.match(/(?:is|color)\s+([a-z]{3,})/);
+  if (afterIs && afterIs[1]) {
+    var word = afterIs[1];
+    if (['the', 'for', 'today', 'your', 'you'].indexOf(word) === -1) {
+      console.log('[FTBEND] Word after is/color: ' + word);
+      return word.charAt(0).toUpperCase() + word.slice(1);
+    }
+  }
+  
   return null;
 }
 
