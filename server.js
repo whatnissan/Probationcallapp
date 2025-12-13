@@ -1533,10 +1533,12 @@ app.post('/twiml/ftbend-answer', function(req, res) {
   twiml.pause({ length: 3 });
   twiml.gather({
     input: 'speech',
-    timeout: 20,
-    speechTimeout: 5,
+    timeout: 30,
+    speechTimeout: 'auto',
     action: process.env.BASE_URL + '/twiml/ftbend-result?callId=' + callId,
-    hints: FTBEND_COLORS.join(', ')
+    hints: FTBEND_COLORS.join(', ') + ', color, today, is',
+    language: 'en-US',
+    profanityFilter: false
   });
   twiml.redirect(process.env.BASE_URL + '/twiml/ftbend-fallback?callId=' + callId);
   
