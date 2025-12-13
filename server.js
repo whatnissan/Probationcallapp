@@ -78,6 +78,16 @@ function detectColor(transcript) {
   var lower = transcript.toLowerCase();
   console.log('[FTBEND] Analyzing: "' + lower + '"');
   
+  // FIRST - check known colors (most reliable)
+  for (var i = 0; i < FTBEND_COLORS.length; i++) {
+    // Use word boundary check to avoid partial matches
+    var colorRegex = new RegExp('\\b' + FTBEND_COLORS[i] + '\\b', 'i');
+    if (colorRegex.test(lower)) {
+      console.log('[FTBEND] Known color found: ' + FTBEND_COLORS[i]);
+      return FTBEND_COLORS[i].charAt(0).toUpperCase() + FTBEND_COLORS[i].slice(1);
+    }
+  }
+  
   // Try to extract color from patterns like "color is X"
   var patterns = [
     /color\s+(?:is|for today is|today is|will be)\s+([a-z]+)/i,
@@ -89,21 +99,19 @@ function detectColor(transcript) {
     var match = lower.match(patterns[p]);
     if (match && match[1]) {
       var extracted = match[1].trim();
-      if (['the', 'a', 'is', 'for', 'to', 'and'].indexOf(extracted) === -1) {
+      if (['the', 'a', 'is', 'for', 'to', 'and', 'hot', 'call'].indexOf(extracted) === -1) {
         console.log('[FTBEND] Pattern found: ' + extracted);
         return extracted.charAt(0).toUpperCase() + extracted.slice(1);
       }
     }
   }
   
-  // Common misrecognitions
+  // Only very specific misrecognitions (avoid false positives)
   var fixes = {
-    'all of': 'olive', 'all live': 'olive', 'alive': 'olive',
-    'canaries': 'canary', 'can airy': 'canary',
-    'read': 'red', 'blew': 'blue', 'great': 'gray', 'grey': 'gray',
-    'why it': 'white', 'brow': 'brown', 'lack': 'black',
-    'goal': 'gold', 'pin': 'pink', 'purpose': 'purple',
-    'tell': 'teal', 'beach': 'peach', 'line': 'lime'
+    'can airy': 'canary', 'canaries': 'canary', 'canari': 'canary',
+    'all of ': 'olive', 'all live': 'olive', 
+    'i very': 'ivory', 'i vory': 'ivory',
+    'grey': 'gray'
   };
   
   for (var fix in fixes) {
@@ -113,19 +121,11 @@ function detectColor(transcript) {
     }
   }
   
-  // Check known colors
-  for (var i = 0; i < FTBEND_COLORS.length; i++) {
-    if (lower.includes(FTBEND_COLORS[i])) {
-      console.log('[FTBEND] Known color: ' + FTBEND_COLORS[i]);
-      return FTBEND_COLORS[i].charAt(0).toUpperCase() + FTBEND_COLORS[i].slice(1);
-    }
-  }
-  
   // Last resort - find word after "is" or "color"
   var afterIs = lower.match(/(?:is|color)\s+([a-z]{3,})/);
   if (afterIs && afterIs[1]) {
     var word = afterIs[1];
-    if (['the', 'for', 'today', 'your', 'you'].indexOf(word) === -1) {
+    if (['the', 'for', 'today', 'your', 'you', 'hot', 'call'].indexOf(word) === -1) {
       console.log('[FTBEND] Word after is/color: ' + word);
       return word.charAt(0).toUpperCase() + word.slice(1);
     }
