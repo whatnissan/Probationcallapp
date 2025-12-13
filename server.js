@@ -957,12 +957,14 @@ app.post('/webhook/recording', async function(req, res) {
     if (config) {
       if (config.isFtbendDaily) {
         // Fort Bend - save to daily_county_status (overwrites daily)
-        var today = new Date().toISOString().split('T')[0];
+        var now = new Date();
+        var cst = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
+        var today = cst.getFullYear() + '-' + String(cst.getMonth() + 1).padStart(2, '0') + '-' + String(cst.getDate()).padStart(2, '0');
         await supabase.from('daily_county_status')
           .update({ recording_url: mp3Url })
           .eq('county', 'ftbend')
           .eq('date', today);
-        console.log('[RECORDING] Saved Fort Bend daily recording');
+        console.log('[RECORDING] Saved Fort Bend daily recording for', today);
       } else if (config.callSid) {
         // Montgomery - save to call_history
         await supabase.from('call_history')
@@ -1584,7 +1586,10 @@ app.post('/twiml/ftbend-fallback', async function(req, res) {
 });
 
 async function storeFtbendColor(color, transcript) {
-  var today = new Date().toISOString().split('T')[0];
+  // Use CST date
+  var now = new Date();
+  var cst = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
+  var today = cst.getFullYear() + '-' + String(cst.getMonth() + 1).padStart(2, '0') + '-' + String(cst.getDate()).padStart(2, '0');
   console.log('[FTBEND] Storing color:', color, 'for date:', today);
   
   try {
