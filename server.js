@@ -1533,8 +1533,8 @@ app.post('/twiml/ftbend-answer', function(req, res) {
   twiml.pause({ length: 3 });
   twiml.gather({
     input: 'speech',
-    timeout: 30,
-    speechTimeout: 'auto',
+    timeout: 45,
+    speechTimeout: 10,
     action: process.env.BASE_URL + '/twiml/ftbend-result?callId=' + callId,
     hints: FTBEND_COLORS.join(', ') + ', color, today, is',
     language: 'en-US',
