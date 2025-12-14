@@ -832,7 +832,7 @@ function loadUser() {
         document.getElementById('noSchedule').classList.remove('active');
         document.getElementById('schedDisplayTime').textContent = t;
         document.getElementById('schedDisplayTZ').textContent = d.schedule.timezone;
-        document.getElementById('schedDisplayCounty').textContent = d.schedule.target_number;
+        document.getElementById('schedDisplayCounty').textContent = d.schedule.county === 'ftbend' ? 'Fort Bend County' : 'Montgomery County';
         document.getElementById('schedDisplayPin').textContent = d.schedule.pin;
         document.getElementById('schedDisplayNotify').textContent = d.schedule.notify_method === 'sms' ? d.schedule.notify_number : (d.schedule.notify_method === 'both' ? (d.schedule.notify_number + ' & ' + d.schedule.notify_email) : d.schedule.notify_email) || '-';
         document.getElementById('schedDisplayMethod').textContent = (d.schedule.notify_method || 'email').toUpperCase();
