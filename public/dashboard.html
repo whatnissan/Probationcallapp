@@ -848,6 +848,10 @@ function loadUser() {
         document.getElementById('schedPin').value = d.schedule.pin;
         document.getElementById('schedHour').value = d.schedule.hour;
         document.getElementById('schedMin').value = d.schedule.minute;
+        if (d.schedule.county === 'ftbend') {
+          document.getElementById('ftbendNotifyHour').value = d.schedule.hour || 5;
+          document.getElementById('ftbendNotifyMin').value = d.schedule.minute || 10;
+        }
         document.getElementById('schedTZ').value = d.schedule.timezone;
         document.getElementById('schedRetry').checked = d.schedule.retry_on_unknown || false;
         document.getElementById('schedQuiet').checked = d.schedule.quiet_mode || false;
@@ -1113,12 +1117,16 @@ document.getElementById('scheduleForm').onsubmit = function(e) {
     return;
   }
   var county = document.getElementById('schedCounty').value;
-  var hour = parseInt(document.getElementById('schedHour').value) || 6;
-  var minute = parseInt(document.getElementById('schedMin').value) || 0;
+  var hour, minute;
   
-  // Only validate time for Montgomery (Fort Bend uses system call)
-  if (county !== 'ftbend' && (hour < 6 || hour > 14)) {
-    alert('Schedule time must be between 6:00 AM and 2:59 PM');
+  if (county === 'ftbend') {
+    hour = parseInt(document.getElementById('ftbendNotifyHour').value) || 5;
+    minute = parseInt(document.getElementById('ftbendNotifyMin').value) || 10;
+  } else {
+    hour = parseInt(document.getElementById('schedHour').value) || 6;
+    minute = parseInt(document.getElementById('schedMin').value) || 0;
+    if (hour < 6 || hour > 14) {
+      alert('Schedule time must be between 6:00 AM and 2:59 PM');
     return;
   }
   var btn = document.getElementById('schedBtn');
