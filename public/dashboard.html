@@ -346,7 +346,16 @@ select option { background: #1a1a2e; color: #fff; }
         <div class="form-group" id="schedTimeGroup">
           <label>Time</label>
           <div class="time-note" id="schedTimeNote">⏰ Calls can only be scheduled between <strong>6:00 AM</strong> and <strong>2:59 PM</strong></div>
-          <div class="time-note" id="schedFtbendNote" style="display:none;background:rgba(0,255,136,0.1);border-color:rgba(0,255,136,0.3);color:#00ff88">📱 Fort Bend users are notified daily around <strong>5:10 AM</strong> with the day's color.</div>
+          <div class="time-note" id="schedFtbendNote" style="display:none;background:rgba(0,255,136,0.1);border-color:rgba(0,255,136,0.3);color:#00ff88">📱 Fort Bend: Color is detected at 5:05 AM. Choose when to receive your notification:</div>
+        <div id="ftbendTimeSelect" style="display:none;margin-top:10px">
+          <select id="ftbendNotifyHour" style="width:100px">
+            <option value="5">5 AM</option><option value="6">6 AM</option><option value="7">7 AM</option><option value="8">8 AM</option>
+            <option value="9">9 AM</option><option value="10">10 AM</option><option value="11">11 AM</option>
+            <option value="12">12 PM</option>
+          </select>
+          <span style="padding:10px">:</span>
+          <input type="number" id="ftbendNotifyMin" min="0" max="59" value="10" style="width:70px">
+        </div>
           <div style="display:flex;gap:10px;margin-top:10px">
             <select id="schedHour" style="width:100px">
               <option value="6">6 AM</option><option value="7">7 AM</option><option value="8">8 AM</option>
@@ -355,7 +364,7 @@ select option { background: #1a1a2e; color: #fff; }
             </select>
             <span style="padding:10px">:</span>
             <input type="number" id="schedMin" min="0" max="59" value="0" style="width:70px">
-            <select id="schedTZ"><option value="America/Chicago">Central</option><option value="America/New_York">Eastern</option><option value="America/Denver">Mountain</option><option value="America/Los_Angeles">Pacific</option></select>
+            <select id="schedTZ"><option value="America/Chicago">Central Time</option></select>
           </div>
         </div>
         <div class="checkbox-group">
@@ -1481,7 +1490,9 @@ function updateCountyUI(selectId, pinId) {
   var pinGroup = pinEl.closest('.form-group');
   if (!pinGroup) pinGroup = pinEl.parentElement;
   
-  if (county === 'ftbend') {
+  var isFtbend = county === 'ftbend';
+  
+  if (isFtbend) {
     pinGroup.style.display = 'none';
     pinEl.required = false;
     pinEl.value = '';
@@ -1489,6 +1500,17 @@ function updateCountyUI(selectId, pinId) {
     pinGroup.style.display = 'block';
     pinEl.required = true;
   }
+  
+  // Handle Ft Bend time selector
+  var ftbendNote = document.getElementById('schedFtbendNote');
+  var ftbendTime = document.getElementById('ftbendTimeSelect');
+  var schedTimeNote = document.getElementById('schedTimeNote');
+  var schedHourGroup = document.getElementById('schedHour');
+  
+  if (ftbendNote) ftbendNote.style.display = isFtbend ? 'block' : 'none';
+  if (ftbendTime) ftbendTime.style.display = isFtbend ? 'flex' : 'none';
+  if (schedTimeNote) schedTimeNote.style.display = isFtbend ? 'none' : 'block';
+  if (schedHourGroup && schedHourGroup.parentElement) schedHourGroup.parentElement.style.display = isFtbend ? 'none' : 'flex';
   
   // Handle time picker for schedule form
   if (selectId === 'schedCounty') {
