@@ -1127,7 +1127,8 @@ document.getElementById('scheduleForm').onsubmit = function(e) {
     minute = parseInt(document.getElementById('schedMin').value) || 0;
     if (hour < 6 || hour > 14) {
       alert('Schedule time must be between 6:00 AM and 2:59 PM');
-    return;
+      return;
+    }
   }
   var btn = document.getElementById('schedBtn');
   btn.disabled = true;
