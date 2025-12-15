@@ -1312,6 +1312,63 @@ app.post('/api/admin/trigger-ftbend', adminAuth, async function(req, res) {
   res.json({ success: true, message: 'Fort Bend call triggered' });
 });
 
+// Manually trigger a call for a specific user
+app.post('/api/admin/trigger-call/:userId', adminAuth, async function(req, res) {
+  var userId = req.params.userId;
+  
+  var schedResult = await supabase.from('user_schedules')
+    .select('*')
+    .eq('user_id', userId)
+    .single();
+  
+  if (!schedResult.data) {
+    return res.status(400).json({ error: 'User has no schedule' });
+  }
+  
+  var sched = schedResult.data;
+  console.log('[ADMIN] Triggering call for user ' + userId.slice(0,8) + ' county: ' + sched.county);
+  
+  if (sched.county === 'ftbend') {
+    var now = new Date();
+    var cst = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
+    var today = cst.getFullYear() + '-' + String(cst.getMonth() + 1).padStart(2, '0') + '-' + String(cst.getDate()).padStart(2, '0');
+    
+    var colorResult = await supabase.from('daily_county_status')
+      .select('color')
+      .eq('county', 'ftbend')
+      .eq('date', today)
+      .single();
+    
+    var color = colorResult.data ? colorResult.data.color : 'UNKNOWN';
+    var message = color === 'UNKNOWN'
+      ? '⚠️ ProbationCall: Could not detect today\'s color. Please call +1 (281) 238-3669'
+      : '🎨 Fort Bend Color: ' + color.toUpperCase() + '\n\nCheck if this is your assigned color.';
+    
+    await notify(sched.notify_number, sched.notify_email, sched.notify_method, message, 'admin_trigger');
+    console.log('[ADMIN] Sent Fort Bend notification to ' + userId.slice(0,8));
+    res.json({ success: true, message: 'Fort Bend notification sent with color: ' + color });
+  } else {
+    try {
+      await initiateCall(
+        sched.target_number,
+        sched.pin,
+        sched.notify_number,
+        sched.notify_email,
+        sched.notify_method,
+        userId,
+        sched.retry_on_unknown,
+        0,
+        sched.county
+      );
+      console.log('[ADMIN] Initiated Montgomery call for ' + userId.slice(0,8));
+      res.json({ success: true, message: 'Call initiated for Montgomery County' });
+    } catch (e) {
+      console.error('[ADMIN] Call failed:', e);
+      res.status(500).json({ error: e.message });
+    }
+  }
+});
+
 app.post('/api/admin/toggle-ftbend', adminAuth, async function(req, res) {
   var userId = req.body.userId;
   var enable = req.body.enable;
