@@ -1638,28 +1638,46 @@ async function notifyAllFtbendUsers(color) {
     return;
   }
   
-  console.log('[FTBEND] Notifying ' + result.data.length + ' users about color: ' + color);
+  console.log('[FTBEND] Scheduling notifications for ' + result.data.length + ' users about color: ' + color);
   
   var message = color === 'UNKNOWN'
-    ? '⚠️ ProbationCall: Could not detect today\'s color. Please call +1 (281) 238-3668'
+    ? '⚠️ ProbationCall: Could not detect today\'s color. Please call +1 (281) 238-3669'
     : '🎨 Fort Bend Color: ' + color.toUpperCase() + '\n\nCheck if this is your assigned color.';
+  
+  var now = new Date();
+  var cst = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
+  var currentHour = cst.getHours();
+  var currentMin = cst.getMinutes();
   
   for (var i = 0; i < result.data.length; i++) {
     var sched = result.data[i];
+    var schedHour = sched.hour !== undefined ? sched.hour : 5;
+    var schedMin = sched.minute !== undefined ? sched.minute : 10;
     
-    (function(s, delay) {
+    // Calculate delay until scheduled time
+    var delayMs = i * 2000; // Default small stagger
+    if (schedHour > currentHour || (schedHour === currentHour && schedMin > currentMin)) {
+      // Schedule is later today - calculate delay
+      var minutesUntil = (schedHour - currentHour) * 60 + (schedMin - currentMin);
+      delayMs = minutesUntil * 60 * 1000 + (i * 1000); // Add small stagger
+    }
+    
+    console.log('[FTBEND] User ' + sched.user_id.slice(0,8) + ' wants ' + schedHour + ':' + String(schedMin).padStart(2,'0') + ', delay: ' + Math.round(delayMs/60000) + ' min');
+    
+    (function(s, delay, msg, clr) {
       setTimeout(async function() {
-        if (!s.quiet_mode || color === 'UNKNOWN') {
-          await notify(s.notify_number, s.notify_email, s.notify_method, message, 'ftbend_daily');
+        if (!s.quiet_mode || clr === 'UNKNOWN') {
+          console.log('[FTBEND] Sending notification to ' + s.user_id.slice(0,8));
+          await notify(s.notify_number, s.notify_email, s.notify_method, msg, 'ftbend_daily');
         }
         await supabase.from('call_history').insert({
           user_id: s.user_id,
           target_number: COUNTIES.ftbend.number,
-          result: 'COLOR:' + color,
+          result: 'COLOR:' + clr,
           county: 'ftbend'
         });
       }, delay);
-    })(sched, i * 2000);
+    })(sched, delayMs, message, color);
   }
 }
 
