@@ -28,8 +28,45 @@
 var SUPA_URL="https://xvpuqeaowvlkcyywgaaq.supabase.co",SUPA_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh2cHVxZWFvd3Zsa2N5eXdnYWFxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQyNzc1MjcsImV4cCI6MjA3OTg1MzUyN30.y90odNDSU0zZcVGMK9C39gSFDL9NJcy5E4yBkgcFc8w",sb=window.supabase.createClient(SUPA_URL,SUPA_KEY),token,D={users:[],schedules:[],calls:[],purchases:[],payouts:[],promos:[]};
 function $(x){return document.getElementById(x.replace("#",""))}
 async function init(){var s=await sb.auth.getSession();if(!s.data.session){location.href="/login";return}token=s.data.session.access_token;try{var r=await fetch("/api/admin/check",{headers:{Authorization:"Bearer "+token}});var j=await r.json();if(!j.isAdmin){$("loading").style.display="none";$("accessDenied").style.display="block";return}}catch(e){$("loading").style.display="none";$("accessDenied").style.display="block";return}$("loading").style.display="none";$("app").style.display="block";$("userEmail").textContent=s.data.session.user.email;events();load()}
-function events(){$("refreshBtn").onclick=function(){console.log("Refreshing users...");load()};$("userSearch").onkeyup=filter;$("userFilter").onchange=filter;$("newPromoBtn").onclick=function(){$("promoModal").classList.add("active")};$("closeUserModal").onclick=function(){$("userModal").classList.remove("active")};$("closeCreditsModal").onclick=function(){$("creditsModal").classList.remove("active")};$("closePromoModal").onclick=function(){$("promoModal").classList.remove("active")};$("applyCredits").onclick=doCredits;$("createPromo").onclick=doPromo;["Users","Payouts","Purchases","Calls","Promos"].forEach(function(t){$("tab"+t).onclick=function(){document.querySelectorAll(".tab").forEach(function(x){x.classList.remove("active")});document.querySelectorAll(".tab-content").forEach(function(x){x.classList.remove("active")});this.classList.add("active");$(t.toLowerCase()+"Tab").classList.add("active")}})}
-async function load(){console.log("Loading dashboard data...");try{var r=await fetch("/api/admin/dashboard",{headers:{Authorization:"Bearer "+token}});var d=await r.json();if(d.error){alert(d.error);return}D=d;D.schedules=d.schedules||[];$("statUsers").textContent=d.stats.totalUsers;$("statActive").textContent=d.stats.activeSchedules;$("statCalls").textContent=d.stats.totalCalls;$("statRevenue").textContent="$"+(d.stats.totalRevenue/100).toFixed(2);$("statPending").textContent=d.stats.pendingPayouts;$("statOwed").textContent="$"+(d.stats.affiliateOwed/100).toFixed(2);$("statTerms").textContent=d.stats.termsAgreed;$("statDisabled").textContent=d.stats.disabledUsers;renderUsers(d.users);renderPayouts(d.payouts);renderPurchases(d.purchases);renderCalls(d.calls);renderPromos(d.promos);console.log("Dashboard loaded successfully")}catch(e){console.error("Load error:",e);alert("Error loading data: "+e.message)}}
+function events(){
+document.getElementById("refreshBtn").addEventListener("click", function(e) {
+    e.preventDefault();
+    var btn = this;
+    btn.textContent = "Refreshing...";
+    btn.disabled = true;
+    load().then(function() {
+        btn.textContent = "Refresh";
+        btn.disabled = false;
+    }).catch(function(err) {
+        btn.textContent = "Refresh";
+        btn.disabled = false;
+        alert("Error: " + err.message);
+    });
+});
+$("userSearch").onkeyup=filter;$("userFilter").onchange=filter;$("newPromoBtn").onclick=function(){$("promoModal").classList.add("active")};$("closeUserModal").onclick=function(){$("userModal").classList.remove("active")};$("closeCreditsModal").onclick=function(){$("creditsModal").classList.remove("active")};$("closePromoModal").onclick=function(){$("promoModal").classList.remove("active")};$("applyCredits").onclick=doCredits;$("createPromo").onclick=doPromo;["Users","Payouts","Purchases","Calls","Promos"].forEach(function(t){$("tab"+t).onclick=function(){document.querySelectorAll(".tab").forEach(function(x){x.classList.remove("active")});document.querySelectorAll(".tab-content").forEach(function(x){x.classList.remove("active")});this.classList.add("active");$(t.toLowerCase()+"Tab").classList.add("active")}})}
+async function load(){
+    console.log("Loading dashboard data...");
+    var r=await fetch("/api/admin/dashboard",{headers:{Authorization:"Bearer "+token}});
+    var d=await r.json();
+    if(d.error){alert(d.error);throw new Error(d.error);}
+    D=d;
+    D.schedules=d.schedules||[];
+    $("statUsers").textContent=d.stats.totalUsers;
+    $("statActive").textContent=d.stats.activeSchedules;
+    $("statCalls").textContent=d.stats.totalCalls;
+    $("statRevenue").textContent="$"+(d.stats.totalRevenue/100).toFixed(2);
+    $("statPending").textContent=d.stats.pendingPayouts;
+    $("statOwed").textContent="$"+(d.stats.affiliateOwed/100).toFixed(2);
+    $("statTerms").textContent=d.stats.termsAgreed;
+    $("statDisabled").textContent=d.stats.disabledUsers;
+    renderUsers(d.users);
+    renderPayouts(d.payouts);
+    renderPurchases(d.purchases);
+    renderCalls(d.calls);
+    renderPromos(d.promos);
+    console.log("Dashboard loaded, users:", d.users.length);
+    return d;
+}
 function getSched(uid){if(!D.schedules)return null;for(var i=0;i<D.schedules.length;i++)if(D.schedules[i].user_id===uid)return D.schedules[i];return null}
 function getCalls(uid){return D.calls.filter(function(c){return c.user_id===uid})}
 function getPurchases(uid){return D.purchases.filter(function(p){return p.user_id===uid})}
