@@ -326,7 +326,7 @@ select option { background: #1a1a2e; color: #fff; }
       <div class="info-box" id="noSchedInfo"><strong>No schedule.</strong> Set up auto-calls below.</div>
       <form id="scheduleForm">
         <div class="form-group"><label>County</label><select id="schedCounty"><option value="montgomery">Montgomery County</option><option value="ftbend">Fort Bend County</option></select></div>
-        <div class="form-group" id="ftbendOfficeGroup" style="display:none"><label>Fort Bend Office</label><select id="ftbendOffice"><option value="missouri">Missouri City</option><option value="rosenberg">Rosenberg</option><option value="rosenberg_phase">Rosenberg Phase 1/2</option></select><small style="display:block;margin-top:5px;color:#8892b0">Select the office/hotline you call</small></div>
+        <div class="form-group" id="ftbendOfficeGroup" style="display:none"><label>Fort Bend Office</label><select id="ftbendOffice"><option value="missouri">Missouri City</option><option value="rosenberg">Rosenberg</option><option value="rosenberg2">Rosenberg 2</option></select><small style="display:block;margin-top:5px;color:#8892b0">Select the office/hotline you call</small></div>
         <div class="form-group"><label>6-Digit PIN</label><input type="text" id="schedPin" maxlength="6" placeholder="123456" required></div>
         <div class="form-group">
           <label>Notification Method</label>
@@ -480,9 +480,9 @@ select option { background: #1a1a2e; color: #fff; }
             <div style="font-size:0.9rem;color:#8892b0;margin-bottom:5px">Rosenberg</div>
             <div style="font-size:2rem;font-weight:700" id="color_rosenberg">--</div>
           </div>
-          <div class="ftbend-office-card" id="office_rosenberg_phase" style="background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:12px;padding:20px;text-align:center">
-            <div style="font-size:0.9rem;color:#8892b0;margin-bottom:5px">Rosenberg Phase 1/2</div>
-            <div style="font-size:2rem;font-weight:700" id="color_rosenberg_phase">--</div>
+          <div class="ftbend-office-card" id="office_rosenberg2" style="background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:12px;padding:20px;text-align:center">
+            <div style="font-size:0.9rem;color:#8892b0;margin-bottom:5px">Rosenberg 2</div>
+            <div style="font-size:2rem;font-weight:700" id="color_rosenberg2">--</div>
           </div>
         </div>
         <div style="color:#8892b0;text-align:center;margin-top:15px" id="colorDate"></div>
@@ -498,7 +498,7 @@ select option { background: #1a1a2e; color: #fff; }
           <option value="all">All Offices</option>
           <option value="missouri">Missouri City</option>
           <option value="rosenberg">Rosenberg</option>
-          <option value="rosenberg_phase">Rosenberg Phase 1/2</option>
+          <option value="rosenberg2">Rosenberg 2</option>
         </select>
       </div>
       <div id="colorHistory" style="max-height:400px;overflow-y:auto"></div>
@@ -714,9 +714,9 @@ function loadFtbendColors() {
         roEl.innerHTML = "<span style='color:#8892b0'>--</span>";
       }
       
-      // Rosenberg Phase 1/2
-      var rp = d.offices && d.offices.rosenberg_phase;
-      var rpEl = document.getElementById("color_rosenberg_phase");
+      // Rosenberg 2
+      var rp = d.offices && d.offices.rosenberg2;
+      var rpEl = document.getElementById("color_rosenberg2");
       // Colors display
       var colors = [];
       if (rp && rp.phase1) colors.push(rp.phase1);

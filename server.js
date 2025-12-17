@@ -75,8 +75,8 @@ const FTBEND_OFFICES = {
     number: '+12812383669',
     label: 'Rosenberg'
   },
-  'rosenberg_phase': { 
-    name: 'Rosenberg Phase 1/2', 
+  'rosenberg2': { 
+    name: 'Rosenberg 2', 
     number: '+12812383671',
     label: 'Rosenberg Phase',
     hasPhases: true
@@ -1663,7 +1663,7 @@ app.post('/twiml/ftbend-result', async function(req, res) {
   console.log('[FTBEND] ' + officeId + ' speech: "' + speech + '"');
   
   if (config && !config.result) {
-    // Check for phase 1 / phase 2 in the speech (for rosenberg_phase)
+    // Check for phase 1 / phase 2 in the speech (for rosenberg2)
     if (config.hasPhases) {
       var phases = detectPhaseColors(speech);
       config.phase1 = phases.phase1;
