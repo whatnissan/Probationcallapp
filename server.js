@@ -36,7 +36,7 @@ const scheduledJobs = new Map();
 const TWILIO_VOICE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
 const MESSAGING_SERVICE_SID = 'MG8adbb793f6b8c100da6770f6f0707258';
 const WHATSAPP_NUMBER = 'whatsapp:+15558965863';
-const FROM_EMAIL = 'probationreportingapp@gmail.com';
+const FROM_EMAIL = 'alerts@probationcall.com';
 
 // Time restrictions: 6:00 AM to 2:59 PM
 const MIN_HOUR = 6;
