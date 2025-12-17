@@ -277,7 +277,8 @@ select option { background: #1a1a2e; color: #fff; }
     <div class="card">
       <h2>Make a Call</h2>
       <form id="callForm">
-        <div class="form-group"><label>County</label><select id="county"><option value="montgomery">Montgomery County</option><option value="ftbend">Fort Bend County</option></select></div>
+        <div class="form-group"><label>County</label><select id="county" onchange="updateCountyUI()"><option value="montgomery">Montgomery County</option><option value="ftbend">Fort Bend County</option></select></div>
+        <div class="form-group" id="callFtbendOfficeGroup" style="display:none"><label>Fort Bend Office</label><select id="callFtbendOffice"><option value="missouri">Missouri City</option><option value="rosenberg">Rosenberg</option><option value="rosenberg2">Rosenberg 2</option></select><small style="display:block;margin-top:5px;color:#8892b0">Select the office/hotline you call</small></div>
         <div class="form-group"><label>6-Digit PIN</label><input type="text" id="pin" maxlength="6" placeholder="123456" required></div>
         <div class="form-group">
           <label>How should we notify you?</label>
@@ -1572,6 +1573,8 @@ function updateCountyUI(selectId, pinId) {
   var schedHourGroup = document.getElementById('schedHour');
   
   var ftbendOfficeGroup = document.getElementById("ftbendOfficeGroup");
+  var callFtbendOfficeGroup = document.getElementById("callFtbendOfficeGroup");
+  if (callFtbendOfficeGroup) callFtbendOfficeGroup.style.display = isFtbend ? "block" : "none";
   if (ftbendOfficeGroup) ftbendOfficeGroup.style.display = isFtbend ? "block" : "none";
   
   if (ftbendNote) ftbendNote.style.display = isFtbend ? 'block' : 'none';
