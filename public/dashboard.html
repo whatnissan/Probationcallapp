@@ -284,7 +284,6 @@ select option { background: #1a1a2e; color: #fff; }
           <div class="method-select">
             <div class="method-option active" onclick="selectMethod('email')"><div class="icon">📧</div><div class="label">Email</div></div>
             <div class="method-option" onclick="selectMethod('sms')"><div class="icon">💬</div><div class="label">SMS</div></div>
-            <div class="method-option" onclick="selectMethod('whatsapp')"><div class="icon">📱</div><div class="label">WhatsApp</div></div>
           </div>
           <input type="hidden" id="notifyMethod" value="email">
         </div>
@@ -334,7 +333,6 @@ select option { background: #1a1a2e; color: #fff; }
           <div class="method-select">
             <div class="method-option active" onclick="selectSchedMethod('email')"><div class="icon">📧</div><div class="label">Email</div></div>
             <div class="method-option" onclick="selectSchedMethod('sms')"><div class="icon">💬</div><div class="label">SMS</div></div>
-            <div class="method-option" onclick="selectSchedMethod('whatsapp')"><div class="icon">📱</div><div class="label">WhatsApp</div></div>
           </div>
           <input type="hidden" id="schedMethod" value="email">
         </div>
@@ -517,9 +515,6 @@ select option { background: #1a1a2e; color: #fff; }
       <h3 style="margin:20px 0 10px;font-size:1rem">Test SMS</h3>
       <div class="form-group"><input type="tel" id="testPhone" onblur="formatPhoneNumber(this)" placeholder="+1234567890"></div>
       <button class="btn btn-secondary" onclick="testSMS()">💬 Send Test SMS</button>
-      <h3 style="margin:20px 0 10px;font-size:1rem">Test WhatsApp</h3>
-      <div class="info-box warning"><strong>First:</strong> Message <strong>+1 555 896 5863</strong> from WhatsApp, then test.</div>
-      <button class="btn btn-secondary" onclick="testWhatsApp()">📱 Send Test WhatsApp</button>
       <div id="testStatus" class="status" style="display:none;margin-top:15px"></div>
     </div>
   </div>
@@ -1262,23 +1257,6 @@ function testSMS() {
   }).then(function(r) { return r.json(); }).then(function(d) {
     st.className = 'status ' + (d.success ? 'success' : 'error');
     st.textContent = d.success ? '✅ SMS sent!' : '❌ ' + (d.error || 'Failed');
-  });
-}
-
-function testWhatsApp() {
-  var phone = document.getElementById('testPhone').value;
-  if (!phone) { alert('Enter phone number first'); return; }
-  var st = document.getElementById('testStatus');
-  st.style.display = 'block';
-  st.className = 'status calling';
-  st.textContent = 'Sending...';
-  fetch('/api/test-whatsapp', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
-    body: JSON.stringify({ notifyNumber: phone })
-  }).then(function(r) { return r.json(); }).then(function(d) {
-    st.className = 'status ' + (d.success ? 'success' : 'error');
-    st.textContent = d.success ? '✅ WhatsApp sent!' : '❌ ' + (d.error || 'Failed');
   });
 }
 
