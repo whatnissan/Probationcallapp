@@ -673,18 +673,18 @@ function selectMethod(method) {
   document.querySelectorAll('#callTab .method-option').forEach(function(el) { el.classList.remove('active'); });
   event.target.closest('.method-option').classList.add('active');
   document.getElementById('notifyMethod').value = method;
-  document.getElementById('emailGroup').style.display = method === 'email' ? 'block' : 'none';
-  document.getElementById('phoneGroup').style.display = method !== 'email' ? 'block' : 'none';
-  document.getElementById('smsConsentBox').style.display = method === 'sms' ? 'block' : 'none';
+  document.getElementById('emailGroup').style.display = (method === 'email' || method === 'both') ? 'block' : 'none';
+  document.getElementById('phoneGroup').style.display = (method === 'sms' || method === 'both') ? 'block' : 'none';
+  document.getElementById('smsConsentBox').style.display = (method === 'sms' || method === 'both') ? 'block' : 'none';
 }
 
 function selectSchedMethod(method) {
   document.querySelectorAll('#scheduleTab .method-option').forEach(function(el) { el.classList.remove('active'); });
   event.target.closest('.method-option').classList.add('active');
   document.getElementById('schedMethod').value = method;
-  document.getElementById('schedEmailGroup').style.display = method === 'email' ? 'block' : 'none';
-  document.getElementById('schedPhoneGroup').style.display = method !== 'email' ? 'block' : 'none';
-  document.getElementById('schedSmsConsentBox').style.display = method === 'sms' ? 'block' : 'none';
+  document.getElementById('schedEmailGroup').style.display = (method === 'email' || method === 'both') ? 'block' : 'none';
+  document.getElementById('schedPhoneGroup').style.display = (method === 'sms' || method === 'both') ? 'block' : 'none';
+  document.getElementById('schedSmsConsentBox').style.display = (method === 'sms' || method === 'both') ? 'block' : 'none';
 }
 
 
