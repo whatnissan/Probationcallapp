@@ -549,7 +549,7 @@ app.post('/api/schedule', auth, async function(req, res) {
     quiet_mode: req.body.quietMode || false,
     ftbend_office: req.body.ftbend_office || 'missouri',
     enabled: true,
-    updated_at: new Date().toISOString()
+    
   };
   
   var existingResult = await supabase.from('user_schedules').select('id').eq('user_id', req.user.id).single();
@@ -1818,8 +1818,8 @@ async function storeFtbendColor(color, transcript, officeId, phase1, phase2) {
       transcript: transcript,
       phase1_color: phase1,
       phase2_color: phase2,
-      office_name: office.name,
-      updated_at: new Date().toISOString()
+      office_name: office.name
+      
     };
     
     var result;
