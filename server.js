@@ -1826,8 +1826,8 @@ async function notifyFtbendOfficeUsers(officeId, config) {
   console.log('[FTBEND] Notifying ' + result.data.length + ' users for ' + office.name);
   
   var message;
-  if (config.hasPhases && (config.phase1 || config.phase2)) {
-    message = '🎨 Fort Bend ' + office.name + ':\n';
+  if (config.phase1 || config.phase2) {
+    message = '🎨 Fort Bend ' + office.name + ' Colors:\n';
     if (config.phase1) message += '• Phase 1: ' + config.phase1.toUpperCase() + '\n';
     if (config.phase2) message += '• Phase 2: ' + config.phase2.toUpperCase() + '\n';
     message += '\nCheck if this is your assigned color.';
