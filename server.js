@@ -2037,3 +2037,75 @@ app.post('/api/profile/onboarding-complete', auth, async function(req, res) {
 
 
 module.exports = app;
+
+// ========== MISSED CALL RECOVERY ==========
+// Runs every hour to catch any missed scheduled calls
+cron.schedule('30 * * * *', async function() {
+  console.log('[RECOVERY] Checking for missed calls...');
+  
+  var now = new Date();
+  var cst = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
+  var currentHour = cst.getHours();
+  var currentMin = cst.getMinutes();
+  var todayStart = new Date(cst);
+  todayStart.setHours(0, 0, 0, 0);
+  
+  // Get all enabled schedules that should have run by now
+  var schedResult = await supabase.from('user_schedules')
+    .select('*')
+    .eq('enabled', true)
+    .neq('county', 'ftbend'); // Ft Bend handled separately
+  
+  if (!schedResult.data || schedResult.data.length === 0) return;
+  
+  for (var i = 0; i < schedResult.data.length; i++) {
+    var sched = schedResult.data[i];
+    var schedHour = sched.hour || 6;
+    var schedMin = sched.minute || 0;
+    
+    // Skip if scheduled time hasn't passed yet
+    if (schedHour > currentHour || (schedHour === currentHour && schedMin > currentMin)) continue;
+    
+    // Check if call was made today
+    var callResult = await supabase.from('call_history')
+      .select('id')
+      .eq('user_id', sched.user_id)
+      .gte('created_at', todayStart.toISOString())
+      .limit(1);
+    
+    if (callResult.data && callResult.data.length > 0) continue; // Already called today
+    
+    console.log('[RECOVERY] MISSED CALL detected for user ' + sched.user_id.slice(0,8) + '... (scheduled ' + schedHour + ':' + String(schedMin).padStart(2,'0') + ')');
+    
+    // Get user profile and credits
+    var profileResult = await supabase.from('profiles').select('credits, email').eq('id', sched.user_id).single();
+    var profile = profileResult.data;
+    if (!profile) continue;
+    
+    var isDevUser = isDev(profile.email);
+    
+    if (!isDevUser && profile.credits < 1) {
+      console.log('[RECOVERY] User ' + sched.user_id.slice(0,8) + '... has no credits, skipping');
+      await notify(sched.notify_number, sched.notify_email, sched.notify_method, '⚠️ ProbationCall: Your scheduled call was missed and you have no credits!', 'recovery');
+      continue;
+    }
+    
+    // Make the recovery call
+    console.log('[RECOVERY] Initiating recovery call for ' + sched.user_id.slice(0,8) + '...');
+    try {
+      await initiateCall(sched.target_number, sched.pin, sched.notify_number, sched.notify_email, sched.notify_method, sched.user_id, sched.retry_on_unknown, 0);
+      
+      if (!isDevUser) {
+        await supabase.from('profiles').update({ credits: profile.credits - 1 }).eq('id', sched.user_id);
+      }
+    } catch (e) {
+      console.error('[RECOVERY] Call failed for ' + sched.user_id.slice(0,8) + '...:', e.message);
+      await notify(sched.notify_number, sched.notify_email, sched.notify_method, '⚠️ ProbationCall: Recovery call failed! Please check manually.', 'recovery');
+    }
+    
+    // Small delay between recovery calls
+    await new Promise(function(r) { setTimeout(r, 5000); });
+  }
+  
+  console.log('[RECOVERY] Check complete');
+}, { timezone: 'America/Chicago' });
