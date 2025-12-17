@@ -1057,6 +1057,12 @@ async function notify(phone, email, method, message, callId) {
   if (method === 'sms' && phone) {
     return await sendSMS(phone, message, callId);
   }
+  if (method === 'both') {
+    var results = [];
+    if (email) results.push(await sendEmail(email, message, callId));
+    if (phone) results.push(await sendSMS(phone, message, callId));
+    return { success: results.some(function(r) { return r.success; }) };
+  }
   if (method === 'whatsapp' && phone) {
     return await sendWhatsApp(phone, message, callId);
   }
@@ -1065,37 +1071,64 @@ async function notify(phone, email, method, message, callId) {
   return { success: false, error: 'No notification method' };
 }
 
+
 async function sendEmail(to, message, callId) {
   if (!process.env.SENDGRID_API_KEY) {
-    log(callId, 'SendGrid not configured', 'error');
-    return { success: false, error: 'Email not configured' };
+    log(callId, "SendGrid not configured", "error");
+    return { success: false, error: "Email not configured" };
   }
   
-  var subject = 'ProbationCall Alert';
-  if (message.includes('TEST REQUIRED')) {
-    subject = '🚨 TEST REQUIRED - ProbationCall';
-  } else if (message.includes('No test today')) {
-    subject = '✅ No Test Today - ProbationCall';
+  var subject = "ProbationCall Alert";
+  var headerColor = "#00d9ff";
+  var resultBadge = "";
+  var headerEmoji = "📞";
+  
+  if (message.includes("MUST TEST") || message.includes("TEST REQUIRED")) {
+    subject = "🚨 TEST REQUIRED TODAY - ProbationCall";
+    headerColor = "#ef4444";
+    resultBadge = "<div style='background:#ef4444;color:#fff;padding:15px 25px;border-radius:8px;font-size:20px;font-weight:bold;text-align:center;margin:20px 0'>⚠️ YOU MUST TEST TODAY</div>";
+    headerEmoji = "🚨";
+  } else if (message.includes("NO_TEST") || message.includes("No test today") || message.includes("do NOT need to test")) {
+    subject = "✅ No Test Today - ProbationCall";
+    headerColor = "#22c55e";
+    resultBadge = "<div style='background:#22c55e;color:#fff;padding:15px 25px;border-radius:8px;font-size:20px;font-weight:bold;text-align:center;margin:20px 0'>✅ NO TEST REQUIRED</div>";
+    headerEmoji = "✅";
+  } else if (message.includes("Fort Bend") || message.includes("Color")) {
+    subject = "🎨 Fort Bend Color Update - ProbationCall";
+    headerColor = "#f59e0b";
+    headerEmoji = "🎨";
   }
   
+  var html = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"></head>" +
+    "<body style=\"margin:0;padding:0;background:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;\">" +
+    "<div style=\"max-width:500px;margin:0 auto;padding:20px;\">" +
+    "<div style=\"background:linear-gradient(135deg,#0a0a1a,#1a1a2e);border-radius:16px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.15);\">" +
+    "<div style=\"background:" + headerColor + ";padding:25px;text-align:center;\">" +
+    "<div style=\"font-size:40px;margin-bottom:10px;\">" + headerEmoji + "</div>" +
+    "<h1 style=\"margin:0;color:#fff;font-size:24px;font-weight:700;\">ProbationCall</h1></div>" +
+    "<div style=\"padding:30px;background:#0a0a1a;\">" + resultBadge +
+    "<div style=\"background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:20px;margin:15px 0;\">" +
+    "<p style=\"margin:0;color:#e4e4e7;font-size:16px;line-height:1.6;white-space:pre-line;\">" + message + "</p></div>" +
+    "<p style=\"margin:20px 0 0;color:#71717a;font-size:13px;text-align:center;\">This is an automated message from ProbationCall</p></div>" +
+    "<div style=\"background:rgba(255,255,255,0.03);padding:15px;text-align:center;border-top:1px solid rgba(255,255,255,0.05);\">" +
+    "<a href=\"https://probationcall.com\" style=\"color:#00d9ff;text-decoration:none;font-size:14px;\">probationcall.com</a></div>" +
+    "</div></div></body></html>";
   try {
     await sgMail.send({
       to: to,
-      from: FROM_EMAIL,
+      from: { email: FROM_EMAIL, name: "ProbationCall" },
       subject: subject,
       text: message,
-      html: '<div style="font-family:sans-serif;padding:20px;max-width:400px;margin:0 auto;">' +
-            '<h2 style="color:#00d9ff;">ProbationCall</h2>' +
-            '<div style="background:#f5f5f5;padding:20px;border-radius:10px;white-space:pre-line;color:#333;">' + message + '</div>' +
-            '</div>'
+      html: html
     });
-    log(callId, 'Email sent to ' + to, 'success');
+    log(callId, "Email sent to " + to, "success");
     return { success: true };
   } catch (e) {
-    log(callId, 'Email failed: ' + e.message, 'error');
+    log(callId, "Email failed: " + e.message, "error");
     return { success: false, error: e.message };
   }
 }
+
 
 async function sendSMS(to, message, callId) {
   try {
