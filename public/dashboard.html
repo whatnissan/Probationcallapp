@@ -755,7 +755,7 @@ function renderFtbendHistory(filter) {
     var colorDisplay = "";
     
     if (c.phase1_color || c.phase2_color) {
-      colorDisplay = "<span style='color:#f59e0b'>P1:</span> " + (c.phase1_color || "?") + " <span style='color:#f59e0b'>P2:</span> " + (c.phase2_color || "?");
+      var phaseColors = []; if (c.phase1_color) phaseColors.push(c.phase1_color); if (c.phase2_color) phaseColors.push(c.phase2_color); colorDisplay = "<span style='color:#22c55e;text-transform:uppercase'>" + phaseColors.join(", ") + "</span>";
     } else if (c.color === "UNKNOWN") {
       colorDisplay = "<span style='color:#f59e0b'>Unknown</span>";
     } else {
