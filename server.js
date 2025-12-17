@@ -1886,8 +1886,6 @@ app.get("/api/ftbend/colors", auth, async function(req, res) {
   res.json({ colors: result.data || [], offices: FTBEND_OFFICES });
 });
 
-});
-
 app.get('/api/recording/:recordingSid', function(req, res) {
   var recordingSid = req.params.recordingSid;
   var https = require('https');
