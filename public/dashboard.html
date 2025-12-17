@@ -1275,7 +1275,7 @@ function testWhatsApp() {
 }
 
 function logout() {
-  supabase.auth.signOut().then(function() { window.location.href = '/'; });
+  supabase.auth.signOut().then(function() { window.location.href = '/login?logout=true'; });
 }
 
 
