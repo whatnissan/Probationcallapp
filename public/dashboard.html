@@ -316,6 +316,7 @@ select option { background: #1a1a2e; color: #fff; }
           <tr><td>Time:</td><td id="schedDisplayTime"></td></tr>
           <tr><td>Timezone:</td><td id="schedDisplayTZ"></td></tr>
           <tr><td>County:</td><td id="schedDisplayCounty">Montgomery County</td></tr>
+          <tr id="schedDisplayOfficeRow" style="display:none"><td>Office:</td><td id="schedDisplayOffice">-</td></tr>
           <tr><td>PIN:</td><td id="schedDisplayPin"></td></tr>
           <tr><td>Notify:</td><td id="schedDisplayNotify"></td></tr>
           <tr><td>Method:</td><td id="schedDisplayMethod"></td></tr>
@@ -895,6 +896,13 @@ function loadUser() {
         document.getElementById('schedDisplayTime').textContent = t;
         document.getElementById('schedDisplayTZ').textContent = d.schedule.timezone;
         document.getElementById('schedDisplayCounty').textContent = d.schedule.county === 'ftbend' ? 'Fort Bend County' : 'Montgomery County';
+        if (d.schedule.county === "ftbend") {
+          document.getElementById("schedDisplayOfficeRow").style.display = "";
+          var officeNames = {missouri: "Missouri City", rosenberg: "Rosenberg", rosenberg2: "Rosenberg 2"};
+          document.getElementById("schedDisplayOffice").textContent = officeNames[d.schedule.ftbend_office] || "Missouri City";
+        } else {
+          document.getElementById("schedDisplayOfficeRow").style.display = "none";
+        }
         document.getElementById('schedDisplayPin').textContent = d.schedule.pin;
         document.getElementById('schedDisplayNotify').textContent = d.schedule.notify_method === 'sms' ? d.schedule.notify_number : (d.schedule.notify_method === 'both' ? (d.schedule.notify_number + ' & ' + d.schedule.notify_email) : d.schedule.notify_email) || '-';
         document.getElementById('schedDisplayMethod').textContent = (d.schedule.notify_method || 'email').toUpperCase();
