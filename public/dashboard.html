@@ -778,6 +778,9 @@ if (document.getElementById("historyOfficeFilter")) {
   });
 }
 
+function updateCoveredUntil(credits) {
+  var el = document.getElementById("coveredUntil");
+  if (!el || credits < 1) { if(el) el.textContent = ""; return; }
   
   var today = new Date();
   var coveredDate = new Date(today);
