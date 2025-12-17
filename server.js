@@ -56,10 +56,30 @@ const COUNTIES = {
   },
   'ftbend': {
     name: 'Fort Bend County',
-    number: '+12812383669',
+    number: '+12812383668',
     process: 'color',
     minHour: 5,
     maxHour: 9
+  }
+};
+
+// Fort Bend Offices (3 locations)
+const FTBEND_OFFICES = {
+  'missouri': { 
+    name: 'Missouri City', 
+    number: '+12812383668',
+    label: 'Missouri City'
+  },
+  'rosenberg': { 
+    name: 'Rosenberg', 
+    number: '+12812383669',
+    label: 'Rosenberg'
+  },
+  'rosenberg_phase': { 
+    name: 'Rosenberg Phase 1/2', 
+    number: '+12812383671',
+    label: 'Rosenberg Phase',
+    hasPhases: true
   }
 };
 
@@ -507,7 +527,10 @@ app.post('/api/schedule', auth, async function(req, res) {
   var hour = parseInt(req.body.hour) || 6;
   var minute = parseInt(req.body.minute) || 0;
   
-  if (hour < MIN_HOUR || hour > MAX_HOUR || (hour === MAX_HOUR && minute > 59)) {
+  var county = req.body.county || 'montgomery';
+  
+  // Fort Bend has different time restrictions
+  if (county !== 'ftbend' && (hour < MIN_HOUR || hour > MAX_HOUR || (hour === MAX_HOUR && minute > 59))) {
     return res.status(400).json({ error: 'Schedule time must be between 6:00 AM and 2:59 PM' });
   }
   
@@ -524,6 +547,7 @@ app.post('/api/schedule', auth, async function(req, res) {
     timezone: req.body.timezone || 'America/Chicago',
     retry_on_unknown: req.body.retryOnUnknown || false,
     quiet_mode: req.body.quietMode || false,
+    ftbend_office: req.body.ftbend_office || 'missouri',
     enabled: true,
     updated_at: new Date().toISOString()
   };
@@ -1552,23 +1576,48 @@ app.get('/admin', function(req, res) {
 
 
 // ========== FT BEND DAILY COLOR SYSTEM ==========
+
+// ========== FT BEND MULTI-OFFICE DAILY COLOR SYSTEM ==========
+
+// Call all 3 Fort Bend offices
 async function ftbendDailyColorCall() {
-  console.log('[FTBEND] Starting daily color detection call...');
+  console.log('[FTBEND] Starting daily color detection for ALL offices...');
   
-  var callId = 'ftbend_daily_' + Date.now();
-  var targetNumber = COUNTIES.ftbend.number;
+  var offices = Object.keys(FTBEND_OFFICES);
+  for (var i = 0; i < offices.length; i++) {
+    var officeId = offices[i];
+    var office = FTBEND_OFFICES[officeId];
+    
+    // Stagger calls by 30 seconds each
+    (function(oid, off) {
+      setTimeout(function() {
+        ftbendCallOffice(oid, off);
+      }, i * 30000);
+    })(officeId, office);
+  }
+}
+
+// Call a single Fort Bend office
+async function ftbendCallOffice(officeId, office) {
+  var callId = 'ftbend_' + officeId + '_' + Date.now();
+  console.log('[FTBEND] Calling ' + office.name + ' (' + office.number + ')...');
   
   pendingCalls.set(callId, {
     isFtbendDaily: true,
-    targetNumber: targetNumber,
-    result: null
+    officeId: officeId,
+    officeName: office.name,
+    targetNumber: office.number,
+    hasPhases: office.hasPhases || false,
+    result: null,
+    phase1: null,
+    phase2: null
   });
   
   try {
     var call = await twilioClient.calls.create({
-      to: targetNumber,
+      to: office.number,
       from: TWILIO_VOICE_NUMBER,
-      url: process.env.BASE_URL + '/twiml/ftbend-answer?callId=' + callId,
+      url: process.env.BASE_URL + '/twiml/ftbend-answer?callId=' + callId + '&officeId=' + officeId,
       statusCallback: process.env.BASE_URL + '/webhook/status?callId=' + callId,
       record: true,
       recordingStatusCallback: process.env.BASE_URL + '/webhook/recording?callId=' + callId,
@@ -1576,52 +1625,65 @@ async function ftbendDailyColorCall() {
     });
     
     pendingCalls.get(callId).callSid = call.sid;
-    console.log('[FTBEND] Call initiated: ' + call.sid);
+    console.log('[FTBEND] ' + office.name + ' call initiated: ' + call.sid);
   } catch (e) {
-    console.error('[FTBEND] Call failed:', e.message);
+    console.error('[FTBEND] ' + office.name + ' call failed:', e.message);
   }
 }
 
 app.post('/twiml/ftbend-answer', function(req, res) {
   var callId = req.query.callId;
+  var officeId = req.query.officeId;
+  var config = pendingCalls.get(callId);
   var twiml = new twilio.twiml.VoiceResponse();
   
-  console.log('[FTBEND] Call answered, listening for color...');
+  console.log('[FTBEND] Call answered for office: ' + officeId);
   twiml.pause({ length: 3 });
   twiml.gather({
     input: 'speech',
     timeout: 45,
     speechTimeout: 10,
-    action: process.env.BASE_URL + '/twiml/ftbend-result?callId=' + callId,
-    hints: FTBEND_COLORS.join(', ') + ', color, today, is',
+    action: process.env.BASE_URL + '/twiml/ftbend-result?callId=' + callId + '&officeId=' + officeId,
+    hints: FTBEND_COLORS.join(', ') + ', color, today, is, phase, one, two, 1, 2',
     language: 'en-US',
     profanityFilter: false
   });
-  twiml.redirect(process.env.BASE_URL + '/twiml/ftbend-fallback?callId=' + callId);
+  twiml.redirect(process.env.BASE_URL + '/twiml/ftbend-fallback?callId=' + callId + '&officeId=' + officeId);
   
   res.type('text/xml').send(twiml.toString());
 });
 
 app.post('/twiml/ftbend-result', async function(req, res) {
   var callId = req.query.callId;
+  var officeId = req.query.officeId;
   var speech = req.body.SpeechResult || '';
   var config = pendingCalls.get(callId);
   var twiml = new twilio.twiml.VoiceResponse();
   
-  console.log('[FTBEND] Speech detected: "' + speech + '"');
+  console.log('[FTBEND] ' + officeId + ' speech: "' + speech + '"');
   
   if (config && !config.result) {
-    var detectedColor = detectColor(speech);
-    
-    if (detectedColor) {
-      console.log('[FTBEND] Color detected: ' + detectedColor);
-      config.result = detectedColor;
-      await storeFtbendColor(detectedColor, speech);
-      await notifyAllFtbendUsers(detectedColor);
+    // Check for phase 1 / phase 2 in the speech (for rosenberg_phase)
+    if (config.hasPhases) {
+      var phases = detectPhaseColors(speech);
+      config.phase1 = phases.phase1;
+      config.phase2 = phases.phase2;
+      config.result = phases.phase1 || phases.phase2 ? 'PHASES' : 'UNKNOWN';
+      await storeFtbendColor(config.result, speech, officeId, phases.phase1, phases.phase2);
     } else {
-      console.log('[FTBEND] No color detected in speech');
-      config.result = 'UNKNOWN';
+      var detectedColor = detectColor(speech);
+      if (detectedColor) {
+        console.log('[FTBEND] ' + officeId + ' color: ' + detectedColor);
+        config.result = detectedColor;
+        await storeFtbendColor(detectedColor, speech, officeId, null, null);
+      } else {
+        config.result = 'UNKNOWN';
+        await storeFtbendColor('UNKNOWN', speech, officeId, null, null);
+      }
     }
+    
+    // Notify users subscribed to this office
+    await notifyFtbendOfficeUsers(officeId, config);
   }
   
   twiml.hangup();
@@ -1630,13 +1692,15 @@ app.post('/twiml/ftbend-result', async function(req, res) {
 
 app.post('/twiml/ftbend-fallback', async function(req, res) {
   var callId = req.query.callId;
+  var officeId = req.query.officeId;
   var config = pendingCalls.get(callId);
   
-  console.log('[FTBEND] Fallback - no speech detected');
+  console.log('[FTBEND] ' + officeId + ' fallback - no speech detected');
   
   if (config && !config.result) {
     config.result = 'UNKNOWN';
-    await storeFtbendColor('UNKNOWN', '');
+    await storeFtbendColor('UNKNOWN', '', officeId, null, null);
+    await notifyFtbendOfficeUsers(officeId, config);
   }
   
   var twiml = new twilio.twiml.VoiceResponse();
@@ -1644,62 +1708,134 @@ app.post('/twiml/ftbend-fallback', async function(req, res) {
   res.type('text/xml').send(twiml.toString());
 });
 
-async function storeFtbendColor(color, transcript) {
-  // Use CST date
+// Detect phase 1 and phase 2 colors from speech
+function detectPhaseColors(transcript) {
+  var lower = transcript.toLowerCase();
+  console.log('[FTBEND] Analyzing phases in: "' + lower + '"');
+  
+  var phase1 = null;
+  var phase2 = null;
+  
+  // Look for "phase 1 is COLOR" or "phase one is COLOR"
+  var phase1Match = lower.match(/phase\s*(?:1|one)\s*(?:is|color)?\s*([a-z]+)/i);
+  if (phase1Match && phase1Match[1]) {
+    var color1 = phase1Match[1].trim();
+    if (FTBEND_COLORS.indexOf(color1) >= 0) {
+      phase1 = color1.charAt(0).toUpperCase() + color1.slice(1);
+    }
+  }
+  
+  // Look for "phase 2 is COLOR" or "phase two is COLOR"
+  var phase2Match = lower.match(/phase\s*(?:2|two)\s*(?:is|color)?\s*([a-z]+)/i);
+  if (phase2Match && phase2Match[1]) {
+    var color2 = phase2Match[1].trim();
+    if (FTBEND_COLORS.indexOf(color2) >= 0) {
+      phase2 = color2.charAt(0).toUpperCase() + color2.slice(1);
+    }
+  }
+  
+  // If we couldn't parse phases, try to find any two colors mentioned
+  if (!phase1 && !phase2) {
+    var foundColors = [];
+    for (var i = 0; i < FTBEND_COLORS.length; i++) {
+      var colorRegex = new RegExp('\\b' + FTBEND_COLORS[i] + '\\b', 'gi');
+      var matches = lower.match(colorRegex);
+      if (matches) {
+        for (var j = 0; j < matches.length; j++) {
+          var c = matches[j].toLowerCase();
+          if (foundColors.indexOf(c) < 0) {
+            foundColors.push(c);
+          }
+        }
+      }
+    }
+    if (foundColors.length >= 1) {
+      phase1 = foundColors[0].charAt(0).toUpperCase() + foundColors[0].slice(1);
+    }
+    if (foundColors.length >= 2) {
+      phase2 = foundColors[1].charAt(0).toUpperCase() + foundColors[1].slice(1);
+    }
+  }
+  
+  console.log('[FTBEND] Detected Phase 1: ' + phase1 + ', Phase 2: ' + phase2);
+  return { phase1: phase1, phase2: phase2 };
+}
+
+async function storeFtbendColor(color, transcript, officeId, phase1, phase2) {
   var now = new Date();
   var cst = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
   var today = cst.getFullYear() + '-' + String(cst.getMonth() + 1).padStart(2, '0') + '-' + String(cst.getDate()).padStart(2, '0');
-  console.log('[FTBEND] Storing color:', color, 'for date:', today);
+  
+  var office = FTBEND_OFFICES[officeId] || { name: officeId };
+  console.log('[FTBEND] Storing ' + office.name + ' color: ' + color + ' for ' + today);
   
   try {
+    var countyKey = 'ftbend_' + officeId;
+    
     var existing = await supabase.from('daily_county_status')
       .select('*')
-      .eq('county', 'ftbend')
+      .eq('county', countyKey)
       .eq('date', today)
       .single();
     
+    var data = {
+      county: countyKey,
+      date: today,
+      color: color,
+      transcript: transcript,
+      phase1_color: phase1,
+      phase2_color: phase2,
+      office_name: office.name,
+      updated_at: new Date().toISOString()
+    };
+    
     var result;
     if (existing.data) {
-      console.log('[FTBEND] Updating existing row:', existing.data.id);
       result = await supabase.from('daily_county_status')
-        .update({ color: color, transcript: transcript, updated_at: new Date().toISOString() })
+        .update(data)
         .eq('id', existing.data.id);
     } else {
-      console.log('[FTBEND] Inserting new row');
-      result = await supabase.from('daily_county_status').insert({
-        county: 'ftbend',
-        date: today,
-        color: color,
-        transcript: transcript
-      });
+      result = await supabase.from('daily_county_status').insert(data);
     }
     
     if (result.error) {
       console.error('[FTBEND] Database error:', result.error);
     } else {
-      console.log('[FTBEND] Stored color successfully for ' + today + ': ' + color);
+      console.log('[FTBEND] Stored ' + office.name + ' color: ' + color);
     }
   } catch (e) {
-    console.error('[FTBEND] Exception in storeFtbendColor:', e.message);
+    console.error('[FTBEND] Exception storing color:', e.message);
   }
 }
 
-async function notifyAllFtbendUsers(color) {
+async function notifyFtbendOfficeUsers(officeId, config) {
+  var office = FTBEND_OFFICES[officeId] || { name: officeId };
+  
+  // Get users subscribed to this specific office
   var result = await supabase.from('user_schedules')
     .select('*')
     .eq('county', 'ftbend')
+    .eq('ftbend_office', officeId)
     .eq('enabled', true);
   
   if (!result.data || result.data.length === 0) {
-    console.log('[FTBEND] No users to notify');
+    console.log('[FTBEND] No users subscribed to ' + office.name);
     return;
   }
   
-  console.log('[FTBEND] Scheduling notifications for ' + result.data.length + ' users about color: ' + color);
+  console.log('[FTBEND] Notifying ' + result.data.length + ' users for ' + office.name);
   
-  var message = color === 'UNKNOWN'
-    ? '⚠️ ProbationCall: Could not detect today\'s color. Please call +1 (281) 238-3669'
-    : '🎨 Fort Bend Color: ' + color.toUpperCase() + '\n\nCheck if this is your assigned color.';
+  var message;
+  if (config.hasPhases && (config.phase1 || config.phase2)) {
+    message = '🎨 Fort Bend ' + office.name + ':\n';
+    if (config.phase1) message += '• Phase 1: ' + config.phase1.toUpperCase() + '\n';
+    if (config.phase2) message += '• Phase 2: ' + config.phase2.toUpperCase() + '\n';
+    message += '\nCheck if this is your assigned color.';
+  } else if (config.result && config.result !== 'UNKNOWN' && config.result !== 'PHASES') {
+    message = '🎨 Fort Bend ' + office.name + ': ' + config.result.toUpperCase() + '\n\nCheck if this is your assigned color.';
+  } else {
+    message = '⚠️ ProbationCall: Could not detect ' + office.name + ' color. Please call ' + (FTBEND_OFFICES[officeId] ? FTBEND_OFFICES[officeId].number : '+12812383668');
+  }
   
   var now = new Date();
   var cst = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
@@ -1711,46 +1847,45 @@ async function notifyAllFtbendUsers(color) {
     var schedHour = sched.hour !== undefined ? sched.hour : 5;
     var schedMin = sched.minute !== undefined ? sched.minute : 10;
     
-    // Calculate delay until scheduled time
-    var delayMs = i * 2000; // Default small stagger
+    var delayMs = i * 2000;
     if (schedHour > currentHour || (schedHour === currentHour && schedMin > currentMin)) {
-      // Schedule is later today - calculate delay
       var minutesUntil = (schedHour - currentHour) * 60 + (schedMin - currentMin);
-      delayMs = minutesUntil * 60 * 1000 + (i * 1000); // Add small stagger
+      delayMs = minutesUntil * 60 * 1000 + (i * 1000);
     }
     
-    console.log('[FTBEND] User ' + sched.user_id.slice(0,8) + ' wants ' + schedHour + ':' + String(schedMin).padStart(2,'0') + ', delay: ' + Math.round(delayMs/60000) + ' min');
-    
-    (function(s, delay, msg, clr) {
+    (function(s, delay, msg) {
       setTimeout(async function() {
-        if (!s.quiet_mode || clr === 'UNKNOWN') {
-          console.log('[FTBEND] Sending notification to ' + s.user_id.slice(0,8));
-          await notify(s.notify_number, s.notify_email, s.notify_method, msg, 'ftbend_daily');
-        }
+        console.log('[FTBEND] Sending ' + officeId + ' notification to ' + s.user_id.slice(0,8));
+        await notify(s.notify_number, s.notify_email, s.notify_method, msg, 'ftbend_daily');
         await supabase.from('call_history').insert({
           user_id: s.user_id,
-          target_number: COUNTIES.ftbend.number,
-          result: 'COLOR:' + clr,
-          county: 'ftbend'
+          target_number: FTBEND_OFFICES[officeId] ? FTBEND_OFFICES[officeId].number : COUNTIES.ftbend.number,
+          result: config.hasPhases ? 'P1:' + (config.phase1 || '?') + ' P2:' + (config.phase2 || '?') : 'COLOR:' + config.result,
+          county: 'ftbend',
+          ftbend_office: officeId
         });
       }, delay);
-    })(sched, delayMs, message, color);
+    })(sched, delayMs, message);
   }
 }
 
+// Cron job - 5:05 AM CST every day, calls all offices
 cron.schedule('5 5 * * *', function() {
-  console.log('[FTBEND] Cron triggered - starting daily color call');
+  console.log('[FTBEND] Cron triggered - starting daily color calls for all offices');
   ftbendDailyColorCall();
 }, { timezone: 'America/Chicago' });
 
-app.get('/api/ftbend/colors', auth, async function(req, res) {
-  var result = await supabase.from('daily_county_status')
-    .select('*')
-    .eq('county', 'ftbend')
-    .order('date', { ascending: false })
-    .limit(90);
+app.get("/api/ftbend/colors", auth, async function(req, res) {
+  // Get colors from all Fort Bend offices
+  var result = await supabase.from("daily_county_status")
+    .select("*")
+    .like("county", "ftbend%")
+    .order("date", { ascending: false })
+    .limit(270);
   
-  res.json({ colors: result.data || [] });
+  res.json({ colors: result.data || [], offices: FTBEND_OFFICES });
+});
+
 });
 
 app.get('/api/recording/:recordingSid', function(req, res) {
@@ -1775,30 +1910,41 @@ app.get('/api/recording/:recordingSid', function(req, res) {
   });
 });
 
-app.get('/api/ftbend/today', async function(req, res) {
+app.get("/api/ftbend/today", async function(req, res) {
   var now = new Date();
-  var cst = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
+  var cst = new Date(now.toLocaleString("en-US", { timeZone: "America/Chicago" }));
   var hour = cst.getHours();
   
-  // If before 4am CST, show yesterday's color
   var dateToShow = new Date(cst);
   if (hour < 4) {
     dateToShow.setDate(dateToShow.getDate() - 1);
   }
-  var dateStr = dateToShow.toISOString().split('T')[0];
+  var dateStr = dateToShow.toISOString().split("T")[0];
   
-  var result = await supabase.from('daily_county_status')
-    .select('*')
-    .eq('county', 'ftbend')
-    .eq('date', dateStr)
-    .single();
+  // Get all office colors for today
+  var result = await supabase.from("daily_county_status")
+    .select("*")
+    .like("county", "ftbend%")
+    .eq("date", dateStr);
   
-  res.json({ 
-    color: result.data ? result.data.color : null, 
-    date: dateStr,
-    recording_url: result.data ? result.data.recording_url : null
-  });
+  var offices = {};
+  if (result.data) {
+    result.data.forEach(function(r) {
+      var officeId = r.county.replace("ftbend_", "");
+      offices[officeId] = {
+        color: r.color,
+        phase1: r.phase1_color,
+        phase2: r.phase2_color,
+        office_name: r.office_name,
+        recording_url: r.recording_url,
+        transcript: r.transcript
+      };
+    });
+  }
+  
+  res.json({ date: dateStr, offices: offices, officeConfig: FTBEND_OFFICES });
 });
+
 
 // ========== END FT BEND SYSTEM ==========
 

@@ -326,6 +326,7 @@ select option { background: #1a1a2e; color: #fff; }
       <div class="info-box" id="noSchedInfo"><strong>No schedule.</strong> Set up auto-calls below.</div>
       <form id="scheduleForm">
         <div class="form-group"><label>County</label><select id="schedCounty"><option value="montgomery">Montgomery County</option><option value="ftbend">Fort Bend County</option></select></div>
+        <div class="form-group" id="ftbendOfficeGroup" style="display:none"><label>Fort Bend Office</label><select id="ftbendOffice"><option value="missouri">Missouri City</option><option value="rosenberg">Rosenberg</option><option value="rosenberg_phase">Rosenberg Phase 1/2</option></select><small style="display:block;margin-top:5px;color:#8892b0">Select the office/hotline you call</small></div>
         <div class="form-group"><label>6-Digit PIN</label><input type="text" id="schedPin" maxlength="6" placeholder="123456" required></div>
         <div class="form-group">
           <label>Notification Method</label>
@@ -468,18 +469,39 @@ select option { background: #1a1a2e; color: #fff; }
   <!-- FT BEND TAB -->
   <div id="ftbendTab" class="tab-content">
     <div class="card">
-      <h2>🎨 Fort Bend County - Today's Color</h2>
-      <div id="todayColor" style="text-align:center;padding:30px">
-        <div style="font-size:3rem;margin-bottom:10px" id="colorDisplay">Loading...</div>
-        <div style="color:#8892b0" id="colorDate"></div>
-        <div id="ftbendRecording"></div>
+      <h2>🎨 Fort Bend County - Today's Colors</h2>
+      <div id="todayColors" style="padding:15px">
+        <div class="ftbend-office-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:15px">
+          <div class="ftbend-office-card" id="office_missouri" style="background:rgba(0,217,255,0.1);border:1px solid rgba(0,217,255,0.3);border-radius:12px;padding:20px;text-align:center">
+            <div style="font-size:0.9rem;color:#8892b0;margin-bottom:5px">Missouri City</div>
+            <div style="font-size:2rem;font-weight:700" id="color_missouri">--</div>
+          </div>
+          <div class="ftbend-office-card" id="office_rosenberg" style="background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:12px;padding:20px;text-align:center">
+            <div style="font-size:0.9rem;color:#8892b0;margin-bottom:5px">Rosenberg</div>
+            <div style="font-size:2rem;font-weight:700" id="color_rosenberg">--</div>
+          </div>
+          <div class="ftbend-office-card" id="office_rosenberg_phase" style="background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:12px;padding:20px;text-align:center">
+            <div style="font-size:0.9rem;color:#8892b0;margin-bottom:5px">Rosenberg Phase 1/2</div>
+            <div style="font-size:1.5rem;font-weight:700" id="color_rosenberg_phase_1">Phase 1: --</div>
+            <div style="font-size:1.5rem;font-weight:700" id="color_rosenberg_phase_2">Phase 2: --</div>
+          </div>
+        </div>
+        <div style="color:#8892b0;text-align:center;margin-top:15px" id="colorDate"></div>
       </div>
       <div class="info-box">
-        <strong>How it works:</strong> We call the Fort Bend hotline at 5:05 AM daily and detect the announced color. All users with Fort Bend schedules get notified automatically.
+        <strong>How it works:</strong> We call all 3 Fort Bend hotlines at 5:05 AM daily and detect the announced colors. You will only receive notifications for the office you selected in your schedule.
       </div>
     </div>
     <div class="card">
       <h2>📅 Color History (Last 90 Days)</h2>
+      <div style="margin-bottom:15px">
+        <select id="historyOfficeFilter" style="padding:8px;border-radius:6px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);color:#fff">
+          <option value="all">All Offices</option>
+          <option value="missouri">Missouri City</option>
+          <option value="rosenberg">Rosenberg</option>
+          <option value="rosenberg_phase">Rosenberg Phase 1/2</option>
+        </select>
+      </div>
       <div id="colorHistory" style="max-height:400px;overflow-y:auto"></div>
     </div>
   </div>
@@ -670,52 +692,92 @@ function selectSchedMethod(method) {
 
 
 function loadFtbendColors() {
-  fetch('/api/ftbend/today')
+  fetch("/api/ftbend/today")
     .then(function(r) { return r.json(); })
     .then(function(d) {
-      var el = document.getElementById('colorDisplay');
-      if (d.color && d.color !== 'UNKNOWN') {
-        el.innerHTML = '<span style="color:#22c55e;text-transform:uppercase;font-weight:700">' + d.color + '</span>';
-      } else if (d.color === 'UNKNOWN') {
-        el.innerHTML = '<span style="color:#f59e0b">Not detected yet</span>';
-      } else {
-        el.innerHTML = '<span style="color:#8892b0">Waiting for 5:05 AM call...</span>';
-      }
-      document.getElementById('colorDate').textContent = d.date;
+      document.getElementById("colorDate").textContent = "Date: " + d.date;
       
-      // Show recording if available
-      var recEl = document.getElementById('ftbendRecording');
-      if (d.recording_url) {
-        var recUrl = d.recording_url;
-        if (recUrl && recUrl.includes('Recordings/')) {
-          var sid = recUrl.match(/Recordings\/([A-Za-z0-9]+)/);
-          if (sid) recUrl = '/api/recording/' + sid[1];
-        }
-        recEl.innerHTML = '<div class="ftbend-recording"><h4>🔊 Today\'s Recording</h4><audio controls src="' + recUrl + '"></audio></div>';
+      // Missouri City
+      var mo = d.offices && d.offices.missouri;
+      var moEl = document.getElementById("color_missouri");
+      if (mo && mo.color && mo.color !== "UNKNOWN") {
+        moEl.innerHTML = "<span style='color:#22c55e;text-transform:uppercase'>" + mo.color + "</span>";
       } else {
-        recEl.innerHTML = '';
+        moEl.innerHTML = "<span style='color:#8892b0'>--</span>";
+      }
+      
+      // Rosenberg
+      var ro = d.offices && d.offices.rosenberg;
+      var roEl = document.getElementById("color_rosenberg");
+      if (ro && ro.color && ro.color !== "UNKNOWN") {
+        roEl.innerHTML = "<span style='color:#22c55e;text-transform:uppercase'>" + ro.color + "</span>";
+      } else {
+        roEl.innerHTML = "<span style='color:#8892b0'>--</span>";
+      }
+      
+      // Rosenberg Phase 1/2
+      var rp = d.offices && d.offices.rosenberg_phase;
+      var rp1El = document.getElementById("color_rosenberg_phase_1");
+      var rp2El = document.getElementById("color_rosenberg_phase_2");
+      if (rp && rp.phase1) {
+        rp1El.innerHTML = "Phase 1: <span style='color:#22c55e;text-transform:uppercase'>" + rp.phase1 + "</span>";
+      } else {
+        rp1El.innerHTML = "Phase 1: <span style='color:#8892b0'>--</span>";
+      }
+      if (rp && rp.phase2) {
+        rp2El.innerHTML = "Phase 2: <span style='color:#22c55e;text-transform:uppercase'>" + rp.phase2 + "</span>";
+      } else {
+        rp2El.innerHTML = "Phase 2: <span style='color:#8892b0'>--</span>";
       }
     });
   
-  fetch('/api/ftbend/colors', { headers: { Authorization: 'Bearer ' + token } })
+  fetch("/api/ftbend/colors", { headers: { Authorization: "Bearer " + token } })
     .then(function(r) { return r.json(); })
     .then(function(d) {
-      var el = document.getElementById('colorHistory');
-      if (!d.colors || d.colors.length === 0) {
-        el.innerHTML = '<p style="color:#666;text-align:center">No color history yet</p>';
-        return;
-      }
-      el.innerHTML = d.colors.map(function(c) {
-        var colorStyle = c.color === 'UNKNOWN' ? 'color:#f59e0b' : 'color:#22c55e;text-transform:uppercase';
-        return '<div class="history-item"><div>' + c.date + '</div><span style="' + colorStyle + ';font-weight:600">' + c.color + '</span></div>';
-      }).join('');
+      window.ftbendColorData = d.colors || [];
+      renderFtbendHistory("all");
     });
 }
 
+function renderFtbendHistory(filter) {
+  var el = document.getElementById("colorHistory");
+  var colors = window.ftbendColorData || [];
+  
+  if (filter !== "all") {
+    colors = colors.filter(function(c) {
+      return c.county === "ftbend_" + filter;
+    });
+  }
+  
+  if (colors.length === 0) {
+    el.innerHTML = "<p style='color:#666;text-align:center'>No color history yet</p>";
+    return;
+  }
+  
+  el.innerHTML = colors.map(function(c) {
+    var officeLabel = c.office_name || c.county.replace("ftbend_", "");
+    var colorDisplay = "";
+    
+    if (c.phase1_color || c.phase2_color) {
+      colorDisplay = "<span style='color:#f59e0b'>P1:</span> " + (c.phase1_color || "?") + " <span style='color:#f59e0b'>P2:</span> " + (c.phase2_color || "?");
+    } else if (c.color === "UNKNOWN") {
+      colorDisplay = "<span style='color:#f59e0b'>Unknown</span>";
+    } else {
+      colorDisplay = "<span style='color:#22c55e;text-transform:uppercase'>" + c.color + "</span>";
+    }
+    
+    return "<div class='history-item' style='display:flex;justify-content:space-between;align-items:center'>" +
+      "<div><span style='color:#fff'>" + c.date + "</span> <span style='color:#00d9ff;font-size:0.8rem'>(" + officeLabel + ")</span></div>" +
+      "<span style='font-weight:600'>" + colorDisplay + "</span></div>";
+  }).join("");
+}
 
-function updateCoveredUntil(credits) {
-  var el = document.getElementById('coveredUntil');
-  if (!el || credits < 1) { if(el) el.textContent = ''; return; }
+if (document.getElementById("historyOfficeFilter")) {
+  document.getElementById("historyOfficeFilter").addEventListener("change", function() {
+    renderFtbendHistory(this.value);
+  });
+}
+
   
   var today = new Date();
   var coveredDate = new Date(today);
@@ -851,12 +913,16 @@ function loadUser() {
         if (d.schedule.county === 'ftbend') {
           document.getElementById('ftbendNotifyHour').value = d.schedule.hour || 5;
           document.getElementById('ftbendNotifyMin').value = d.schedule.minute || 10;
+          if (document.getElementById('ftbendOffice')) {
+            document.getElementById('ftbendOffice').value = d.schedule.ftbend_office || 'missouri';
+          }
         }
         document.getElementById('schedTZ').value = d.schedule.timezone;
         document.getElementById('schedRetry').checked = d.schedule.retry_on_unknown || false;
         document.getElementById('schedQuiet').checked = d.schedule.quiet_mode || false;
         if (d.schedule.notify_email) document.getElementById('schedEmail').value = d.schedule.notify_email;
         if (d.schedule.notify_number) document.getElementById('schedNotify').value = d.schedule.notify_number;
+        updateCountyUI('schedCounty', 'schedPin');
       } else {
         document.getElementById('scheduleBanner').classList.remove('active');
         document.getElementById('noSchedule').classList.add('active');
@@ -1145,7 +1211,8 @@ document.getElementById('scheduleForm').onsubmit = function(e) {
       minute: minute,
       timezone: document.getElementById('schedTZ').value,
       retryOnUnknown: document.getElementById('schedRetry').checked,
-      quietMode: document.getElementById('schedQuiet') ? document.getElementById('schedQuiet').checked : false
+      quietMode: document.getElementById('schedQuiet') ? document.getElementById('schedQuiet').checked : false,
+      ftbend_office: document.getElementById('ftbendOffice') ? document.getElementById('ftbendOffice').value : 'missouri'
     })
   }).then(function(r) { return r.json(); }).then(function(d) {
     btn.disabled = false;
@@ -1515,6 +1582,9 @@ function updateCountyUI(selectId, pinId) {
   var ftbendTime = document.getElementById('ftbendTimeSelect');
   var schedTimeNote = document.getElementById('schedTimeNote');
   var schedHourGroup = document.getElementById('schedHour');
+  
+  var ftbendOfficeGroup = document.getElementById("ftbendOfficeGroup");
+  if (ftbendOfficeGroup) ftbendOfficeGroup.style.display = isFtbend ? "block" : "none";
   
   if (ftbendNote) ftbendNote.style.display = isFtbend ? 'block' : 'none';
   if (ftbendTime) ftbendTime.style.display = isFtbend ? 'flex' : 'none';
