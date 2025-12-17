@@ -1828,8 +1828,8 @@ async function notifyFtbendOfficeUsers(officeId, config) {
   var message;
   if (config.phase1 || config.phase2) {
     message = '🎨 Fort Bend ' + office.name + ' Colors:\n';
-    if (config.phase1) message += '• Phase 1: ' + config.phase1.toUpperCase() + '\n';
-    if (config.phase2) message += '• Phase 2: ' + config.phase2.toUpperCase() + '\n';
+    if (config.phase1) message += '• Color 1: ' + config.phase1.toUpperCase() + '\n';
+    if (config.phase2) message += '• Color 2: ' + config.phase2.toUpperCase() + '\n';
     message += '\nCheck if this is your assigned color.';
   } else if (config.result && config.result !== 'UNKNOWN' && config.result !== 'PHASES') {
     message = '🎨 Fort Bend ' + office.name + ': ' + config.result.toUpperCase() + '\n\nCheck if this is your assigned color.';
