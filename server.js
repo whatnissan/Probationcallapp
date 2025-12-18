@@ -1744,55 +1744,66 @@ app.post('/twiml/ftbend-fallback', async function(req, res) {
 // Detect phase 1 and phase 2 colors from speech
 function detectPhaseColors(transcript) {
   var lower = transcript.toLowerCase();
-  console.log('[FTBEND] Analyzing phases in: "' + lower + '"');
+  console.log("[FTBEND] Analyzing phases in: " + lower);
   
   var phase1 = null;
   var phase2 = null;
   
-  // Look for "phase 1 is COLOR" or "phase one is COLOR"
-  var phase1Match = lower.match(/phase\s*(?:1|one)\s*(?:is|color)?\s*([a-z]+)/i);
-  if (phase1Match && phase1Match[1]) {
-    var color1 = phase1Match[1].trim();
-    if (FTBEND_COLORS.indexOf(color1) >= 0) {
-      phase1 = color1.charAt(0).toUpperCase() + color1.slice(1);
+  // Pattern 1: "today is phase one, phase 3" (phases are the test groups)
+  var todayIsMatch = lower.match(/today\s+is[,:]?\s*(.+?)(?:remember|you\s+will|\.|$)/i);
+  if (todayIsMatch && todayIsMatch[1]) {
+    var announcement = todayIsMatch[1].trim();
+    console.log("[FTBEND] Found announcement: " + announcement);
+    
+    // Check for phase numbers mentioned
+    var phases = [];
+    if (/phase\s*(?:1|one)/i.test(announcement)) phases.push("Phase 1");
+    if (/phase\s*(?:2|two)/i.test(announcement)) phases.push("Phase 2");
+    if (/phase\s*(?:3|three)/i.test(announcement)) phases.push("Phase 3");
+    if (/phase\s*(?:4|four)/i.test(announcement)) phases.push("Phase 4");
+    if (/phase\s*(?:5|five)/i.test(announcement)) phases.push("Phase 5");
+    
+    if (phases.length > 0) {
+      phase1 = phases[0];
+      if (phases.length > 1) phase2 = phases.slice(1).join(", ");
+      console.log("[FTBEND] Detected phase groups: " + phases.join(", "));
+      return { phase1: phase1, phase2: phase2 };
     }
-  }
-  
-  // Look for "phase 2 is COLOR" or "phase two is COLOR"
-  var phase2Match = lower.match(/phase\s*(?:2|two)\s*(?:is|color)?\s*([a-z]+)/i);
-  if (phase2Match && phase2Match[1]) {
-    var color2 = phase2Match[1].trim();
-    if (FTBEND_COLORS.indexOf(color2) >= 0) {
-      phase2 = color2.charAt(0).toUpperCase() + color2.slice(1);
-    }
-  }
-  
-  // If we couldn't parse phases, try to find any two colors mentioned
-  if (!phase1 && !phase2) {
+    
+    // Check for colors in the announcement
     var foundColors = [];
     for (var i = 0; i < FTBEND_COLORS.length; i++) {
-      var colorRegex = new RegExp('\\b' + FTBEND_COLORS[i] + '\\b', 'gi');
-      var matches = lower.match(colorRegex);
-      if (matches) {
-        for (var j = 0; j < matches.length; j++) {
-          var c = matches[j].toLowerCase();
-          if (foundColors.indexOf(c) < 0) {
-            foundColors.push(c);
-          }
-        }
+      var colorRegex = new RegExp("\\b" + FTBEND_COLORS[i] + "\\b", "gi");
+      if (colorRegex.test(announcement)) {
+        foundColors.push(FTBEND_COLORS[i].charAt(0).toUpperCase() + FTBEND_COLORS[i].slice(1));
       }
     }
-    if (foundColors.length >= 1) {
-      phase1 = foundColors[0].charAt(0).toUpperCase() + foundColors[0].slice(1);
-    }
-    if (foundColors.length >= 2) {
-      phase2 = foundColors[1].charAt(0).toUpperCase() + foundColors[1].slice(1);
+    if (foundColors.length > 0) {
+      phase1 = foundColors[0];
+      if (foundColors.length > 1) phase2 = foundColors.slice(1).join(", ");
+      console.log("[FTBEND] Detected colors: " + foundColors.join(", "));
+      return { phase1: phase1, phase2: phase2 };
     }
   }
   
-  console.log('[FTBEND] Detected Phase 1: ' + phase1 + ', Phase 2: ' + phase2);
+  // Pattern 2: Look for any colors mentioned anywhere
+  var foundColors = [];
+  for (var i = 0; i < FTBEND_COLORS.length; i++) {
+    var colorRegex = new RegExp("\\b" + FTBEND_COLORS[i] + "\\b", "gi");
+    if (colorRegex.test(lower)) {
+      var c = FTBEND_COLORS[i].charAt(0).toUpperCase() + FTBEND_COLORS[i].slice(1);
+      if (foundColors.indexOf(c) < 0) foundColors.push(c);
+    }
+  }
+  if (foundColors.length > 0) {
+    phase1 = foundColors[0];
+    if (foundColors.length > 1) phase2 = foundColors.slice(1).join(", ");
+  }
+  
+  console.log("[FTBEND] Detected Phase 1: " + phase1 + ", Phase 2: " + phase2);
   return { phase1: phase1, phase2: phase2 };
 }
+
 
 async function storeFtbendColor(color, transcript, officeId, phase1, phase2) {
   var now = new Date();
