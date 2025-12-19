@@ -1746,63 +1746,38 @@ function detectPhaseColors(transcript) {
   var lower = transcript.toLowerCase();
   console.log("[FTBEND] Analyzing phases in: " + lower);
   
-  var phase1 = null;
-  var phase2 = null;
-  
-  // Pattern 1: "today is phase one, phase 3" (phases are the test groups)
+  // Extract whatever comes after "today is" until "remember" or end
   var todayIsMatch = lower.match(/today\s+is[,:]?\s*(.+?)(?:remember|you\s+will|\.|$)/i);
-  if (todayIsMatch && todayIsMatch[1]) {
-    var announcement = todayIsMatch[1].trim();
-    console.log("[FTBEND] Found announcement: " + announcement);
-    
-    // Check for phase numbers mentioned
-    var phases = [];
-    if (/phase\s*(?:1|one)/i.test(announcement)) phases.push("Phase 1");
-    if (/phase\s*(?:2|two)/i.test(announcement)) phases.push("Phase 2");
-    if (/phase\s*(?:3|three)/i.test(announcement)) phases.push("Phase 3");
-    if (/phase\s*(?:4|four)/i.test(announcement)) phases.push("Phase 4");
-    if (/phase\s*(?:5|five)/i.test(announcement)) phases.push("Phase 5");
-    
-    if (phases.length > 0) {
-      phase1 = phases[0];
-      if (phases.length > 1) phase2 = phases.slice(1).join(", ");
-      console.log("[FTBEND] Detected phase groups: " + phases.join(", "));
-      return { phase1: phase1, phase2: phase2 };
-    }
-    
-    // Check for colors in the announcement
-    var foundColors = [];
-    for (var i = 0; i < FTBEND_COLORS.length; i++) {
-      var colorRegex = new RegExp("\\b" + FTBEND_COLORS[i] + "\\b", "gi");
-      if (colorRegex.test(announcement)) {
-        foundColors.push(FTBEND_COLORS[i].charAt(0).toUpperCase() + FTBEND_COLORS[i].slice(1));
-      }
-    }
-    if (foundColors.length > 0) {
-      phase1 = foundColors[0];
-      if (foundColors.length > 1) phase2 = foundColors.slice(1).join(", ");
-      console.log("[FTBEND] Detected colors: " + foundColors.join(", "));
-      return { phase1: phase1, phase2: phase2 };
-    }
+  if (!todayIsMatch || !todayIsMatch[1]) {
+    console.log("[FTBEND] Could not find today is pattern");
+    return { phase1: null, phase2: null };
   }
   
-  // Pattern 2: Look for any colors mentioned anywhere
-  var foundColors = [];
-  for (var i = 0; i < FTBEND_COLORS.length; i++) {
-    var colorRegex = new RegExp("\\b" + FTBEND_COLORS[i] + "\\b", "gi");
-    if (colorRegex.test(lower)) {
-      var c = FTBEND_COLORS[i].charAt(0).toUpperCase() + FTBEND_COLORS[i].slice(1);
-      if (foundColors.indexOf(c) < 0) foundColors.push(c);
-    }
-  }
-  if (foundColors.length > 0) {
-    phase1 = foundColors[0];
-    if (foundColors.length > 1) phase2 = foundColors.slice(1).join(", ");
-  }
+  var announcement = todayIsMatch[1].trim();
+  console.log("[FTBEND] Raw announcement: " + announcement);
   
-  console.log("[FTBEND] Detected Phase 1: " + phase1 + ", Phase 2: " + phase2);
+  // Split by "and" or commas
+  var parts = announcement.split(/\s+and\s+|,\s*/).map(function(p) {
+    return p.trim();
+  }).filter(function(p) {
+    return p.length > 0;
+  });
+  
+  // Clean up each part - capitalize first letter of each word
+  var cleaned = parts.map(function(p) {
+    return p.split(" ").map(function(word) {
+      return word.charAt(0).toUpperCase() + word.slice(1);
+    }).join(" ");
+  });
+  
+  console.log("[FTBEND] Detected groups: " + cleaned.join(", "));
+  
+  var phase1 = cleaned.length > 0 ? cleaned[0] : null;
+  var phase2 = cleaned.length > 1 ? cleaned.slice(1).join(", ") : null;
+  
   return { phase1: phase1, phase2: phase2 };
 }
+
 
 
 async function storeFtbendColor(color, transcript, officeId, phase1, phase2) {
