@@ -1872,19 +1872,33 @@ async function notifyFtbendOfficeUsers(officeId, config) {
       delayMs = minutesUntil * 60 * 1000 + (i * 1000);
     }
     
-    (function(s, delay, msg) {
+    (function(s, delay, msg, oid, cfg) {
       setTimeout(async function() {
-        console.log('[FTBEND] Sending ' + officeId + ' notification to ' + s.user_id.slice(0,8));
+        var profileResult = await supabase.from('profiles').select('credits, email').eq('id', s.user_id).single();
+        var profile = profileResult.data;
+        if (!profile) return;
+        var isDevUser = isDev(profile.email);
+        if (!isDevUser && profile.credits < 1) {
+          console.log('[FTBEND] User ' + s.user_id.slice(0,8) + '... has no credits, skipping');
+          await notify(s.notify_number, s.notify_email, s.notify_method, 'ProbationCall: Scheduled call skipped - no credits!', 'ftbend');
+          await supabase.from('call_history').insert({ user_id: s.user_id, target_number: FTBEND_OFFICES[oid] ? FTBEND_OFFICES[oid].number : COUNTIES.ftbend.number, result: 'NO_CREDITS', county: 'ftbend', ftbend_office: oid });
+          return;
+        }
+        console.log('[FTBEND] Sending ' + oid + ' notification to ' + s.user_id.slice(0,8));
         await notify(s.notify_number, s.notify_email, s.notify_method, msg, 'ftbend_daily');
+        if (!isDevUser) {
+          await supabase.from('profiles').update({ credits: profile.credits - 1 }).eq('id', s.user_id);
+          console.log('[FTBEND] Deducted 1 credit from ' + s.user_id.slice(0,8));
+        }
         await supabase.from('call_history').insert({
           user_id: s.user_id,
-          target_number: FTBEND_OFFICES[officeId] ? FTBEND_OFFICES[officeId].number : COUNTIES.ftbend.number,
-          result: config.hasPhases ? 'P1:' + (config.phase1 || '?') + ' P2:' + (config.phase2 || '?') : 'COLOR:' + config.result,
+          target_number: FTBEND_OFFICES[oid] ? FTBEND_OFFICES[oid].number : COUNTIES.ftbend.number,
+          result: cfg.hasPhases ? 'P1:' + (cfg.phase1 || '?') + ' P2:' + (cfg.phase2 || '?') : 'COLOR:' + cfg.result,
           county: 'ftbend',
-          ftbend_office: officeId
+          ftbend_office: oid
         });
       }, delay);
-    })(sched, delayMs, message);
+    })(sched, delayMs, message, officeId, config);
   }
 }
 
@@ -2105,7 +2119,9 @@ cron.schedule('30 * * * *', async function() {
     
     if (!isDevUser && profile.credits < 1) {
       console.log('[RECOVERY] User ' + sched.user_id.slice(0,8) + '... has no credits, skipping');
-      await notify(sched.notify_number, sched.notify_email, sched.notify_method, '⚠️ ProbationCall: Your scheduled call was missed and you have no credits!', 'recovery');
+      await notify(sched.notify_number, sched.notify_email, sched.notify_method, '⚠️ ProbationCall: Your scheduled call was missed and you have no credits!', 'recovery'); await supabase.from('call_history').insert({ user_id: sched.user_id, target_number: sched.target_number, pin_used: sched.pin, result: 'NO_CREDITS' });
+      await supabase.from('call_history').insert({ user_id: sched.user_id, target_number: sched.target_number, pin_used: sched.pin, result: 'NO_CREDITS' });
+      await supabase.from('call_history').insert({ user_id: sched.user_id, target_number: sched.target_number, pin_used: sched.pin, result: 'NO_CREDITS' });
       continue;
     }
     
