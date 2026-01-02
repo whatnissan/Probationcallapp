@@ -131,7 +131,9 @@ function detectColor(transcript) {
     'can airy': 'canary', 'canaries': 'canary', 'canari': 'canary',
     'all of ': 'olive', 'all live': 'olive', 
     'i very': 'ivory', 'i vory': 'ivory',
-    'grey': 'gray'
+    'grey': 'gray',
+    'can': 'cyan', 'cyn': 'cyan', 'zion': 'cyan', 'sign': 'cyan',
+    'sigh in': 'cyan', 'sigh an': 'cyan', 'sy an': 'cyan', 'psy an': 'cyan', 'sign': 'cyan'
   };
   
   for (var fix in fixes) {
