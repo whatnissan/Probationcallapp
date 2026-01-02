@@ -473,18 +473,30 @@ select option { background: #1a1a2e; color: #fff; }
     <div class="card">
       <h2>🎨 Fort Bend County - Today's Colors</h2>
       <div id="todayColors" style="padding:15px">
-        <div class="ftbend-office-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:15px">
+        <div class="ftbend-office-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:15px">
           <div class="ftbend-office-card" id="office_missouri" style="background:rgba(0,217,255,0.1);border:1px solid rgba(0,217,255,0.3);border-radius:12px;padding:20px;text-align:center">
             <div style="font-size:0.9rem;color:#8892b0;margin-bottom:5px">Missouri City</div>
             <div style="font-size:2rem;font-weight:700" id="color_missouri">--</div>
+            <div id="recording_missouri" style="margin-top:12px;display:none">
+              <div style="font-size:0.75rem;color:#8892b0;margin-bottom:6px">🔊 Today's Recording</div>
+              <audio controls style="width:100%;height:36px;border-radius:8px" id="audio_missouri"></audio>
+            </div>
           </div>
           <div class="ftbend-office-card" id="office_rosenberg" style="background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:12px;padding:20px;text-align:center">
             <div style="font-size:0.9rem;color:#8892b0;margin-bottom:5px">Rosenberg (3669)</div>
             <div style="font-size:2rem;font-weight:700" id="color_rosenberg">--</div>
+            <div id="recording_rosenberg" style="margin-top:12px;display:none">
+              <div style="font-size:0.75rem;color:#8892b0;margin-bottom:6px">🔊 Today's Recording</div>
+              <audio controls style="width:100%;height:36px;border-radius:8px" id="audio_rosenberg"></audio>
+            </div>
           </div>
           <div class="ftbend-office-card" id="office_rosenberg2" style="background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:12px;padding:20px;text-align:center">
             <div style="font-size:0.9rem;color:#8892b0;margin-bottom:5px">Rosenberg 2 (3671)</div>
             <div style="font-size:2rem;font-weight:700" id="color_rosenberg2">--</div>
+            <div id="recording_rosenberg2" style="margin-top:12px;display:none">
+              <div style="font-size:0.75rem;color:#8892b0;margin-bottom:6px">🔊 Today's Recording</div>
+              <audio controls style="width:100%;height:36px;border-radius:8px" id="audio_rosenberg2"></audio>
+            </div>
           </div>
         </div>
         <div style="color:#8892b0;text-align:center;margin-top:15px" id="colorDate"></div>
@@ -725,6 +737,22 @@ function loadFtbendColors() {
       } else {
         rpEl.innerHTML = "<span style='color:#8892b0'>--</span>";
       }
+      
+      // Load recordings for each office
+      ["missouri", "rosenberg", "rosenberg2"].forEach(function(office) {
+        var officeData = d.offices && d.offices[office];
+        var recDiv = document.getElementById("recording_" + office);
+        var audioEl = document.getElementById("audio_" + office);
+        if (officeData && officeData.recording_url) {
+          var recSid = officeData.recording_url.match(/RE[a-f0-9]{32}/);
+          if (recSid) {
+            audioEl.src = "/api/recording/" + recSid[0];
+            recDiv.style.display = "block";
+          }
+        } else {
+          recDiv.style.display = "none";
+        }
+      });
     });
   
   fetch("/api/ftbend/colors", { headers: { Authorization: "Bearer " + token } })
