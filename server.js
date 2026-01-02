@@ -91,7 +91,8 @@ const FTBEND_COLORS = [
   'ivory', 'jade', 'lavender', 'lemon', 'lilac', 'lime', 'magenta', 'maroon',
   'navy', 'olive', 'orange', 'orchid', 'peach', 'pearl', 'pink', 'plum', 'purple',
   'red', 'rose', 'ruby', 'rust', 'salmon', 'sapphire', 'scarlet', 'silver',
-  'tan', 'teal', 'turquoise', 'violet', 'white', 'wine', 'yellow'
+  'tan', 'teal', 'turquoise', 'violet', 'white', 'wine', 'yellow',
+  'gray', 'lemon', 'prep', 'phase 1', 'phase 1 a', 'phase 1 b', 'phase 2', 'phase 3', 'phase 4'
 ];
 
 function detectColor(transcript) {
