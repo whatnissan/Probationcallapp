@@ -987,11 +987,12 @@ app.post('/webhook/recording', async function(req, res) {
         var now = new Date();
         var cst = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
         var today = cst.getFullYear() + '-' + String(cst.getMonth() + 1).padStart(2, '0') + '-' + String(cst.getDate()).padStart(2, '0');
+        var countyKey = 'ftbend_' + (config.officeId || 'missouri');
         await supabase.from('daily_county_status')
           .update({ recording_url: mp3Url })
-          .eq('county', 'ftbend')
+          .eq('county', countyKey)
           .eq('date', today);
-        console.log('[RECORDING] Saved Fort Bend daily recording for', today);
+        console.log('[RECORDING] Saved Fort Bend daily recording for', countyKey, today);
       } else if (config.callSid) {
         // Montgomery - save to call_history
         await supabase.from('call_history')
