@@ -86,7 +86,7 @@ const FTBEND_OFFICES = {
 // Fort Bend County colors for detection
 const FTBEND_COLORS = [
   'amber', 'apricot', 'aqua', 'auburn', 'beaver', 'black', 'blue', 'brown', 'burgundy',
-  'canary', 'cherry', 'chestnut', 'coral', 'copper', 'cream', 'crimson', 'cyan',
+  'bronze', 'canary', 'cherry', 'chestnut', 'coral', 'copper', 'cream', 'crimson', 'cyan',
   'emerald', 'forest', 'fuchsia', 'gold', 'gray', 'grey', 'green',
   'ivory', 'jade', 'lavender', 'lemon', 'lilac', 'lime', 'magenta', 'maroon',
   'navy', 'olive', 'orange', 'orchid', 'peach', 'pearl', 'pink', 'plum', 'purple',
@@ -129,7 +129,7 @@ function detectColor(transcript) {
   
   // Only very specific misrecognitions (avoid false positives)
   var fixes = {
-    'can airy': 'canary', 'canaries': 'canary', 'canari': 'canary',
+    'can airy': 'bronze', 'canary', 'canaries': 'canary', 'canari': 'canary',
     'all of ': 'olive', 'all live': 'olive', 
     'i very': 'ivory', 'i vory': 'ivory',
     'grey': 'gray',
