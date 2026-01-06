@@ -86,7 +86,7 @@ const FTBEND_OFFICES = {
 // Fort Bend County colors for detection
 const FTBEND_COLORS = [
   'amber', 'apricot', 'aqua', 'auburn', 'beaver', 'black', 'blue', 'brown', 'burgundy',
-  'bronze', 'canary', 'cherry', 'chestnut', 'coral', 'copper', 'cream', 'crimson', 'cyan',
+  'bronze', 'canary', 'tan', 'cherry', 'chestnut', 'coral', 'copper', 'cream', 'crimson', 'cyan',
   'emerald', 'forest', 'fuchsia', 'gold', 'gray', 'grey', 'green',
   'ivory', 'jade', 'lavender', 'lemon', 'lilac', 'lime', 'magenta', 'maroon',
   'navy', 'olive', 'orange', 'orchid', 'peach', 'pearl', 'pink', 'plum', 'purple',
@@ -129,7 +129,7 @@ function detectColor(transcript) {
   
   // Only very specific misrecognitions (avoid false positives)
   var fixes = {
-    'can airy': 'bronze', 'canary', 'canaries': 'canary', 'canari': 'canary',
+    'can airy': 'bronze', 'canary', 'tan', 'canaries': 'canary', 'canari': 'canary',
     'all of ': 'olive', 'all live': 'olive', 
     'i very': 'ivory', 'i vory': 'ivory',
     'grey': 'gray',
@@ -617,14 +617,23 @@ function rescheduleUser(userId, sched) {
         var isDevUser = isDev(profile.email);
         
         if (!isDevUser && profile.credits < 1) {
-          await notify(sched.notify_number, sched.notify_email, sched.notify_method, 'ProbationCall: Scheduled call skipped - no credits!', 'sched');
+          var skipCount = (sched.no_credit_skip_count || 0) + 1;
+          if (skipCount >= 2) {
+            await supabase.from('user_schedules').delete().eq('user_id', userId);
+            if (scheduledJobs.has(userId)) { scheduledJobs.get(userId).stop(); scheduledJobs.delete(userId); }
+            await notify(sched.notify_number, sched.notify_email, sched.notify_method, 'ProbationCall: Your schedule has been removed due to no credits. Please log in, purchase credits, and set up your schedule again at probationcall.com', 'sched');
+          } else {
+            await supabase.from('user_schedules').update({ no_credit_skip_count: skipCount }).eq('user_id', userId);
+            await notify(sched.notify_number, sched.notify_email, sched.notify_method, 'ProbationCall: Scheduled call skipped - no credits! Warning: ' + (2 - skipCount) + ' more skip(s) and your schedule will be removed.', 'sched');
+          }
+
           return;
         }
         
         await initiateCall(sched.target_number, sched.pin, sched.notify_number, sched.notify_email, sched.notify_method, userId, sched.retry_on_unknown, 0);
         
         if (!isDevUser) {
-          await supabase.from('profiles').update({ credits: profile.credits - 1 }).eq('id', userId);
+          await supabase.from('profiles').update({ credits: profile.credits - 1 }).eq('id', userId); await supabase.from('user_schedules').update({ no_credit_skip_count: 0 }).eq('user_id', userId);
         }
       } catch (e) {
         console.error('[SCHED] Error for ' + userId.slice(0,8) + '...:', e.message);
@@ -1883,8 +1892,15 @@ async function notifyFtbendOfficeUsers(officeId, config) {
         if (!profile) return;
         var isDevUser = isDev(profile.email);
         if (!isDevUser && profile.credits < 1) {
+          var skipCount = (s.no_credit_skip_count || 0) + 1;
           console.log('[FTBEND] User ' + s.user_id.slice(0,8) + '... has no credits, skipping');
-          await notify(s.notify_number, s.notify_email, s.notify_method, 'ProbationCall: Scheduled call skipped - no credits!', 'ftbend');
+          if (skipCount >= 2) {
+            await supabase.from('user_schedules').delete().eq('user_id', s.user_id);
+            await notify(s.notify_number, s.notify_email, s.notify_method, 'ProbationCall: Your schedule has been removed due to no credits. Please log in, purchase credits, and set up your schedule again at probationcall.com', 'ftbend');
+          } else {
+            await supabase.from('user_schedules').update({ no_credit_skip_count: skipCount }).eq('user_id', s.user_id);
+            await notify(s.notify_number, s.notify_email, s.notify_method, 'ProbationCall: Scheduled call skipped - no credits! Warning: ' + (2 - skipCount) + ' more skip(s) and your schedule will be removed.', 'ftbend');
+          }
           await supabase.from('call_history').insert({ user_id: s.user_id, target_number: FTBEND_OFFICES[oid] ? FTBEND_OFFICES[oid].number : COUNTIES.ftbend.number, result: 'NO_CREDITS', county: 'ftbend', ftbend_office: oid });
           return;
         }
