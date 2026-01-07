@@ -129,7 +129,7 @@ function detectColor(transcript) {
   
   // Only very specific misrecognitions (avoid false positives)
   var fixes = {
-    'can airy': 'bronze', 'canary', 'tan', 'canaries': 'canary', 'canari': 'canary',
+    'can airy': 'canary', 'canaries': 'canary', 'canari': 'canary',
     'all of ': 'olive', 'all live': 'olive', 
     'i very': 'ivory', 'i vory': 'ivory',
     'grey': 'gray',
