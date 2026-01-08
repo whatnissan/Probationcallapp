@@ -559,7 +559,7 @@ select option { background: #1a1a2e; color: #fff; }
         <div style="display:flex;justify-content:space-between;align-items:center">
           <div>
             <span id="exactDays" style="font-size:1.3rem;font-weight:700;color:#fff">0</span> <span style="color:#8892b0">days</span><br>
-            <span style="color:#8892b0;font-size:0.85rem">= <span id="exactCredits">0</span> credits needed</span>
+            <span style="color:#8892b0;font-size:0.85rem">= <span id="exactCredits">0</span> credits needed</span><br><span id="existingCreditsNote" style="color:#22c55e;font-size:0.8rem"></span>
           </div>
           <div style="text-align:right">
             <div id="exactPrice" style="font-size:1.8rem;font-weight:700;color:#22c55e">$0</div>
@@ -579,7 +579,7 @@ select option { background: #1a1a2e; color: #fff; }
 var SUPA_URL = 'https://xvpuqeaowvlkcyywgaaq.supabase.co';
 var SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh2cHVxZWFvd3Zsa2N5eXdnYWFxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQyNzc1MjcsImV4cCI6MjA3OTg1MzUyN30.y90odNDSU0zZcVGMK9C39gSFDL9NJcy5E4yBkgcFc8w';
 var supabase = window.supabase.createClient(SUPA_URL, SUPA_KEY);
-var token = localStorage.getItem('pb_token') || null;
+var savedAffiliateCode = null; var token = localStorage.getItem('pb_token') || null;
 var termsAccepted = false;
 var affiliateData = null;
 
@@ -1530,7 +1530,7 @@ function calculateExactCredits() {
   }
   
   // Pricing: bulk rate of $0.22/credit, minimum $5
-  var credits = days;
+  var currentCredits = parseInt(document.getElementById('credits').textContent) || 0; var credits = Math.max(0, days - currentCredits);
   // Graduated pricing (like tax brackets)
   var priceCents = 0;
   if (credits <= 30) {
@@ -1543,7 +1543,7 @@ function calculateExactCredits() {
   priceCents = Math.max(500, priceCents);
   
   document.getElementById('exactDays').textContent = days;
-  document.getElementById('exactCredits').textContent = credits;
+  document.getElementById('exactCredits').textContent = credits; document.getElementById('existingCreditsNote').textContent = currentCredits > 0 ? '(You have ' + currentCredits + ' credits - already deducted)' : '';
   document.getElementById('exactPrice').textContent = '$' + (priceCents / 100).toFixed(2);
   document.getElementById('exactCalc').style.display = 'block';
   
