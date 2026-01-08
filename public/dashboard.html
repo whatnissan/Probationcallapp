@@ -996,7 +996,7 @@ function showTab(name) {
   if (name === 'ftbend') loadFtbendColors();
 }
 
-function showBuyModal() { document.getElementById('buyModal').classList.add('active'); }
+function showBuyModal() { document.getElementById('buyModal').classList.add('active'); if(probationEndDate){ document.getElementById('buyEndDate').value = probationEndDate; calculateExactCredits(); } }
 function closeBuyModal() { document.getElementById('buyModal').classList.remove('active'); }
 
 function buyPackage(packageId) {
