@@ -180,9 +180,9 @@ const MIN_PAYOUT_CENTS = 2000; // $20 minimum payout
 const REFERRED_BONUS_CREDITS = 5; // Bonus credits for new users who use referral
 
 const PACKAGES = {
-  starter: { name: 'Starter', credits: 30, price: 999 },
-  standard: { name: 'Standard', credits: 90, price: 2499 },
-  value: { name: 'Value', credits: 180, price: 3999 }
+  starter: { name: 'Starter', credits: 30, price: 1499 },
+  standard: { name: 'Standard', credits: 90, price: 3999 },
+  value: { name: 'Value', credits: 180, price: 6999 }
 };
 
 const KEYWORDS = {
@@ -2038,7 +2038,7 @@ app.get('/api/calculate-credits', auth, async function(req, res) {
   
   // Pricing: roughly $0.33 per credit at bulk rate
   var creditsNeeded = daysRemaining;
-  var pricePerCredit = 22; // cents (bulk rate ~$0.22/credit)
+  var pricePerCredit = 44; // cents (bulk rate ~$0.22/credit)
   var totalCents = creditsNeeded * pricePerCredit;
   
   // Minimum $5

@@ -545,9 +545,9 @@ select option { background: #1a1a2e; color: #fff; }
     <h2 style="margin-bottom:10px">Buy Credits</h2>
     <p style="color:#8892b0;margin-bottom:5px">1 credit = 1 automated call</p>
     <div class="packages">
-      <div class="package" onclick="buyPackage('starter')"><div class="package-name">Starter</div><div class="package-credits">30</div><div class="package-price">$9.99</div></div>
-      <div class="package popular" onclick="buyPackage('standard')"><div class="package-name">Standard</div><div class="package-credits">90</div><div class="package-price">$24.99</div><div class="package-save">Save 17%</div></div>
-      <div class="package" onclick="buyPackage('value')"><div class="package-name">Value</div><div class="package-credits">180</div><div class="package-price">$39.99</div><div class="package-save">Save 33%</div></div>
+      <div class="package" onclick="buyPackage('starter')"><div class="package-name">Starter</div><div class="package-credits">30</div><div class="package-price">$14.99</div></div>
+      <div class="package popular" onclick="buyPackage('standard')"><div class="package-name">Standard</div><div class="package-credits">90</div><div class="package-price">$39.99</div><div class="package-save">Save 17%</div></div>
+      <div class="package" onclick="buyPackage('value')"><div class="package-name">Value</div><div class="package-credits">180</div><div class="package-price">$69.99</div><div class="package-save">Save 33%</div></div>
     </div>
     <div style="margin-top:20px;padding-top:20px;border-top:1px solid rgba(255,255,255,0.1)">
       <h3 style="color:#22c55e;margin-bottom:10px">🎯 Buy Exact Credits for Your Probation</h3>
@@ -1534,11 +1534,11 @@ function calculateExactCredits() {
   // Graduated pricing (like tax brackets)
   var priceCents = 0;
   if (credits <= 30) {
-    priceCents = credits * 33;                           // First 30 at $0.33
+    priceCents = credits * 50;                           // First 30 at $0.50
   } else if (credits <= 90) {
-    priceCents = (30 * 33) + ((credits - 30) * 28);      // First 30 at $0.33, rest at $0.28
+    priceCents = (30 * 50) + ((credits - 30) * 42);      // First 30 at $0.50, rest at $0.42
   } else {
-    priceCents = (30 * 33) + (60 * 28) + ((credits - 90) * 22); // First 30 at $0.33, next 60 at $0.28, rest at $0.22
+    priceCents = (30 * 50) + (60 * 42) + ((credits - 90) * 33); // First 30 at $0.50, next 60 at $0.42, rest at $0.33
   }
   priceCents = Math.max(500, priceCents);
   
