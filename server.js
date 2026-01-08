@@ -624,7 +624,7 @@ function rescheduleUser(userId, sched) {
             await notify(sched.notify_number, sched.notify_email, sched.notify_method, 'ProbationCall: Your schedule has been removed due to no credits. Please log in, purchase credits, and set up your schedule again at probationcall.com', 'sched');
           } else {
             await supabase.from('user_schedules').update({ no_credit_skip_count: skipCount }).eq('user_id', userId);
-            await notify(sched.notify_number, sched.notify_email, sched.notify_method, 'ProbationCall: Scheduled call skipped - no credits! Warning: ' + (2 - skipCount) + ' more skip(s) and your schedule will be removed.', 'sched');
+            await notify(sched.notify_number, sched.notify_email, sched.notify_method, 'ProbationCall: Your scheduled call was skipped due to insufficient credits. Please log in and purchase credits at probationcall.com to continue service. Your schedule will be removed tomorrow if credits are not added.', 'sched');
           }
 
           return;
@@ -1899,7 +1899,7 @@ async function notifyFtbendOfficeUsers(officeId, config) {
             await notify(s.notify_number, s.notify_email, s.notify_method, 'ProbationCall: Your schedule has been removed due to no credits. Please log in, purchase credits, and set up your schedule again at probationcall.com', 'ftbend');
           } else {
             await supabase.from('user_schedules').update({ no_credit_skip_count: skipCount }).eq('user_id', s.user_id);
-            await notify(s.notify_number, s.notify_email, s.notify_method, 'ProbationCall: Scheduled call skipped - no credits! Warning: ' + (2 - skipCount) + ' more skip(s) and your schedule will be removed.', 'ftbend');
+            await notify(s.notify_number, s.notify_email, s.notify_method, 'ProbationCall: Your scheduled call was skipped due to insufficient credits. Please log in and purchase credits at probationcall.com to continue service. Your schedule will be removed tomorrow if credits are not added.', 'ftbend');
           }
           await supabase.from('call_history').insert({ user_id: s.user_id, target_number: FTBEND_OFFICES[oid] ? FTBEND_OFFICES[oid].number : COUNTIES.ftbend.number, result: 'NO_CREDITS', county: 'ftbend', ftbend_office: oid });
           return;
