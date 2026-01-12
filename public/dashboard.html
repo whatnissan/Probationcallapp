@@ -1450,7 +1450,7 @@ function selectOnboardMethod(method) {
   document.querySelectorAll('#onboardingModal .method-option').forEach(function(el) { el.classList.remove('active'); });
   event.target.closest('.method-option').classList.add('active');
   document.getElementById('onboardMethod').value = method;
-  document.getElementById('onboardPhoneGroup').style.display = method === 'sms' ? 'block' : 'none';
+  document.getElementById('onboardPhoneGroup').style.display = (method === 'sms' || method === 'both') ? 'block' : 'none';
 }
 
 function completeOnboarding() {
@@ -1705,6 +1705,7 @@ if (document.getElementById('schedCounty')) {
       <div class="method-select">
         <div class="method-option active" onclick="selectOnboardMethod('email')"><div class="icon">📧</div><div class="label">Email</div></div>
         <div class="method-option" onclick="selectOnboardMethod('sms')"><div class="icon">💬</div><div class="label">SMS</div></div>
+        <div class="method-option" onclick="selectOnboardMethod('both')"><div class="icon">📧+💬</div><div class="label">Both</div></div>
       </div>
       <input type="hidden" id="onboardMethod" value="email">
       <div class="form-group" id="onboardPhoneGroup" style="display:none;margin-top:15px">
