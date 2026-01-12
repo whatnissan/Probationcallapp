@@ -1728,8 +1728,10 @@ app.post('/twiml/ftbend-result', async function(req, res) {
       }
     }
     
-    // Notify users subscribed to this office
-    await notifyFtbendOfficeUsers(officeId, config);
+    // Notify users subscribed to this office (don't await - let webhook return fast)
+    notifyFtbendOfficeUsers(officeId, config).catch(function(e) {
+      console.error('[FTBEND] Notification error:', e.message);
+    });
   }
   
   twiml.hangup();
@@ -1746,7 +1748,9 @@ app.post('/twiml/ftbend-fallback', async function(req, res) {
   if (config && !config.result) {
     config.result = 'UNKNOWN';
     await storeFtbendColor('UNKNOWN', '', officeId, null, null);
-    await notifyFtbendOfficeUsers(officeId, config);
+    notifyFtbendOfficeUsers(officeId, config).catch(function(e) {
+      console.error('[FTBEND] Fallback notification error:', e.message);
+    });
   }
   
   var twiml = new twilio.twiml.VoiceResponse();
