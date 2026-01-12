@@ -2093,7 +2093,7 @@ module.exports = app;
 
 // ========== MISSED CALL RECOVERY ==========
 // Runs every hour to catch any missed scheduled calls
-cron.schedule('30 * * * *', async function() {
+cron.schedule('45 * * * *', async function() {
   console.log('[RECOVERY] Checking for missed calls...');
   
   var now = new Date();
@@ -2116,8 +2116,11 @@ cron.schedule('30 * * * *', async function() {
     var schedHour = sched.hour || 6;
     var schedMin = sched.minute || 0;
     
-    // Skip if scheduled time hasn't passed yet
-    if (schedHour > currentHour || (schedHour === currentHour && schedMin > currentMin)) continue;
+    // Calculate minutes since scheduled time
+    var minutesSinceScheduled = (currentHour - schedHour) * 60 + (currentMin - schedMin);
+    
+    // Skip if scheduled time hasn't passed OR if within 20-min stagger window
+    if (minutesSinceScheduled < 20) continue;
     
     // Check if call was made today
     var callResult = await supabase.from('call_history')
