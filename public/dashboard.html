@@ -7,7 +7,10 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,sans-serif;background:#0a0a0f;color:#fff;min-height:100vh}
+body{font-family:-apple-system,sans-serif;background:#0a1929;color:#fff;min-height:100vh;position:relative;overflow-x:hidden}
+body::before{content:"";position:fixed;top:0;left:0;right:0;bottom:0;background-image:url("data:image/svg+xml,%3Csvg width='100' height='100' viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 50 H30 M30 50 V20 H50 M50 20 H70 V50 H100 M70 50 V80 H50 M30 50 V80 H10 V100 M90 0 V30 H70' stroke='%230d4a6b' stroke-width='1' fill='none' opacity='0.3'%3E%3C/path%3E%3Ccircle cx='30' cy='50' r='3' fill='%230d4a6b' opacity='0.4'%3E%3C/circle%3E%3Ccircle cx='70' cy='50' r='3' fill='%230d4a6b' opacity='0.4'%3E%3C/circle%3E%3C/svg%3E");background-size:150px 150px;pointer-events:none;z-index:0}
+body::after{content:"";position:fixed;bottom:-150px;right:-150px;width:600px;height:600px;background:radial-gradient(ellipse at center,rgba(249,115,22,0.35) 0%,rgba(217,119,6,0.2) 30%,transparent 70%);pointer-events:none;z-index:0}
+.loading,.container,.modal,.disclaimer-modal{position:relative;z-index:1}
 .loading{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:15px}
 .spinner{width:40px;height:40px;border:3px solid #333;border-top-color:#00d9ff;border-radius:50%;animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
