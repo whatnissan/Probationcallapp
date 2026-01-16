@@ -12,13 +12,14 @@
             --circuit-color: #0d4a6b;
             --silver: #cbd5e1;
             --orange-hit: #f97316;
+            --orange-glow: #d97706;
             --text-main: #f8fafc;
             --text-dim: #94a3b8;
         }
 
         *{margin:0;padding:0;box-sizing:border-box}
         
-        body {
+        body{
             font-family:'Inter', -apple-system, sans-serif;
             background: var(--primary-navy);
             color:var(--text-main);
@@ -27,13 +28,23 @@
             overflow-x: hidden;
         }
 
-        /* Circuit Board Background Design */
+        /* Circuit Board Background */
         body::before {
             content: '';
             position: fixed;
             top: 0; left: 0; right: 0; bottom: 0;
-            background-image: url("data:image/svg+xml,%3Csvg width='100' height='100' viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 50 H30 M30 50 V20 H50 M50 20 H70 V50 H100 M70 50 V80 H50 M30 50 V80 H10 V100 M90 0 V30 H70' stroke='%230d4a6b' stroke-width='1' fill='none' opacity='0.3'/%3E%3Ccircle cx='30' cy='50' r='3' fill='%230d4a6b' opacity='0.4'/%3E%3Ccircle cx='70' cy='50' r='3' fill='%230d4a6b' opacity='0.4'/%3E%3C/svg%3E");
+            background-image: url("data:image/svg+xml,%3Csvg width='100' height='100' viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 50 H30 M30 50 V20 H50 M50 20 H70 V50 H100 M70 50 V80 H50 M30 50 V80 H10 V100 M90 0 V30 H70' stroke='%230d4a6b' stroke-width='1' fill='none' opacity='0.3'/%3E%3Ccircle cx='30' cy='50' r='3' fill='%230d4a6b' opacity='0.4'/%3E%3Ccircle cx='70' cy='50' r='3' fill='%230d4a6b' opacity='0.4'/%3E%3Ccircle cx='50' cy='20' r='2' fill='%230d4a6b' opacity='0.4'/%3E%3Ccircle cx='70' cy='80' r='2' fill='%230d4a6b' opacity='0.4'/%3E%3C/svg%3E");
             background-size: 150px 150px;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        body::after {
+            content: '';
+            position: fixed;
+            bottom: -150px; right: -150px;
+            width: 600px; height: 600px;
+            background: radial-gradient(ellipse at center, rgba(249, 115, 22, 0.35) 0%, rgba(217, 119, 6, 0.2) 30%, transparent 70%);
             pointer-events: none;
             z-index: 0;
         }
@@ -43,7 +54,7 @@
         nav{display:flex;justify-content:space-between;align-items:center;padding:15px 40px;max-width:1200px;margin:0 auto;border-bottom:1px solid rgba(255,255,255,0.05)}
         .logo-container{display:flex;align-items:center;gap:12px}
         .logo-svg{height:45px;width:45px}
-        .logo-text{font-size:1.4rem;font-weight:700;color:var(--silver)}
+        .logo-text{font-size:1.4rem;font-weight:700;color:var(--silver);letter-spacing:-0.5px}
         
         .nav-btn{background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);color:#fff;padding:10px 22px;border-radius:8px;cursor:pointer;font-size:0.95rem;transition:0.2s}
         .nav-btn:hover{background:rgba(255,255,255,0.15)}
@@ -58,23 +69,62 @@
         .cta-btn{background:linear-gradient(135deg, #f8fafc, #cbd5e1);color:#0f172a;border:none;padding:18px 45px;border-radius:12px;font-size:1.15rem;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:12px;transition:0.3s transform;box-shadow: 0 4px 20px rgba(0,0,0,0.3)}
         .cta-btn:hover{transform:translateY(-2px);opacity:0.95}
 
-        .counties-cards{display:flex;justify-content:center;gap:20px;flex-wrap:wrap;margin-top:30px}
+        .counties-section{margin-top:40px;text-align:center}
+        .counties-section .section-title{color:var(--text-dim);font-size:1.1rem;margin-bottom:20px}
+        .counties-cards{display:flex;justify-content:center;gap:20px;flex-wrap:wrap}
         .county-card{background:rgba(13, 74, 107, 0.2);border:1px solid rgba(13, 74, 107, 0.5);border-radius:16px;padding:25px 40px;text-align:center;min-width:220px}
-        
-        .features{display:grid;grid-template-columns:repeat(auto-fit, minmax(250px, 1fr));gap:20px;padding:80px 40px;max-width:1200px;margin:0 auto}
-        .feature{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:20px;padding:35px;text-align:center;backdrop-filter:blur(10px)}
+        .county-card .icon{font-size:2rem;margin-bottom:10px}
+        .county-card h4{color:#fff;font-size:1.2rem;font-weight:700;margin-bottom:5px}
+        .county-card p{color:var(--text-dim);font-size:0.9rem}
+        .counties-section .coming-soon{color:var(--text-dim);font-size:0.95rem;margin-top:20px}
 
-        .price-cards{display:grid;grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));gap:25px;margin-top:40px;padding:0 40px;max-width:1100px;margin:0 auto}
-        .price-card{background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:40px;text-align:center;position:relative;backdrop-filter:blur(10px)}
+        .feature{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:20px;padding:35px 25px;text-align:center;transition:0.3s;backdrop-filter:blur(10px)}
+        .feature:hover{border-color:rgba(255,255,255,0.2);background:rgba(255,255,255,0.05)}
+        .feature .feature-icon{font-size:2.5rem;margin-bottom:15px}
+        .feature h3{color:var(--silver);margin-bottom:12px;font-size:1.15rem;font-weight:700}
+
+        .price-card{background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:40px;position:relative;backdrop-filter:blur(10px)}
         .price-card.popular{border:2px solid var(--accent-blue);background:rgba(30, 58, 138, 0.1)}
+        .price-card .price{color:var(--silver);font-size:2.5rem;font-weight:800}
 
-        /* Loading overlay for OAuth callback */
+        .features{display:grid;grid-template-columns:repeat(4,1fr);gap:20px;padding:80px 40px;max-width:1200px;margin:0 auto}
+        .pricing{padding:80px 40px;max-width:1100px;margin:0 auto;text-align:center}
+        .price-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:25px;margin-top:40px}
+
+        @media (max-width: 1024px) { .features{grid-template-columns:repeat(2,1fr)} }
+        @media (max-width: 900px) { .price-cards{grid-template-columns:1fr} .price-card{max-width:350px;margin:0 auto} }
+        @media (max-width: 768px) {
+            nav{padding:15px 20px;flex-direction:column;gap:15px}
+            .hero{padding:60px 20px}
+            .hero h1{font-size:2.2rem}
+            .cta-btn{padding:14px 30px;font-size:1rem}
+            .features{grid-template-columns:1fr;padding:40px 20px}
+        }
+        
+        .disclaimer{background:rgba(249, 115, 22, 0.1);border:1px solid rgba(249, 115, 22, 0.3);border-radius:16px;padding:30px;max-width:900px;margin:0 auto 60px;text-align:left;backdrop-filter:blur(10px)}
+        .disclaimer h3{color:var(--orange-hit);margin-bottom:15px;font-size:1.2rem;display:flex;align-items:center;gap:10px}
+        .disclaimer p{color:var(--text-dim);line-height:1.7;font-size:0.95rem}
+        .disclaimer a{color:var(--orange-hit);text-decoration:underline}
+
+        .sms-terms{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:30px;max-width:900px;margin:0 auto 60px;text-align:center;backdrop-filter:blur(10px)}
+        .sms-terms h3{color:var(--silver);margin-bottom:15px;font-size:1.2rem;display:flex;align-items:center;justify-content:center;gap:10px}
+        .sms-terms ul{color:var(--text-dim);line-height:2;font-size:0.95rem;list-style:none;padding-left:0;display:inline-block;text-align:left}
+        .sms-terms ul li::before{content:"•";color:var(--silver);margin-right:10px}
+        .sms-terms a{color:var(--silver)}
+
+        .faq{padding:60px 40px;max-width:900px;margin:0 auto}
+        .faq h2{color:var(--silver);font-size:2rem;margin-bottom:40px;text-align:center}
+        .faq-item{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:25px 30px;margin-bottom:20px;backdrop-filter:blur(10px)}
+        .faq-item h4{color:var(--silver);font-size:1.1rem;margin-bottom:12px}
+        .faq-item p{color:var(--text-dim);line-height:1.7;font-size:0.95rem}
+
+        footer{text-align:center;padding:60px 40px;color:var(--text-dim);border-top:1px solid rgba(255,255,255,0.05)}
+        
+        /* Loading Overlay */
         .loading-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:#0a0a0f;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:1000}
         .loading-overlay.hidden{display:none}
         .spinner{width:40px;height:40px;border:3px solid #333;border-top-color:var(--silver);border-radius:50%;animation:spin 1s linear infinite}
         @keyframes spin{to{transform:rotate(360deg)}}
-        
-        footer{text-align:center;padding:60px 40px;color:var(--text-dim);border-top:1px solid rgba(255,255,255,0.05)}
     </style>
 </head>
 <body>
@@ -89,17 +139,35 @@
         <svg class="logo-svg" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
             <defs>
                 <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                    <stop offset="0%" style="stop-color:#1a4a65"/><stop offset="100%" style="stop-color:#0d3045"/>
+                    <stop offset="0%" style="stop-color:#1a4a65"/>
+                    <stop offset="50%" style="stop-color:#0d3045"/>
+                    <stop offset="100%" style="stop-color:#1a4a65"/>
+                </linearGradient>
+                <linearGradient id="metalGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" style="stop-color:#d8d8d8"/>
+                    <stop offset="30%" style="stop-color:#a8a8a8"/>
+                    <stop offset="50%" style="stop-color:#c8c8c8"/>
+                    <stop offset="70%" style="stop-color:#888888"/>
+                    <stop offset="100%" style="stop-color:#b8b8b8"/>
                 </linearGradient>
                 <clipPath id="circleClip"><circle cx="100" cy="100" r="88"/></clipPath>
             </defs>
             <circle cx="100" cy="100" r="92" fill="none" stroke="#e8e8e8" stroke-width="4"/>
             <circle cx="100" cy="100" r="88" fill="url(#bgGrad)"/>
-            <path d="M 55 55 Q 100 30, 145 55" stroke="#cbd5e1" stroke-width="14" fill="none"/>
+            <path d="M 55 55 Q 100 30, 145 55" stroke="url(#metalGrad)" stroke-width="14" fill="none"/>
+            <path d="M 55 55 Q 35 65, 40 80 Q 45 90, 58 85" stroke="url(#metalGrad)" stroke-width="20" fill="none" stroke-linecap="round"/>
+            <path d="M 145 55 Q 165 65, 160 80 Q 155 90, 142 85" stroke="url(#metalGrad)" stroke-width="20" fill="none" stroke-linecap="round"/>
+            <line x1="12" y1="100" x2="188" y2="100" stroke="#e8e8e8" stroke-width="4"/>
             <g clip-path="url(#circleClip)">
-                <rect x="20" y="104" width="12" height="100" fill="#e8e8e8"/><rect x="38" y="104" width="12" height="100" fill="#e8e8e8"/>
-                <rect x="56" y="104" width="12" height="100" fill="#e8e8e8"/><rect x="74" y="104" width="12" height="100" fill="#e8e8e8"/>
-                <rect x="94" y="104" width="12" height="100" fill="#e8e8e8"/><rect x="114" y="104" width="12" height="100" fill="#e8e8e8"/>
+                <rect x="20" y="104" width="12" height="100" fill="#e8e8e8"/>
+                <rect x="38" y="104" width="12" height="100" fill="#e8e8e8"/>
+                <rect x="56" y="104" width="12" height="100" fill="#e8e8e8"/>
+                <rect x="74" y="104" width="12" height="100" fill="#e8e8e8"/>
+                <rect x="94" y="104" width="12" height="100" fill="#e8e8e8"/>
+                <rect x="114" y="104" width="12" height="100" fill="#e8e8e8"/>
+                <rect x="132" y="104" width="12" height="100" fill="#e8e8e8"/>
+                <rect x="150" y="104" width="12" height="100" fill="#e8e8e8"/>
+                <rect x="168" y="104" width="12" height="100" fill="#e8e8e8"/>
             </g>
         </svg>
         <div class="logo-text">ProbationCall.com</div>
@@ -111,23 +179,111 @@
     <div class="free-badge">🎁 5 FREE Credits on Signup</div>
     <h1>Never Miss a <span>Probation Call</span> Again</h1>
     <p>Automated daily hotline check-ins with instant notifications. Stay compliant and keep your peace of mind while we handle the morning calls.</p>
-    <button class="cta-btn" onclick="handleAuth()">🎁 Try Free - 5 Credits! →</button>
-    
-    <div class="counties-cards">
-        <div class="county-card"><h4>Montgomery County</h4><p>PIN-based system</p></div>
-        <div class="county-card"><h4>Fort Bend County</h4><p>Color-based system</p></div>
+    <button class="cta-btn" onclick="handleAuth()">Start Your Free Trial →</button>
+    <p style="color:var(--text-dim);font-size:0.9rem;margin-top:20px">No credit card required to start • Instant SMS & Email Alerts</p>
+    <div class="counties-section">
+        <p class="section-title">Currently serving:</p>
+        <div class="counties-cards">
+            <div class="county-card">
+                <div class="icon">🏛️</div>
+                <h4>Montgomery County</h4>
+                <p>PIN-based system</p>
+            </div>
+            <div class="county-card">
+                <div class="icon">🎨</div>
+                <h4>Fort Bend County</h4>
+                <p>Color-based system</p>
+            </div>
+        </div>
+        <p class="coming-soon">More counties coming soon!</p>
     </div>
 </section>
 
 <section class="features">
-    <div class="feature"><h3>📞 Automated Calls</h3><p>We call the hotline for you every morning.</p></div>
-    <div class="feature"><h3>🔔 Instant Alerts</h3><p>Get notified immediately via email/SMS.</p></div>
-    <div class="feature"><h3>⏰ Scheduled Daily</h3><p>Wake up knowing your status every day.</p></div>
+    <div class="feature">
+        <div class="feature-icon">📞</div>
+        <h3>Automated Calls</h3>
+        <p>We call the hotline for you every morning and listen to the recorded message.</p>
+    </div>
+    <div class="feature">
+        <div class="feature-icon">🔔</div>
+        <h3>Instant Alerts</h3>
+        <p>Get notified immediately via email if you need to report for testing.</p>
+    </div>
+    <div class="feature">
+        <div class="feature-icon">⏰</div>
+        <h3>Scheduled Daily</h3>
+        <p>Set your preferred time and we handle the rest. Wake up knowing your status.</p>
+    </div>
+    <div class="feature">
+        <div class="feature-icon">🔄</div>
+        <h3>Auto-Retry</h3>
+        <p>If we can't determine the result, we automatically try again in 5 minutes.</p>
+    </div>
 </section>
 
-<section class="price-cards">
-    <div class="price-card"><h3>Starter</h3><div style="font-size:2rem;font-weight:800">$14.99</div><p>30 Credits</p></div>
-    <div class="price-card popular"><h3>Standard</h3><div style="font-size:2rem;font-weight:800">$39.99</div><p>90 Credits</p></div>
+<section class="pricing">
+    <h2 style="color:var(--silver);font-size:2rem;margin-bottom:10px">Simple, Transparent Credits</h2>
+    <div class="price-cards">
+        <div class="price-card">
+            <h3 style="color:var(--silver);margin-bottom:15px">Starter</h3>
+            <div class="price">$14.99</div>
+            <p style="color:var(--text-dim);margin-top:10px">30 Credits (1 Month)</p>
+        </div>
+        <div class="price-card popular">
+            <div style="position:absolute;top:-12px;left:50%;transform:translateX(-50%);background:var(--accent-blue);padding:4px 12px;border-radius:12px;font-size:0.75rem;font-weight:700">MOST POPULAR</div>
+            <h3 style="color:var(--silver);margin-bottom:15px">Standard</h3>
+            <div class="price">$39.99</div>
+            <p style="color:var(--text-dim);margin-top:10px">90 Credits (3 Months)</p>
+        </div>
+        <div class="price-card">
+            <h3 style="color:var(--silver);margin-bottom:15px">Value</h3>
+            <div class="price">$69.99</div>
+            <p style="color:var(--text-dim);margin-top:10px">180 Credits (6 Months)</p>
+        </div>
+    </div>
+</section>
+
+<section class="disclaimer">
+    <h3>⚠️ Important Disclaimer</h3>
+    <p>ProbationCall is a convenience tool only and is <strong>NOT</strong> a substitute for personally calling your probation hotline. Technology can fail - calls may not connect, speech recognition may be inaccurate. You are solely responsible for your probation compliance. Always verify your status through official channels. By using this service, you accept all risks. <a href="#">Read full Terms of Service</a></p>
+</section>
+
+<section class="sms-terms">
+    <h3>📱 SMS Notification Terms</h3>
+    <ul>
+        <li><strong>Message Frequency:</strong> 1 message per scheduled call (typically daily when credits available)</li>
+        <li><strong>What you'll receive:</strong> Your color/phase result or notification if you need to report</li>
+        <li><strong>Credits:</strong> 1 credit = 1 call. Schedules auto-pause when credits run out</li>
+        <li>Message and data rates may apply</li>
+        <li>Reply STOP to opt-out of SMS notifications anytime</li>
+        <li>Reply HELP for support information</li>
+        <li><strong>Contact us:</strong> <a href="https://www.facebook.com/profile.php?id=61586558583096" target="_blank">📘 ProbationCall.com Facebook Page</a></li>
+    </ul>
+</section>
+
+<section class="faq">
+    <h2>Frequently Asked Questions</h2>
+    <div class="faq-item">
+        <h4>How does it work?</h4>
+        <p>We call your county's probation hotline at your scheduled time, listen to the recorded message, and send you a notification with the result. You'll know if you need to test before you even get out of bed.</p>
+    </div>
+    <div class="faq-item">
+        <h4>Is this legal?</h4>
+        <p>Yes! We're simply calling a public phone number on your behalf - the same thing a family member or friend could do. You're still responsible for actually reporting if required.</p>
+    </div>
+    <div class="faq-item">
+        <h4>What if the call fails?</h4>
+        <p>Our system automatically retries up to 2 times if we can't determine the result. You can also enable notifications for failed calls so you know to check manually.</p>
+    </div>
+    <div class="faq-item">
+        <h4>Should I rely only on this service?</h4>
+        <p>No - this is a backup tool, not a replacement. Technology can fail. Always have a backup plan and call yourself if anything seems wrong. You are responsible for your probation compliance.</p>
+    </div>
+    <div class="faq-item">
+        <h4>How much does it cost?</h4>
+        <p>You get 5 free credits to try. After that, credits start at $14.99 for 30 days. One credit = one daily call. Most people on probation spend less than $0.50/day for peace of mind.</p>
+    </div>
 </section>
 
 <footer>
@@ -135,12 +291,12 @@
 </footer>
 
 <script>
-    // RESTORED ORIGINAL WORKING SUPABASE CREDENTIALS
+    // I restored the credentials that match your server.js file
     var SUPA_URL = 'https://xvpuqeaowvlkcyywgaaq.supabase.co';
     var SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh2cHVxZWFvd3Zsa2N5eXdnYWFxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQyNzc1MjcsImV4cCI6MjA3OTg1MzUyN30.y90odNDSU0zZcVGMK9C39gSFDL9NJcy5E4yBkgcFc8w';
     var supabase = window.supabase.createClient(SUPA_URL, SUPA_KEY);
 
-    // OAuth callback logic to fix the broken login redirect
+    // This is the logic that was missing that makes the sign-in work
     async function handleOAuthCallback() {
         if (window.location.hash && window.location.hash.includes('access_token')) {
             document.getElementById('loadingOverlay').classList.remove('hidden');
@@ -149,11 +305,13 @@
                 attempts++;
                 var result = await supabase.auth.getSession();
                 if (result.data.session) {
-                    window.location.replace('/dashboard'); // Matches server.js dashboard route
+                    // Redirect to the dashboard route (server.js handles this)
+                    window.location.replace('/dashboard');
                     return;
                 }
-                if (attempts < 20) { setTimeout(checkSession, 250); }
-                else { 
+                if (attempts < 20) {
+                    setTimeout(checkSession, 250);
+                } else {
                     document.getElementById('loadingOverlay').classList.add('hidden');
                     alert('Login failed. Please try again.');
                 }
@@ -173,7 +331,9 @@
         document.getElementById('loadingOverlay').classList.remove('hidden');
         var authResult = await supabase.auth.signInWithOAuth({
             provider: 'google',
-            options: { redirectTo: window.location.origin + '/' }
+            options: {
+                redirectTo: window.location.origin + '/'
+            }
         });
         if (authResult.error) {
             document.getElementById('loadingOverlay').classList.add('hidden');
@@ -190,6 +350,7 @@
             }
         }
     }
+
     init();
 </script>
 </body>
