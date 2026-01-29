@@ -1682,7 +1682,7 @@ function calculateTestStats(history) {
   var card = document.getElementById("testStatsCard");
   if (!history || history.length < 2) { card.style.display = "none"; return; }
   var tests = history.filter(function(h) { return h.result === "MUST_TEST"; }).sort(function(a, b) { return new Date(a.created_at) - new Date(b.created_at); });
-  if (tests.length < 2) { card.style.display = "none"; return; }
+  if (tests.length < 1) { card.style.display = "none"; return; }
   card.style.display = "block";
   var intervals = [];
   for (var i = 1; i < tests.length; i++) {
