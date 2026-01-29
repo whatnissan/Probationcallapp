@@ -1,0 +1,1731 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dashboard - ProbationCall</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,sans-serif;background:#0a0a0f;color:#fff;min-height:100vh}
+.loading{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:15px}
+.spinner{width:40px;height:40px;border:3px solid #333;border-top-color:#00d9ff;border-radius:50%;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.container{max-width:800px;margin:0 auto;padding:20px;display:none}
+nav{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;padding-bottom:15px;border-bottom:1px solid rgba(255,255,255,0.1)}
+.logo{font-size:1.2rem;font-weight:700;color:#00d9ff}
+.nav-right{display:flex;align-items:center;gap:10px}
+.dev-badge{background:#f59e0b;color:#000;padding:4px 8px;border-radius:4px;font-size:0.7rem;font-weight:700}
+.logout-btn{background:rgba(255,255,255,0.1);border:none;color:#fff;padding:8px 14px;border-radius:6px;cursor:pointer}
+.credits-card{background:linear-gradient(135deg,#00d9ff,#0099cc);border-radius:12px;padding:20px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center}
+.credits-num{font-size:2.2rem;font-weight:700;color:#000}
+.credits-label{color:rgba(0,0,0,0.6);font-size:0.85rem}
+.buy-btn{background:#000;color:#fff;border:none;padding:12px 20px;border-radius:8px;font-weight:600;cursor:pointer}
+.schedule-banner{background:linear-gradient(135deg,#22c55e,#16a34a);border-radius:12px;padding:15px 20px;margin-bottom:20px;display:none}
+.schedule-banner.active{display:flex;justify-content:space-between;align-items:center}
+.schedule-banner h3{color:#000;font-size:1rem;margin-bottom:3px}
+.schedule-banner p{color:rgba(0,0,0,0.7);font-size:0.85rem}
+.schedule-banner .time{font-size:1.5rem;font-weight:700;color:#000}
+.no-schedule{background:rgba(245,158,11,0.2);border:1px solid rgba(245,158,11,0.4);border-radius:12px;padding:15px;margin-bottom:20px;color:#f59e0b;display:none}
+.no-schedule.active{display:block}
+.card{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:20px;margin-bottom:15px}
+.card h2{color:#00d9ff;margin-bottom:15px;font-size:1.1rem}
+.form-group{margin-bottom:12px}
+label{display:block;margin-bottom:5px;color:#8892b0;font-size:0.85rem}
+input,select{width:100%;padding:10px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#fff;font-size:1rem}
+.btn{width:100%;padding:12px;border-radius:8px;border:none;background:linear-gradient(135deg,#00d9ff,#0099cc);color:#000;font-size:1rem;font-weight:600;cursor:pointer;margin-top:8px}
+.btn:disabled{opacity:0.5;cursor:not-allowed}
+.btn-secondary{background:rgba(255,255,255,0.1);color:#fff}
+.btn-danger{background:#ef4444}
+.btn-green{background:linear-gradient(135deg,#22c55e,#16a34a)}
+.status{padding:12px;border-radius:8px;margin-top:12px;text-align:center}
+.status.success{background:rgba(34,197,94,0.2);color:#22c55e}
+.status.error{background:rgba(239,68,68,0.2);color:#ef4444}
+.status.calling{background:rgba(0,217,255,0.2);color:#00d9ff}
+.status.retry{background:rgba(245,158,11,0.2);color:#f59e0b}
+.console{background:#000;border:1px solid #333;border-radius:8px;padding:10px;margin-top:15px;max-height:200px;overflow-y:auto;font-family:monospace;font-size:0.75rem}
+.console-entry{padding:3px 0;color:#8892b0}
+.console-entry.success{color:#22c55e}
+.console-entry.error{color:#ef4444}
+.console-entry.warning{color:#f59e0b}
+.tabs{display:flex;gap:8px;margin-bottom:15px;flex-wrap:wrap}
+.tab{padding:10px 16px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:#8892b0;cursor:pointer;font-size:0.9rem}
+.tab.active{background:#00d9ff;color:#000;border-color:#00d9ff}
+.tab-content{display:none}
+.tab-content.active{display:block}
+.schedule-details{background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:8px;padding:15px;margin-bottom:15px}
+.schedule-details h4{color:#22c55e;margin-bottom:10px}
+.schedule-details table{width:100%;font-size:0.9rem}
+.schedule-details td{padding:5px 0;color:#8892b0}
+.schedule-details td:first-child{color:#fff;width:40%}
+.history-item{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.05)}
+.history-result{padding:4px 10px;border-radius:12px;font-size:0.8rem}
+.history-result.NO_TEST{background:rgba(34,197,94,0.2);color:#22c55e}
+.history-result.MUST_TEST{background:rgba(239,68,68,0.2);color:#ef4444}
+.history-result.UNKNOWN{background:rgba(245,158,11,0.2);color:#f59e0b}
+.history-result.RETRY_PENDING{background:rgba(0,217,255,0.2);color:#00d9ff}
+.info-box{background:rgba(0,217,255,0.1);border:1px solid rgba(0,217,255,0.3);border-radius:8px;padding:12px;margin-bottom:15px;font-size:0.85rem;color:#8892b0}
+.info-box strong{color:#00d9ff}
+.info-box.warning{background:rgba(245,158,11,0.1);border-color:rgba(245,158,11,0.3)}
+.info-box.warning strong{color:#f59e0b}
+.info-box.green{background:rgba(34,197,94,0.1);border-color:rgba(34,197,94,0.3)}
+.info-box.green strong{color:#22c55e}
+small{color:#666;font-size:0.75rem}
+.method-select{display:flex;gap:10px;margin-top:5px}
+.method-option{flex:1;padding:12px;border-radius:8px;border:2px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.03);cursor:pointer;text-align:center;transition:all 0.2s}
+.method-option:hover{border-color:rgba(255,255,255,0.3)}
+.method-option.active{border-color:#00d9ff;background:rgba(0,217,255,0.1)}
+.method-option .icon{font-size:1.5rem;margin-bottom:5px}
+.method-option .label{font-size:0.85rem;color:#8892b0}
+.method-option.active .label{color:#00d9ff}
+.packages{display:grid;grid-template-columns:repeat(3,1fr);gap:15px;margin-top:15px}
+.package{background:rgba(255,255,255,0.03);border:2px solid rgba(255,255,255,0.1);border-radius:12px;padding:20px;text-align:center;cursor:pointer;transition:all 0.2s}
+.package:hover{border-color:#00d9ff;background:rgba(0,217,255,0.05)}.packages:hover .package.popular{border-color:rgba(255,255,255,0.1);background:rgba(255,255,255,0.03)}.packages:hover .package.popular:hover{border-color:#00d9ff;background:rgba(0,217,255,0.05)}
+.package.popular{border-color:#00d9ff;background:rgba(0,217,255,0.05)}
+.package-name{font-size:0.9rem;color:#8892b0;margin-bottom:5px}
+.package-credits{font-size:2rem;font-weight:700;color:#fff}
+.package-price{font-size:1.1rem;color:#00d9ff;margin-top:5px}
+.package-save{font-size:0.75rem;color:#22c55e;margin-top:5px}
+.modal{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.9);display:none;align-items:center;justify-content:center;z-index:100;padding:20px;overflow-y:auto}
+.modal.active{display:flex}
+.modal-content{background:#1a1a2e;border-radius:16px;padding:30px;max-width:500px;width:100%}
+.modal-close{float:right;background:none;border:none;color:#fff;font-size:1.5rem;cursor:pointer}
+.promo-input{display:flex;gap:10px;margin-top:15px}
+.promo-input input{flex:1}
+.promo-input button{width:auto;padding:10px 20px}
+.consent-box{background:rgba(0,217,255,0.1);border:2px solid rgba(0,217,255,0.3);border-radius:8px;padding:15px;margin:15px 0}
+.consent-box h4{color:#00d9ff;margin-bottom:10px;font-size:0.95rem}
+.consent-box p{color:#8892b0;font-size:0.8rem;margin-bottom:10px;line-height:1.5}
+.consent-box label{display:flex;align-items:flex-start;gap:10px;cursor:pointer;color:#fff;font-size:0.85rem}
+.consent-box input[type="checkbox"]{width:20px;height:20px;margin-top:2px;flex-shrink:0}
+.consent-box a{color:#00d9ff}
+.checkbox-group{display:flex;align-items:center;gap:10px;padding:12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:8px;margin:12px 0;cursor:pointer}
+.checkbox-group input{width:18px;height:18px}
+.checkbox-group label{color:#fff;font-size:0.9rem;cursor:pointer;flex:1}
+.checkbox-group small{display:block;color:#8892b0;font-size:0.75rem;margin-top:3px}
+.time-note{background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:8px;padding:10px;margin:10px 0;font-size:0.8rem;color:#f59e0b}
+.audio-player{margin-top:8px}
+.audio-player audio{width:100%;height:35px;border-radius:8px}
+.play-btn{background:linear-gradient(135deg,#00d4aa,#00b894);border:none;color:#fff;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:0.75rem;display:inline-flex;align-items:center;gap:5px}
+.play-btn:hover{opacity:0.9}
+.history-item{background:rgba(255,255,255,0.03);border-radius:10px;padding:12px 15px;margin-bottom:10px;border:1px solid rgba(255,255,255,0.05)}
+.history-item:hover{border-color:rgba(0,212,170,0.3)}
+.history-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px}
+.history-date{color:#8892b0;font-size:0.85rem}
+.history-county{font-size:0.7rem;color:#00d4aa;background:rgba(0,212,170,0.1);padding:2px 8px;border-radius:4px;margin-left:8px}
+.history-result{padding:4px 10px;border-radius:6px;font-size:0.8rem;font-weight:600}
+.history-result.NO_TEST{background:rgba(0,212,170,0.2);color:#00d4aa}
+.history-result.MUST_TEST{background:rgba(255,107,107,0.2);color:#ff6b6b}
+.history-result.UNKNOWN{background:rgba(245,158,11,0.2);color:#f59e0b}
+.history-result.RETRY_PENDING{background:rgba(100,100,255,0.2);color:#6b7fff}
+.history-transcript{font-size:0.75rem;color:#666;margin-top:8px;padding:8px;background:rgba(0,0,0,0.2);border-radius:6px;font-style:italic}
+.ftbend-recording{background:rgba(0,212,170,0.05);border:1px solid rgba(0,212,170,0.2);border-radius:10px;padding:15px;margin-top:15px}
+.ftbend-recording h4{color:#00d4aa;margin:0 0 10px 0;font-size:0.9rem}
+/* Disclaimer Modal */
+.disclaimer-modal{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.95);display:none;align-items:center;justify-content:center;z-index:200;padding:20px;overflow-y:auto}
+.disclaimer-modal.active{display:flex}
+.disclaimer-content{background:#1a1a2e;border-radius:16px;padding:30px;max-width:600px;width:100%;max-height:90vh;overflow-y:auto}
+.disclaimer-content h2{color:#ef4444;margin-bottom:20px;font-size:1.5rem}
+.disclaimer-content h3{color:#f59e0b;margin:20px 0 10px;font-size:1.1rem}
+.disclaimer-content p{color:#ccc;margin-bottom:15px;font-size:0.9rem;line-height:1.6}
+.disclaimer-content ul{margin-left:20px;margin-bottom:15px;color:#ccc;font-size:0.9rem}
+.disclaimer-content li{margin-bottom:8px}
+.warning-banner{background:rgba(239,68,68,0.2);border:2px solid rgba(239,68,68,0.5);border-radius:12px;padding:20px;margin-bottom:20px}
+.warning-banner p{color:#ef4444;font-weight:600;margin:0}
+.agree-section{background:rgba(255,255,255,0.05);border-radius:12px;padding:20px;margin-top:25px}
+.agree-section label{display:flex;align-items:flex-start;gap:12px;cursor:pointer;color:#fff;font-size:0.95rem;line-height:1.5;margin-bottom:15px}
+.agree-section input[type="checkbox"]{width:24px;height:24px;flex-shrink:0;margin-top:2px}
+.agree-btn{width:100%;padding:15px;border-radius:8px;border:none;background:#22c55e;color:#000;font-size:1.1rem;font-weight:700;cursor:pointer}
+.agree-btn:disabled{background:#666;cursor:not-allowed}
+.decline-btn{width:100%;padding:12px;border-radius:8px;border:1px solid rgba(255,255,255,0.2);background:transparent;color:#8892b0;font-size:0.9rem;cursor:pointer;margin-top:10px}
+.warning-strip{background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.3);border-radius:8px;padding:10px 15px;margin-bottom:15px;font-size:0.8rem;color:#ef4444}
+/* Affiliate Styles */
+.affiliate-balance{background:linear-gradient(135deg,#22c55e,#16a34a);border-radius:12px;padding:20px;margin-bottom:20px;text-align:center}
+.affiliate-balance .amount{font-size:2.5rem;font-weight:700;color:#000}
+.affiliate-balance .label{color:rgba(0,0,0,0.7);font-size:0.9rem}
+.referral-link-box{background:rgba(0,217,255,0.1);border:2px solid rgba(0,217,255,0.3);border-radius:12px;padding:20px;margin-bottom:20px}
+.referral-link-box h3{color:#00d9ff;margin-bottom:10px;font-size:1rem}
+.referral-link{display:flex;gap:10px;align-items:center}
+.referral-link input{flex:1;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.2);color:#fff;padding:12px;border-radius:8px;font-size:0.9rem}
+.referral-link button{padding:12px 20px;background:#00d9ff;color:#000;border:none;border-radius:8px;font-weight:600;cursor:pointer}
+.referral-link button:hover{background:#00c4e8}
+.stats-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:15px;margin-bottom:20px}
+.stat-box{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:15px;text-align:center}
+.stat-box .value{font-size:1.5rem;font-weight:700;color:#fff}
+.stat-box .label{color:#8892b0;font-size:0.8rem;margin-top:5px}
+.earnings-list{max-height:200px;overflow-y:auto}
+.earning-item{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.05)}
+.earning-item .amount{color:#22c55e;font-weight:600}
+.earning-item .date{color:#8892b0;font-size:0.8rem}
+.payout-history{margin-top:20px}
+.payout-item{display:flex;justify-content:space-between;align-items:center;padding:10px;background:rgba(255,255,255,0.03);border-radius:8px;margin-bottom:8px}
+.payout-item .amount{font-weight:600}
+.payout-item .status{padding:4px 10px;border-radius:12px;font-size:0.75rem}
+.payout-item .status.pending{background:rgba(245,158,11,0.2);color:#f59e0b}
+.payout-item .status.paid{background:rgba(34,197,94,0.2);color:#22c55e}
+
+select option { background: #1a1a2e; color: #fff; }
+
+.onboard-step { animation: fadeIn 0.3s ease; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+.ftbend-grid { grid-template-columns: repeat(3, 1fr) !important; }
+@media (max-width: 768px) { .ftbend-grid { grid-template-columns: 1fr !important; } }
+</style>
+</head>
+<body>
+
+<!-- DISCLAIMER MODAL -->
+<div class="disclaimer-modal" id="disclaimerModal">
+<div class="disclaimer-content">
+<h2>⚠️ Important Disclaimer</h2>
+<div class="warning-banner">
+<p>THIS SERVICE IS NOT A SUBSTITUTE FOR PERSONALLY CALLING YOUR PROBATION HOTLINE</p>
+</div>
+<p>Before using ProbationCall, you must understand and agree to the following:</p>
+<h3>🚨 Critical Warnings</h3>
+<ul>
+<li><strong>This is a convenience tool ONLY</strong> - not a guaranteed service</li>
+<li><strong>Technology can fail</strong> - calls may not connect, speech recognition may be wrong</li>
+<li><strong>YOU are responsible</strong> for your probation compliance, not us</li>
+<li><strong>Always verify</strong> your testing status through official channels</li>
+</ul>
+<h3>⚖️ What Could Go Wrong</h3>
+<ul>
+<li>The automated call might not connect</li>
+<li>Speech recognition might misinterpret the message</li>
+<li>You might receive an incorrect "No Test" notification when testing IS required</li>
+<li>Notifications might be delayed or not delivered</li>
+<li>Server outages could prevent scheduled calls</li>
+</ul>
+<h3>🛡️ Your Responsibilities</h3>
+<ul>
+<li>Use this as a BACKUP, not your only method</li>
+<li>Call the hotline yourself if anything seems wrong</li>
+<li>Never blame this service for missed tests</li>
+<li>Understand that YOU face the legal consequences, not us</li>
+</ul>
+<h3>📋 Legal Agreement</h3>
+<p>By using this service, you agree that ProbationCall and its operators are <strong>NOT LIABLE</strong> for any consequences including but not limited to: arrest, incarceration, probation revocation, fines, or any other legal penalties resulting from service failures or inaccuracies.</p>
+<div class="agree-section">
+<label><input type="checkbox" id="agreeCheck1"><span>I understand this service may fail or provide incorrect information, and I will NOT rely on it as my only method of checking my probation status.</span></label>
+<label><input type="checkbox" id="agreeCheck2"><span>I accept FULL RESPONSIBILITY for my probation compliance and will not hold ProbationCall liable for any consequences.</span></label>
+<label><input type="checkbox" id="agreeCheck3"><span>I have read and agree to the <a href="/terms.html" target="_blank" style="color:#00d9ff">Terms of Service</a> and <a href="/privacy.html" target="_blank" style="color:#00d9ff">Privacy Policy</a>.</span></label>
+<button class="agree-btn" id="agreeBtn" disabled onclick="acceptTerms()">I Understand and Accept All Risks</button>
+<button class="decline-btn" onclick="declineTerms()">I Do Not Agree - Exit</button>
+</div>
+</div>
+</div>
+
+<div class="loading" id="loading"><div class="spinner"></div><div style="color:#8892b0">Loading...</div></div>
+<div class="container" id="app">
+  <nav>
+    <div class="logo">📞 ProbationCall</div>
+    <div class="nav-right">
+      <span class="dev-badge" id="devBadge" style="display:none">DEV</span>
+      <a href="/admin" id="adminLink" style="display:none;background:#ef4444;color:#fff;padding:8px 14px;border-radius:6px;text-decoration:none;font-weight:600;font-size:0.85rem">Admin</a><span id="userEmail" style="color:#8892b0;font-size:0.85rem"></span>
+      <button class="logout-btn" onclick="logout()">Sign Out</button>
+    </div>
+  </nav>
+  
+  <div class="warning-strip">⚠️ <strong>Reminder:</strong> Always verify your status by calling the hotline yourself. This service is not guaranteed.</div>
+  
+  <div class="schedule-banner" id="scheduleBanner">
+    <div><h3>✅ Auto-Call Active</h3><p id="scheduleBannerText"></p></div>
+    <div class="time" id="scheduleBannerTime"></div>
+  </div>
+  <div class="no-schedule" id="noSchedule">⚠️ No schedule set. Set up daily auto-calls in the Schedule tab.</div>
+  
+  <div class="credits-card">
+    <div>
+      <div class="credits-num" id="credits">0</div>
+      <div class="credits-label">Credits</div>
+      <div id="coveredUntil" style="font-size:0.8rem;color:rgba(0,0,0,0.7);margin-top:5px"></div>
+    </div>
+    <button class="buy-btn" onclick="showBuyModal()">Buy Credits</button>
+  </div>
+  
+  <div class="card" id="probationCard" style="display:none">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <h3 style="color:#00d9ff;margin-bottom:5px">⏰ Probation Countdown</h3>
+        <div id="probationCountdown" style="font-size:1.8rem;font-weight:700;color:#fff">-- days left</div>
+        <div id="probationEndDisplay" style="color:#8892b0;font-size:0.85rem"></div>
+      </div>
+      <button class="btn btn-secondary" onclick="showProbationModal()" style="width:auto;padding:10px 15px">Edit</button>
+    </div>
+  </div>
+  
+  <div class="card" id="noProbationCard" style="display:none;background:rgba(245,158,11,0.1);border-color:rgba(245,158,11,0.3)">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <h3 style="color:#f59e0b;margin-bottom:5px">📅 Set Your Probation End Date</h3>
+        <p style="color:#8892b0;font-size:0.85rem;margin:0">Know exactly how many credits you need!</p>
+      </div>
+      <button class="btn" onclick="showProbationModal()" style="width:auto;padding:10px 15px;background:#f59e0b">Set Date</button>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" onclick="showTab('call')">📞 Call</div>
+    <div class="tab" onclick="showTab('schedule')">⏰ Schedule</div>
+    <div class="tab" onclick="showTab('history')">📜 History</div>
+    <div class="tab" onclick="showTab('affiliate')">💰 Earn Cash</div>
+    <div class="tab" id="ftbendTabBtn" style="display:none" onclick="showTab('ftbend')">🎨 Ft Bend</div>
+    <div class="tab" onclick="showTab('test')">🧪 Test</div>
+  </div>
+  
+  <!-- CALL TAB -->
+  <div id="callTab" class="tab-content active">
+    <div class="card">
+      <h2>Make a Call</h2>
+      <form id="callForm">
+        <div class="form-group"><label>County</label><select id="county" onchange="updateCountyUI()"><option value="montgomery">Montgomery County</option><option value="ftbend">Fort Bend County</option></select></div>
+        <div class="form-group" id="callFtbendOfficeGroup" style="display:none"><label>Fort Bend Office</label><select id="callFtbendOffice"><option value="missouri">Missouri City</option><option value="rosenberg">Rosenberg (3669)</option><option value="rosenberg2">Rosenberg 2 (3671)</option></select><small style="display:block;margin-top:5px;color:#8892b0">Select the office/hotline you call</small></div>
+        <div class="form-group"><label>6-Digit PIN</label><input type="text" id="pin" maxlength="6" placeholder="123456" required></div>
+        <div class="form-group">
+          <label>How should we notify you?</label>
+          <div class="method-select">
+            <div class="method-option active" onclick="selectMethod('email')"><div class="icon">📧</div><div class="label">Email</div></div>
+            <div class="method-option" onclick="selectMethod('sms')"><div class="icon">💬</div><div class="label">SMS</div></div>
+            <div class="method-option" onclick="selectMethod('both')"><div class="icon">📧💬</div><div class="label">Both</div></div>
+          </div>
+          <input type="hidden" id="notifyMethod" value="email">
+        </div>
+        <div class="form-group" id="emailGroup"><label>Your Email</label><input type="email" id="notifyEmail" placeholder="you@example.com"></div>
+        <div class="form-group" id="phoneGroup" style="display:none"><label>Your Phone Number</label><input type="tel" id="notifyNumber" placeholder="+1234567890" onblur="formatPhoneNumber(this)"></div>
+        <div class="checkbox-group">
+          <input type="checkbox" id="retryOnUnknown">
+          <label for="retryOnUnknown">Auto-retry on unknown result<small>If we can't determine the result, automatically try again in 5 minutes (max 2 retries)</small></label>
+        </div>
+        <div class="consent-box" id="smsConsentBox" style="display:none">
+          <h4>📱 SMS Notification Consent</h4>
+          <p>By checking the box below, you agree to receive SMS text messages from ProbationCall. Message frequency: up to 1 per call. Msg & data rates may apply. Reply STOP to unsubscribe.</p>
+          <label><input type="checkbox" id="smsConsent"><span>I agree to receive SMS messages and have read the <a href="/terms.html" target="_blank">Terms</a> and <a href="/privacy.html" target="_blank">Privacy Policy</a>.</span></label>
+        </div>
+        <button type="submit" class="btn" id="callBtn">📞 Call Now</button>
+      </form>
+      <div id="callStatus" class="status" style="display:none"></div>
+      <div class="console" id="console"></div>
+    </div>
+  </div>
+  
+  <!-- SCHEDULE TAB -->
+  <div id="scheduleTab" class="tab-content">
+    <div class="card">
+      <h2>Daily Schedule</h2>
+      <div class="schedule-details" id="scheduleDetails" style="display:none">
+        <h4>✅ Schedule Active</h4>
+        <table>
+          <tr><td>Time:</td><td id="schedDisplayTime"></td></tr>
+          <tr><td>Timezone:</td><td id="schedDisplayTZ"></td></tr>
+          <tr><td>County:</td><td id="schedDisplayCounty">Montgomery County</td></tr>
+          <tr id="schedDisplayOfficeRow" style="display:none"><td>Office:</td><td id="schedDisplayOffice">-</td></tr>
+          <tr><td>PIN:</td><td id="schedDisplayPin"></td></tr>
+          <tr><td>Notify:</td><td id="schedDisplayNotify"></td></tr>
+          <tr><td>Method:</td><td id="schedDisplayMethod"></td></tr>
+          <tr><td>Auto-Retry:</td><td id="schedDisplayRetry"></td></tr>
+        </table>
+        <button class="btn btn-danger" style="margin-top:15px" onclick="deleteSchedule()">🗑️ Delete</button>
+      </div>
+      <div class="info-box" id="noSchedInfo"><strong>No schedule.</strong> Set up auto-calls below.</div>
+      <form id="scheduleForm">
+        <div class="form-group"><label>County</label><select id="schedCounty"><option value="montgomery">Montgomery County</option><option value="ftbend">Fort Bend County</option></select></div>
+        <div class="form-group" id="ftbendOfficeGroup" style="display:none"><label>Fort Bend Office</label><select id="ftbendOffice"><option value="missouri">Missouri City</option><option value="rosenberg">Rosenberg (3669)</option><option value="rosenberg2">Rosenberg 2 (3671)</option></select><small style="display:block;margin-top:5px;color:#8892b0">Select the office/hotline you call</small></div>
+        <div class="form-group"><label>6-Digit PIN</label><input type="text" id="schedPin" maxlength="6" placeholder="123456" required></div>
+        <div class="form-group">
+          <label>Notification Method</label>
+          <div class="method-select">
+            <div class="method-option active" onclick="selectSchedMethod('email')"><div class="icon">📧</div><div class="label">Email</div></div>
+            <div class="method-option" onclick="selectSchedMethod('sms')"><div class="icon">💬</div><div class="label">SMS</div></div>
+            <div class="method-option" onclick="selectSchedMethod('both')"><div class="icon">📧💬</div><div class="label">Both</div></div>
+          </div>
+          <input type="hidden" id="schedMethod" value="email">
+        </div>
+        <div class="form-group" id="schedEmailGroup"><label>Your Email</label><input type="email" id="schedEmail" placeholder="you@example.com"></div>
+        <div class="form-group" id="schedPhoneGroup" style="display:none"><label>Your Phone</label><input type="tel" id="schedNotify" placeholder="+1234567890" onblur="formatPhoneNumber(this)"></div>
+        <div class="consent-box" id="schedSmsConsentBox" style="display:none">
+          <h4>📱 SMS Notification Consent</h4>
+          <p>By checking the box below, you agree to receive daily SMS messages from ProbationCall. Msg & data rates may apply. Reply STOP to unsubscribe.</p>
+          <label><input type="checkbox" id="schedSmsConsent"><span>I agree to receive SMS messages and have read the <a href="/terms.html" target="_blank">Terms</a> and <a href="/privacy.html" target="_blank">Privacy Policy</a>.</span></label>
+        </div>
+        <div class="form-group" id="schedTimeGroup">
+          <label>Time</label>
+          <div class="time-note" id="schedTimeNote">⏰ Calls can only be scheduled between <strong>6:00 AM</strong> and <strong>2:59 PM</strong></div>
+          <div class="time-note" id="schedFtbendNote" style="display:none;background:rgba(0,255,136,0.1);border-color:rgba(0,255,136,0.3);color:#00ff88">📱 Fort Bend: Color is detected at 5:05 AM. Choose when to receive your notification:</div>
+        <div id="ftbendTimeSelect" style="display:none;margin-top:10px">
+          <select id="ftbendNotifyHour" style="width:100px">
+            <option value="5">5 AM</option><option value="6">6 AM</option><option value="7">7 AM</option><option value="8">8 AM</option>
+            <option value="9">9 AM</option><option value="10">10 AM</option><option value="11">11 AM</option>
+            <option value="12">12 PM</option>
+          </select>
+          <span style="padding:10px">:</span>
+          <input type="number" id="ftbendNotifyMin" min="0" max="59" value="10" style="width:70px">
+        </div>
+          <div style="display:flex;gap:10px;margin-top:10px">
+            <select id="schedHour" style="width:100px">
+              <option value="6">6 AM</option><option value="7">7 AM</option><option value="8">8 AM</option>
+              <option value="9">9 AM</option><option value="10">10 AM</option><option value="11">11 AM</option>
+              <option value="12">12 PM</option><option value="13">1 PM</option><option value="14">2 PM</option>
+            </select>
+            <span style="padding:10px">:</span>
+            <input type="number" id="schedMin" min="0" max="59" value="0" style="width:70px">
+            <select id="schedTZ"><option value="America/Chicago">Central Time</option></select>
+          </div>
+        </div>
+        <div class="checkbox-group">
+          <input type="checkbox" id="schedRetry">
+          <label for="schedRetry">Auto-retry on unknown result<small>If we can't determine the result, automatically try again in 5 minutes (max 2 retries)</small></label>
+        </div>
+        <div class="checkbox-group">
+          <input type="checkbox" id="schedQuiet">
+          <label for="schedQuiet">Quiet mode<small>Only notify when you MUST test. Results still saved to history.</small></label>
+        </div>
+        <button type="submit" class="btn" id="schedBtn">💾 Save Schedule</button>
+      </form>
+    </div>
+  </div>
+  
+  <!-- HISTORY TAB -->
+  <div id="historyTab" class="tab-content">
+    <div class="card"><h2>Call History</h2><div id="historyList"></div></div>
+  </div>
+  
+  <!-- AFFILIATE TAB -->
+  <div id="affiliateTab" class="tab-content">
+    <div class="card">
+      <h2>💰 Earn Cash - Affiliate Program</h2>
+      
+      <div class="info-box green">
+        <strong>Earn 30% commission</strong> on every purchase made by people you refer! Get paid via PayPal when you reach $20.
+      </div>
+      
+      <div class="affiliate-balance">
+        <div class="label">Available Balance</div>
+        <div class="amount" id="affiliateBalance">$0.00</div>
+      </div>
+      
+      <div class="referral-link-box">
+        <h3>🔗 Your Referral Link</h3>
+        <p style="color:#8892b0;font-size:0.85rem;margin-bottom:10px">Share this link with friends. They get <strong style="color:#22c55e">5 free credits</strong> when they sign up!</p>
+        <div class="referral-link">
+          <input type="text" id="referralLink" readonly>
+          <button onclick="copyReferralLink()">📋 Copy</button>
+        </div>
+        <div style="text-align:center;margin-top:15px">
+          <p style="color:#8892b0;font-size:0.85rem;margin-bottom:10px">Or share this QR code:</p>
+          <img id="qrCode" src="" alt="QR Code" style="background:#fff;padding:10px;border-radius:8px;max-width:170px">
+          <div style="margin-top:10px">
+            <button onclick="downloadQR()" style="background:#00d9ff;color:#000;border:none;padding:8px 15px;border-radius:6px;cursor:pointer;margin:5px">📥 Download</button>
+            <button onclick="shareQR()" style="background:#22c55e;color:#000;border:none;padding:8px 15px;border-radius:6px;cursor:pointer;margin:5px">📤 Share</button>
+          </div>
+          <p style="color:#22c55e;font-size:0.85rem;margin-top:10px;font-weight:bold">💡 Customers can enter your code at checkout!</p>
+          <p style="color:#666;font-size:0.75rem">Your code: <span id="refCodeDisplay" style="color:#00d9ff;font-weight:bold"></span></p>
+        </div>
+      </div>
+      
+      <div class="stats-grid">
+        <div class="stat-box">
+          <div class="value" id="totalReferred">0</div>
+          <div class="label">People Referred</div>
+        </div>
+        <div class="stat-box">
+          <div class="value" id="totalConverted">0</div>
+          <div class="label">Made Purchase</div>
+        </div>
+        <div class="stat-box">
+          <div class="value" id="totalEarned">$0.00</div>
+          <div class="label">Total Earned</div>
+        </div>
+      </div>
+      
+      <div class="card" style="background:rgba(0,217,255,0.1);border-color:rgba(0,217,255,0.3);margin-bottom:20px">
+        <h3 style="color:#00d9ff;margin-bottom:15px">💳 Get Paid Automatically</h3>
+        <p style="color:#8892b0;font-size:0.85rem;margin-bottom:15px">Connect your bank account to receive commissions instantly when your referrals purchase.</p>
+        <div id="connectStatus" style="margin-bottom:10px"></div>
+        <button class="btn" id="connectBtn" onclick="setupStripeConnect()" style="background:#00d9ff;color:#000">Connect Bank Account</button>
+      </div>
+      
+      <div class="card" style="background:rgba(34,197,94,0.1);border-color:rgba(34,197,94,0.3)">
+        <h3 style="color:#22c55e;margin-bottom:15px">💵 Request Payout (Manual)</h3>
+        <div class="form-group">
+          <label>PayPal Email</label>
+          <input type="email" id="payoutEmail" placeholder="your@paypal.email">
+        </div>
+        <button class="btn btn-green" onclick="savePayoutEmail()" style="margin-bottom:10px">Save PayPal Email</button>
+        <button class="btn" id="requestPayoutBtn" onclick="requestPayout()">Request Payout</button>
+        <p style="color:#8892b0;font-size:0.8rem;margin-top:10px">Minimum payout: $20.00. Payouts processed within 48 hours.</p>
+        <div id="payoutStatus" class="status" style="display:none;margin-top:10px"></div>
+      </div>
+      
+      <div class="payout-history" id="payoutHistorySection" style="display:none">
+        <h3 style="color:#8892b0;margin-bottom:15px">Payout History</h3>
+        <div id="payoutHistory"></div>
+      </div>
+      
+      <div style="margin-top:20px" id="earningsSection" style="display:none">
+        <h3 style="color:#8892b0;margin-bottom:15px">Recent Earnings</h3>
+        <div class="earnings-list" id="earningsList"></div>
+      </div>
+    </div>
+  </div>
+  
+  
+  <!-- FT BEND TAB -->
+  <div id="ftbendTab" class="tab-content">
+    <div class="card">
+      <h2>🎨 Fort Bend County - Today's Colors</h2>
+      <div id="todayColors" style="padding:15px">
+        <div class="ftbend-office-grid ftbend-grid" style="display:grid;gap:15px">
+          <div class="ftbend-office-card" id="office_missouri" style="background:rgba(0,217,255,0.1);border:1px solid rgba(0,217,255,0.3);border-radius:12px;padding:20px;text-align:center">
+            <div style="font-size:0.9rem;color:#8892b0;margin-bottom:5px">Missouri City</div>
+            <div style="font-size:2rem;font-weight:700" id="color_missouri">--</div>
+            <div id="recording_missouri" style="margin-top:12px;display:none">
+              <div style="font-size:0.75rem;color:#8892b0;margin-bottom:6px">🔊 Today's Recording</div>
+              <audio controls style="width:100%;height:36px;border-radius:8px" id="audio_missouri"></audio>
+            </div>
+          </div>
+          <div class="ftbend-office-card" id="office_rosenberg" style="background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:12px;padding:20px;text-align:center">
+            <div style="font-size:0.9rem;color:#8892b0;margin-bottom:5px">Rosenberg (3669)</div>
+            <div style="font-size:2rem;font-weight:700" id="color_rosenberg">--</div>
+            <div id="recording_rosenberg" style="margin-top:12px;display:none">
+              <div style="font-size:0.75rem;color:#8892b0;margin-bottom:6px">🔊 Today's Recording</div>
+              <audio controls style="width:100%;height:36px;border-radius:8px" id="audio_rosenberg"></audio>
+            </div>
+          </div>
+          <div class="ftbend-office-card" id="office_rosenberg2" style="background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:12px;padding:20px;text-align:center">
+            <div style="font-size:0.9rem;color:#8892b0;margin-bottom:5px">Rosenberg 2 (3671)</div>
+            <div style="font-size:2rem;font-weight:700" id="color_rosenberg2">--</div>
+            <div id="recording_rosenberg2" style="margin-top:12px;display:none">
+              <div style="font-size:0.75rem;color:#8892b0;margin-bottom:6px">🔊 Today's Recording</div>
+              <audio controls style="width:100%;height:36px;border-radius:8px" id="audio_rosenberg2"></audio>
+            </div>
+          </div>
+        </div>
+        <div style="color:#8892b0;text-align:center;margin-top:15px" id="colorDate"></div>
+      </div>
+      <div class="info-box">
+        <strong>How it works:</strong> We call all 3 Fort Bend hotlines at 5:05 AM daily and detect the announced colors. You will only receive notifications for the office you selected in your schedule.
+      </div>
+    </div>
+    <div class="card">
+      <h2>📅 Color History (Last 90 Days)</h2>
+      <div style="margin-bottom:15px">
+        <select id="historyOfficeFilter" style="padding:8px;border-radius:6px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);color:#fff">
+          <option value="all">All Offices</option>
+          <option value="missouri">Missouri City</option>
+          <option value="rosenberg">Rosenberg (3669)</option>
+          <option value="rosenberg2">Rosenberg 2 (3671)</option>
+        </select>
+      </div>
+      <div id="colorHistory" style="max-height:400px;overflow-y:auto"></div>
+    </div>
+  </div>
+
+  <!-- TEST TAB -->
+  <div id="testTab" class="tab-content">
+    <div class="card">
+      <h2>🧪 Test Notifications</h2>
+      <div class="info-box"><strong>Email</strong> is the most reliable method.</div>
+      <h3 style="margin:20px 0 10px;font-size:1rem">Test Email</h3>
+      <div class="form-group"><input type="email" id="testEmail" placeholder="you@example.com"></div>
+      <button class="btn" onclick="testEmail()">📧 Send Test Email</button>
+      <h3 style="margin:20px 0 10px;font-size:1rem">Test SMS</h3>
+      <div class="form-group"><input type="tel" id="testPhone" onblur="formatPhoneNumber(this)" placeholder="+1234567890"></div>
+      <button class="btn btn-secondary" onclick="testSMS()">💬 Send Test SMS</button>
+      <div id="testStatus" class="status" style="display:none;margin-top:15px"></div>
+    </div>
+  </div>
+</div>
+
+<!-- BUY MODAL -->
+<div class="modal" id="buyModal">
+  <div class="modal-content">
+    <button class="modal-close" onclick="closeBuyModal()">&times;</button>
+    <h2 style="margin-bottom:10px">Buy Credits</h2>
+    <p style="color:#8892b0;margin-bottom:5px">1 credit = 1 automated call</p>
+    <div class="packages">
+      <div class="package" onclick="buyPackage('starter')"><div class="package-name">Starter</div><div class="package-credits">30</div><div class="package-price">$14.99</div></div>
+      <div class="package popular" onclick="buyPackage('standard')"><div class="package-name">Standard</div><div class="package-credits">90</div><div class="package-price">$39.99</div><div class="package-save">Save 17%</div></div>
+      <div class="package" onclick="buyPackage('value')"><div class="package-name">Value</div><div class="package-credits">180</div><div class="package-price">$69.99</div><div class="package-save">Save 33%</div></div>
+    </div>
+    <div style="margin-top:20px;padding-top:20px;border-top:1px solid rgba(255,255,255,0.1)">
+      <h3 style="color:#22c55e;margin-bottom:10px">🎯 Buy Exact Credits for Your Probation</h3>
+      <p style="color:#8892b0;font-size:0.85rem;margin-bottom:15px">Enter your probation end date and pay once - you're covered!</p>
+      <div class="form-group">
+        <input type="date" id="buyEndDate" onchange="calculateExactCredits()">
+      </div>
+      <div id="exactCalc" style="display:none;background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:8px;padding:15px;margin:15px 0">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <span id="exactDays" style="font-size:1.3rem;font-weight:700;color:#fff">0</span> <span style="color:#8892b0">days</span><br>
+            <span style="color:#8892b0;font-size:0.85rem">= <span id="exactCredits">0</span> credits needed</span><br><span id="existingCreditsNote" style="color:#22c55e;font-size:0.8rem"></span>
+          </div>
+          <div style="text-align:right">
+            <div id="exactPrice" style="font-size:1.8rem;font-weight:700;color:#22c55e">$0</div>
+            <div style="color:#8892b0;font-size:0.75rem">one-time payment</div>
+          </div>
+        </div>
+        <button class="btn btn-green" onclick="buyExactCredits()" style="width:100%;margin-top:15px">🎯 Buy & Be Covered</button>
+      </div>
+    </div>
+    
+    <div class="promo-input" style="margin-top:15px"><input type="text" id="promoCode" placeholder="Promo code"><button class="btn" onclick="redeemPromo()">Apply</button></div>
+    <div id="promoStatus" class="status" style="display:none;margin-top:10px"></div>
+  </div>
+</div>
+
+<script>
+var SUPA_URL = 'https://xvpuqeaowvlkcyywgaaq.supabase.co';
+var SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh2cHVxZWFvd3Zsa2N5eXdnYWFxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQyNzc1MjcsImV4cCI6MjA3OTg1MzUyN30.y90odNDSU0zZcVGMK9C39gSFDL9NJcy5E4yBkgcFc8w';
+var supabase = window.supabase.createClient(SUPA_URL, SUPA_KEY);
+var savedAffiliateCode = null; var token = localStorage.getItem('pb_token') || null;
+var termsAccepted = false;
+var affiliateData = null;
+
+// Disclaimer checkboxes
+document.querySelectorAll('#agreeCheck1, #agreeCheck2, #agreeCheck3').forEach(function(cb) {
+  cb.addEventListener('change', function() {
+    var allChecked = document.getElementById('agreeCheck1').checked && document.getElementById('agreeCheck2').checked && document.getElementById('agreeCheck3').checked;
+    document.getElementById('agreeBtn').disabled = !allChecked;
+  });
+});
+
+function acceptTerms() {
+  document.getElementById('agreeBtn').disabled = true;
+  document.getElementById('agreeBtn').textContent = 'Saving...';
+  
+  if (!token) {
+    alert('Session expired. Please refresh the page.');
+    window.location.reload();
+    return;
+  }
+  
+  fetch('/api/accept-terms', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    credentials: 'same-origin'
+  }).then(function(r) { 
+    if (!r.ok) throw new Error('Server error: ' + r.status);
+    return r.json(); 
+  }).then(function(d) {
+    if (d.success) {
+      termsAccepted = true;
+      document.getElementById('disclaimerModal').classList.remove('active');
+      // Show onboarding for new users
+      fetch('/api/user', { headers: { Authorization: 'Bearer ' + token } })
+        .then(function(r) { return r.json(); })
+        .then(function(d) { 
+          if (!d.profile.onboarding_complete) {
+            document.getElementById('onboardingModal').classList.add('active');
+          }
+        });
+    } else {
+      console.error('Terms error:', d);
+      alert('Failed to save: ' + (d.error || 'Unknown error'));
+      document.getElementById('agreeBtn').disabled = false;
+      document.getElementById('agreeBtn').textContent = 'I Understand and Accept All Risks';
+    }
+  }).catch(function(e) {
+    console.error('Terms error:', e);
+    alert('Failed to save: ' + e.message);
+    document.getElementById('agreeBtn').disabled = false;
+    document.getElementById('agreeBtn').textContent = 'I Understand and Accept All Risks';
+  });
+}
+
+function declineTerms() { window.location.href = '/'; }
+
+function showDisclaimerIfNeeded() {
+  if (!termsAccepted) document.getElementById('disclaimerModal').classList.add('active');
+}
+
+async function init() {
+  if (window.location.hash.includes('access_token')) {
+    await new Promise(function(r) { setTimeout(r, 1500); });
+  }
+  var result = await supabase.auth.getSession();
+  if (result.data.session) {
+    token = result.data.session.access_token;
+    try { localStorage.setItem('pb_token', token); } catch(e) { console.log('localStorage not available'); }
+    showDashboard();
+  } else {
+    // Clear any stale token and redirect to login
+    try { localStorage.removeItem('pb_token'); } catch(e) {}
+    window.location.href = '/login?logout=true';
+  }
+}
+
+supabase.auth.onAuthStateChange(function(event, session) {
+  if (event === 'SIGNED_IN' && session) {
+    token = session.access_token;
+    localStorage.setItem('pb_token', token);
+    showDashboard();
+  } else if (event === 'SIGNED_OUT') {
+    localStorage.removeItem('pb_token');
+    token = null;
+  }
+});
+
+function showDashboard() {
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  loadUser();
+  connectWS();
+  var params = new URLSearchParams(window.location.search);
+  if (params.get('success')) {
+    alert('✅ Payment successful! Credits added.');
+    history.replaceState({}, '', '/dashboard');
+  }
+}
+
+function formatTime(h, m) {
+  var hr = h % 12 || 12;
+  var ampm = h >= 12 ? 'PM' : 'AM';
+  return hr + ':' + String(m).padStart(2, '0') + ' ' + ampm;
+}
+
+function selectMethod(method) {
+  document.querySelectorAll('#callTab .method-option').forEach(function(el) { el.classList.remove('active'); });
+  event.target.closest('.method-option').classList.add('active');
+  document.getElementById('notifyMethod').value = method;
+  document.getElementById('emailGroup').style.display = (method === 'email' || method === 'both') ? 'block' : 'none';
+  document.getElementById('phoneGroup').style.display = (method === 'sms' || method === 'both') ? 'block' : 'none';
+  document.getElementById('smsConsentBox').style.display = (method === 'sms' || method === 'both') ? 'block' : 'none';
+}
+
+function selectSchedMethod(method) {
+  document.querySelectorAll('#scheduleTab .method-option').forEach(function(el) { el.classList.remove('active'); });
+  event.target.closest('.method-option').classList.add('active');
+  document.getElementById('schedMethod').value = method;
+  document.getElementById('schedEmailGroup').style.display = (method === 'email' || method === 'both') ? 'block' : 'none';
+  document.getElementById('schedPhoneGroup').style.display = (method === 'sms' || method === 'both') ? 'block' : 'none';
+  document.getElementById('schedSmsConsentBox').style.display = (method === 'sms' || method === 'both') ? 'block' : 'none';
+}
+
+
+function loadFtbendColors() {
+  fetch("/api/ftbend/today")
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      document.getElementById("colorDate").textContent = "Date: " + d.date;
+      
+      // Missouri City
+      var mo = d.offices && d.offices.missouri;
+      var moEl = document.getElementById("color_missouri");
+      if (mo && mo.color && mo.color !== "UNKNOWN") {
+        moEl.innerHTML = "<span style='color:#22c55e;text-transform:uppercase'>" + mo.color + "</span>";
+      } else {
+        moEl.innerHTML = "<span style='color:#8892b0'>--</span>";
+      }
+      
+      // Rosenberg
+      var ro = d.offices && d.offices.rosenberg;
+      var roEl = document.getElementById("color_rosenberg");
+      if (ro && ro.color && ro.color !== "UNKNOWN") {
+        roEl.innerHTML = "<span style='color:#22c55e;text-transform:uppercase'>" + ro.color + "</span>";
+      } else {
+        roEl.innerHTML = "<span style='color:#8892b0'>--</span>";
+      }
+      
+      // Rosenberg 2
+      var rp = d.offices && d.offices.rosenberg2;
+      var rpEl = document.getElementById("color_rosenberg2");
+      // Colors display
+      var colors = [];
+      if (rp && rp.phase1) colors.push(rp.phase1);
+      if (rp && rp.phase2) colors.push(rp.phase2);
+      if (colors.length > 0) {
+        rpEl.innerHTML = "<span style='color:#22c55e;text-transform:uppercase'>" + colors.join(", ") + "</span>";
+      } else {
+        rpEl.innerHTML = "<span style='color:#8892b0'>--</span>";
+      }
+      
+      // Load recordings for each office
+      ["missouri", "rosenberg", "rosenberg2"].forEach(function(office) {
+        var officeData = d.offices && d.offices[office];
+        var recDiv = document.getElementById("recording_" + office);
+        var audioEl = document.getElementById("audio_" + office);
+        if (officeData && officeData.recording_url) {
+          var recSid = officeData.recording_url.match(/RE[a-f0-9]{32}/);
+          if (recSid) {
+            audioEl.src = "/api/recording/" + recSid[0];
+            recDiv.style.display = "block";
+          }
+        } else {
+          recDiv.style.display = "none";
+        }
+      });
+    });
+  
+  fetch("/api/ftbend/colors", { headers: { Authorization: "Bearer " + token } })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      window.ftbendColorData = d.colors || [];
+      renderFtbendHistory("all");
+    });
+}
+
+function renderFtbendHistory(filter) {
+  var el = document.getElementById("colorHistory");
+  var colors = window.ftbendColorData || [];
+  
+  if (filter !== "all") {
+    colors = colors.filter(function(c) {
+      return c.county === "ftbend_" + filter;
+    });
+  }
+  
+  if (colors.length === 0) {
+    el.innerHTML = "<p style='color:#666;text-align:center'>No color history yet</p>";
+    return;
+  }
+  
+  el.innerHTML = colors.map(function(c) {
+    var officeLabel = c.office_name || c.county.replace("ftbend_", "");
+    var colorDisplay = "";
+    
+    if (c.phase1_color || c.phase2_color) {
+      var phaseColors = []; if (c.phase1_color) phaseColors.push(c.phase1_color); if (c.phase2_color) phaseColors.push(c.phase2_color); colorDisplay = "<span style='color:#22c55e;text-transform:uppercase'>" + phaseColors.join(", ") + "</span>";
+    } else if (c.color === "UNKNOWN") {
+      colorDisplay = "<span style='color:#f59e0b'>Unknown</span>";
+    } else {
+      colorDisplay = "<span style='color:#22c55e;text-transform:uppercase'>" + c.color + "</span>";
+    }
+    
+    return "<div class='history-item' style='display:flex;justify-content:space-between;align-items:center'>" +
+      "<div><span style='color:#fff'>" + c.date + "</span> <span style='color:#00d9ff;font-size:0.8rem'>(" + officeLabel + ")</span></div>" +
+      "<span style='font-weight:600'>" + colorDisplay + "</span></div>";
+  }).join("");
+}
+
+if (document.getElementById("historyOfficeFilter")) {
+  document.getElementById("historyOfficeFilter").addEventListener("change", function() {
+    renderFtbendHistory(this.value);
+  });
+}
+
+function updateCoveredUntil(credits) {
+  var el = document.getElementById("coveredUntil");
+  if (!el || credits < 1) { if(el) el.textContent = ""; return; }
+  
+  var today = new Date();
+  var coveredDate = new Date(today);
+  coveredDate.setDate(today.getDate() + credits);
+  
+  var options = { month: 'short', day: 'numeric' };
+  if (coveredDate.getFullYear() !== today.getFullYear()) {
+    options.year = 'numeric';
+  }
+  
+  el.textContent = '✓ Covered until ' + coveredDate.toLocaleDateString('en-US', options);
+}
+
+function loadUser() {
+  // Check if we have a valid token
+  if (!token) {
+    console.log('No token, redirecting to login');
+    localStorage.removeItem('pb_token');
+    window.location.href = '/login?logout=true';
+    return;
+  }
+  
+  // Apply saved referral code if present
+  var savedRef = localStorage.getItem('referralCode');
+  if (savedRef) {
+    fetch('/api/apply-referral', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+      body: JSON.stringify({ code: savedRef })
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      if (d.success) {
+        console.log('Referral applied:', savedRef);
+        localStorage.removeItem('referralCode');
+      }
+    }).catch(function() {});
+  }
+  
+  fetch('/api/user', { headers: { Authorization: 'Bearer ' + token } })
+    .then(function(r) {
+      if (r.status === 401) {
+        console.log('Token invalid, redirecting to login');
+        localStorage.removeItem('pb_token');
+        window.location.href = '/login?logout=true';
+        throw new Error('Unauthorized');
+      }
+      return r.json();
+    })
+    .then(function(d) {
+      termsAccepted = d.profile && d.profile.terms_accepted_at ? true : false;
+      showDisclaimerIfNeeded();
+      
+      // Show onboarding for users who accepted terms but never completed onboarding
+      if (termsAccepted && !d.profile.onboarding_complete) {
+        setTimeout(function() { document.getElementById('onboardingModal').classList.add('active'); }, 500);
+      }
+      
+      document.getElementById('userEmail').textContent = d.user.email;
+      probationEndDate = d.probationEndDate || d.profile.probation_end_date;
+      updateProbationDisplay(); fetch('/api/admin/check',{headers:{Authorization:'Bearer '+token}}).then(function(r){return r.json()}).then(function(d){if(d.isAdmin){var el=document.getElementById('adminLink');if(el)el.style.display='inline-block';}}).catch(function(){});
+      document.getElementById('credits').textContent = d.isDev ? '∞' : d.profile.credits;
+      updateCoveredUntil(d.profile.credits);
+      if (d.isDev) document.getElementById('devBadge').style.display = 'inline';
+      if (d.is_admin || d.ftbend_access) document.getElementById('ftbendTabBtn').style.display = 'block';
+      
+      document.getElementById('notifyEmail').value = d.user.email;
+      document.getElementById('schedEmail').value = d.user.email;
+      document.getElementById('testEmail').value = d.user.email;
+      
+      // Load affiliate data
+      if (d.affiliate) {
+        affiliateData = d.affiliate;
+        document.getElementById('referralLink').value = 'https://www.probationcall.com/r/' + d.affiliate.referralCode; document.getElementById('qrCode').src = 'https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=' + encodeURIComponent('https://www.probationcall.com/r/' + d.affiliate.referralCode); document.getElementById('refCodeDisplay').textContent = d.affiliate.referralCode;
+        document.getElementById('affiliateBalance').textContent = '$' + (d.affiliate.balance / 100).toFixed(2);
+        document.getElementById('totalEarned').textContent = '$' + (d.affiliate.totalEarned / 100).toFixed(2);
+        document.getElementById('totalReferred').textContent = d.affiliate.referrals ? d.affiliate.referrals.length : 0;
+        document.getElementById('totalConverted').textContent = d.affiliate.referrals ? d.affiliate.referrals.filter(function(r) { return r.status === 'converted'; }).length : 0;
+        
+        if (d.affiliate.payoutEmail) {
+          document.getElementById('payoutEmail').value = d.affiliate.payoutEmail;
+        }
+        
+        // Update payout button
+        var payoutBtn = document.getElementById('requestPayoutBtn');
+        if (d.affiliate.balance < d.affiliate.minPayout) {
+          payoutBtn.disabled = true;
+          payoutBtn.textContent = 'Need $' + ((d.affiliate.minPayout - d.affiliate.balance) / 100).toFixed(2) + ' more';
+        } else {
+          payoutBtn.disabled = false;
+          payoutBtn.textContent = 'Request Payout ($' + (d.affiliate.balance / 100).toFixed(2) + ')';
+        }
+        
+        // Show earnings
+        if (d.affiliate.earnings && d.affiliate.earnings.length > 0) {
+          document.getElementById('earningsSection').style.display = 'block';
+          document.getElementById('earningsList').innerHTML = d.affiliate.earnings.map(function(e) {
+            return '<div class="earning-item"><div><span class="amount">+$' + (e.amount_cents / 100).toFixed(2) + '</span><br><span class="date">' + new Date(e.created_at).toLocaleDateString() + '</span></div><div style="color:#8892b0;font-size:0.8rem">From $' + (e.purchase_amount_cents / 100).toFixed(2) + ' purchase</div></div>';
+          }).join('');
+        }
+        
+        // Show payout history
+        if (d.affiliate.payouts && d.affiliate.payouts.length > 0) {
+          document.getElementById('payoutHistorySection').style.display = 'block';
+          document.getElementById('payoutHistory').innerHTML = d.affiliate.payouts.map(function(p) {
+            return '<div class="payout-item"><div><strong>$' + (p.amount_cents / 100).toFixed(2) + '</strong><br><small style="color:#8892b0">' + new Date(p.created_at).toLocaleDateString() + '</small></div><span class="status ' + p.status + '">' + p.status + '</span></div>';
+          }).join('');
+        }
+      }
+      
+      if (d.schedule) {
+        var t = formatTime(d.schedule.hour, d.schedule.minute);
+        document.getElementById('scheduleBannerText').textContent = 'Daily at ' + t + (d.schedule.retry_on_unknown ? ' (auto-retry on)' : '');
+        document.getElementById('scheduleBannerTime').textContent = t;
+        document.getElementById('scheduleBanner').classList.add('active');
+        document.getElementById('noSchedule').classList.remove('active');
+        document.getElementById('schedDisplayTime').textContent = t;
+        document.getElementById('schedDisplayTZ').textContent = d.schedule.timezone;
+        document.getElementById('schedDisplayCounty').textContent = d.schedule.county === 'ftbend' ? 'Fort Bend County' : 'Montgomery County';
+        if (d.schedule.county === "ftbend") {
+          document.getElementById("schedDisplayOfficeRow").style.display = "";
+          var officeNames = {missouri: "Missouri City", rosenberg: "Rosenberg (3669)", rosenberg2: "Rosenberg 2 (3671)"};
+          document.getElementById("schedDisplayOffice").textContent = officeNames[d.schedule.ftbend_office] || "Missouri City";
+        } else {
+          document.getElementById("schedDisplayOfficeRow").style.display = "none";
+        }
+        document.getElementById('schedDisplayPin').textContent = d.schedule.pin;
+        document.getElementById('schedDisplayNotify').textContent = d.schedule.notify_method === 'sms' ? d.schedule.notify_number : (d.schedule.notify_method === 'both' ? (d.schedule.notify_number + ' & ' + d.schedule.notify_email) : d.schedule.notify_email) || '-';
+        document.getElementById('schedDisplayMethod').textContent = (d.schedule.notify_method || 'email').toUpperCase();
+        document.getElementById('schedDisplayRetry').textContent = d.schedule.retry_on_unknown ? 'Yes (5 min delay)' : 'No';
+        document.getElementById('scheduleDetails').style.display = 'block';
+        document.getElementById('noSchedInfo').style.display = 'none';
+        document.getElementById('schedBtn').textContent = '💾 Update Schedule';
+        document.getElementById('schedCounty').value = d.schedule.county || 'montgomery';
+        // Show Ft Bend tab only if user has ftbend schedule, ftbend_access, or is admin
+        if (d.schedule.county === 'ftbend' || d.ftbend_access || d.is_admin) {
+          document.getElementById('ftbendTabBtn').style.display = 'block';
+        }
+        document.getElementById('schedPin').value = d.schedule.pin;
+        document.getElementById('schedHour').value = d.schedule.hour;
+        document.getElementById('schedMin').value = d.schedule.minute;
+        if (d.schedule.county === 'ftbend') {
+          document.getElementById('ftbendNotifyHour').value = d.schedule.hour || 5;
+          document.getElementById('ftbendNotifyMin').value = d.schedule.minute || 10;
+          if (document.getElementById('ftbendOffice')) {
+            document.getElementById('ftbendOffice').value = d.schedule.ftbend_office || 'missouri';
+          }
+        }
+        document.getElementById('schedTZ').value = d.schedule.timezone;
+        document.getElementById('schedRetry').checked = d.schedule.retry_on_unknown || false;
+        document.getElementById('schedQuiet').checked = d.schedule.quiet_mode || false;
+        if (d.schedule.notify_email) document.getElementById('schedEmail').value = d.schedule.notify_email;
+        if (d.schedule.notify_number) document.getElementById('schedNotify').value = d.schedule.notify_number;
+        updateCountyUI('schedCounty', 'schedPin');
+      } else {
+        document.getElementById('scheduleBanner').classList.remove('active');
+        document.getElementById('noSchedule').classList.add('active');
+        document.getElementById('scheduleDetails').style.display = 'none';
+        document.getElementById('noSchedInfo').style.display = 'block';
+      }
+      
+      var el = document.getElementById('historyList');
+      if (!d.history || !d.history.length) {
+        el.innerHTML = '<p style="color:#666">No calls yet</p>';
+      } else {
+        el.innerHTML = d.history.map(function(h) {
+          var txt = h.result === 'NO_TEST' ? '✅ No Test' : h.result === 'MUST_TEST' ? '🚨 Must Test' : h.result === 'RETRY_PENDING' ? '🔄 Retrying...' : '⚠️ Unknown';
+          var county = h.county === 'ftbend' ? 'Ft Bend' : 'Montgomery';
+          var pin = h.pin_used ? '<br><small>PIN: ' + h.pin_used + '</small>' : '';
+          var recUrl = h.recording_url;
+          if (recUrl && recUrl.includes('Recordings/')) {
+            var sid = recUrl.match(/Recordings\/([A-Za-z0-9]+)/);
+            if (sid) recUrl = '/api/recording/' + sid[1];
+          }
+          var recording = h.recording_url ? '<div class="audio-player"><audio controls preload="none" src="' + recUrl + '"></audio></div>' : '';
+          var transcript = h.transcript ? '<div class="history-transcript">"' + h.transcript + '"</div>' : '';
+          return '<div class="history-item"><div class="history-header"><div><span class="history-date">' + new Date(h.created_at).toLocaleString() + '</span><span class="history-county">' + county + '</span>' + pin + '</div><span class="history-result ' + h.result + '">' + txt + '</span></div>' + recording + transcript + '</div>';
+        }).join('');
+      }
+    });
+}
+
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
+  document.querySelectorAll('.tab-content').forEach(function(t) { t.classList.remove('active'); });
+  event.target.classList.add('active');
+  document.getElementById(name + 'Tab').classList.add('active');
+  if (name === 'ftbend') loadFtbendColors();
+}
+
+function showBuyModal() { document.getElementById('buyModal').classList.add('active'); if(probationEndDate){ document.getElementById('buyEndDate').value = probationEndDate; calculateExactCredits(); } }
+function closeBuyModal() { document.getElementById('buyModal').classList.remove('active'); }
+
+function buyPackage(packageId) {
+  var affiliateCode = savedAffiliateCode || document.getElementById('promoCode').value.trim();
+  fetch('/api/checkout', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({ packageId: packageId, affiliateCode: affiliateCode })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.url) window.location.href = d.url;
+    else alert('Error: ' + (d.error || 'Unknown'));
+  });
+}
+
+function redeemPromo() {
+  var code = document.getElementById('promoCode').value.trim().toUpperCase();
+  var st = document.getElementById('promoStatus');
+  if (!code) return;
+  st.style.display = 'block';
+  st.className = 'status calling';
+  st.textContent = 'Checking code...';
+  
+  // First try as free credits promo
+  fetch('/api/redeem', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({ code: code })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.success) {
+      st.className = 'status success';
+      st.textContent = '✅ Added ' + d.credits + ' credits!';
+      loadUser();
+      setTimeout(closeBuyModal, 1500);
+    } else {
+      // Not a free credits code - check if affiliate code
+      fetch('/api/check-affiliate-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+        body: JSON.stringify({ code: code })
+      }).then(function(r) { return r.json(); }).then(function(d2) {
+        if (d2.valid) {
+          savedAffiliateCode = code;
+          st.className = 'status success';
+          st.textContent = '✅ Code "' + code + '" applied! Select a package.';
+          document.getElementById('promoCode').style.borderColor = '#22c55e';
+        } else {
+          st.className = 'status error';
+          st.textContent = '❌ Invalid code';
+        }
+      });
+    }
+  });
+}
+
+// Affiliate functions
+function downloadQR() {
+  var link = document.createElement('a');
+  link.href = document.getElementById('qrCode').src;
+  link.download = 'probationcall-qr-code.png';
+  link.click();
+}
+
+function shareQR() {
+  var refCode = document.getElementById('refCodeDisplay').textContent;
+  var shareData = {
+    title: 'ProbationCall',
+    text: 'Never miss a probation check-in! Use my code ' + refCode + ' at checkout for a bonus.',
+    url: document.getElementById('referralLink').value
+  };
+  if (navigator.share) {
+    navigator.share(shareData);
+  } else {
+    navigator.clipboard.writeText(shareData.text + ' ' + shareData.url);
+    alert('Link copied to clipboard!');
+  }
+}
+
+function setupStripeConnect() {
+  document.getElementById('connectBtn').textContent = 'Loading...';
+  document.getElementById('connectBtn').disabled = true;
+  fetch('/api/affiliate/connect', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + token }
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.url) {
+      window.location.href = d.url;
+    } else {
+      alert('Error: ' + (d.error || 'Could not create connect link'));
+      document.getElementById('connectBtn').textContent = 'Connect Bank Account';
+      document.getElementById('connectBtn').disabled = false;
+    }
+  });
+}
+
+function checkConnectStatus() {
+  fetch('/api/affiliate/connect-status', {
+    headers: { Authorization: 'Bearer ' + token }
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    var statusEl = document.getElementById('connectStatus');
+    var btnEl = document.getElementById('connectBtn');
+    if (d.connected && d.payouts_enabled) {
+      statusEl.innerHTML = '<span style="color:#22c55e">✅ Connected - You will receive payouts automatically!</span>';
+      btnEl.textContent = 'Manage Account';
+    } else if (d.connected) {
+      statusEl.innerHTML = '<span style="color:#f59e0b">⚠️ Setup incomplete - Click below to finish</span>';
+      btnEl.textContent = 'Complete Setup';
+    }
+  });
+}
+
+function copyReferralLink() {
+  var input = document.getElementById('referralLink');
+  input.select();
+  document.execCommand('copy');
+  alert('✅ Referral link copied!');
+}
+
+function savePayoutEmail() {
+  var email = document.getElementById('payoutEmail').value;
+  if (!email) { alert('Please enter your PayPal email'); return; }
+  
+  fetch('/api/affiliate/payout-email', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({ email: email })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.success) {
+      alert('✅ PayPal email saved!');
+    } else {
+      alert('Error: ' + (d.error || 'Failed to save'));
+    }
+  });
+}
+
+function requestPayout() {
+  var st = document.getElementById('payoutStatus');
+  st.style.display = 'block';
+  st.className = 'status calling';
+  st.textContent = 'Requesting payout...';
+  
+  fetch('/api/affiliate/request-payout', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({ method: 'paypal' })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.success) {
+      st.className = 'status success';
+      st.textContent = '✅ Payout requested! You will receive $' + (d.amount / 100).toFixed(2) + ' within 48 hours.';
+      loadUser();
+    } else {
+      st.className = 'status error';
+      st.textContent = '❌ ' + (d.error || 'Failed');
+    }
+  });
+}
+
+var ws;
+function connectWS() {
+  ws = new WebSocket((location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws');
+  ws.onmessage = function(e) {
+    var d = JSON.parse(e.data);
+    if (d.type === 'log') addLog(d.log.message, d.log.type);
+    if (d.type === 'result') {
+      var st = document.getElementById('callStatus');
+      st.style.display = 'block';
+      if (d.result === 'NO_TEST') { st.className = 'status success'; st.textContent = '✅ No test today!'; }
+      else if (d.result === 'MUST_TEST') { st.className = 'status error'; st.textContent = '🚨 TEST REQUIRED!'; }
+      else if (d.result === 'RETRY_PENDING') { st.className = 'status retry'; st.textContent = '🔄 Retrying in 5 min...'; }
+      else { st.className = 'status warning'; st.textContent = '⚠️ Unknown result'; }
+      loadUser();
+    }
+  };
+  ws.onclose = function() { setTimeout(connectWS, 5000); };
+  ws.onerror = function() {};
+}
+
+function addLog(msg, type) {
+  var c = document.getElementById('console');
+  c.innerHTML += '<div class="console-entry ' + (type || '') + '">' + new Date().toLocaleTimeString() + ' - ' + msg + '</div>';
+  c.scrollTop = c.scrollHeight;
+}
+
+document.getElementById('callForm').onsubmit = function(e) {
+  e.preventDefault();
+  var method = document.getElementById('notifyMethod').value;
+  if (method === 'sms' && !document.getElementById('smsConsent').checked) {
+    alert('Please agree to receive SMS messages.');
+    return;
+  }
+  var btn = document.getElementById('callBtn');
+  var st = document.getElementById('callStatus');
+  btn.disabled = true;
+  btn.textContent = 'Calling...';
+  st.style.display = 'block';
+  st.className = 'status calling';
+  st.textContent = 'Calling...';
+  document.getElementById('console').innerHTML = '';
+  fetch('/api/call', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({
+      county: document.getElementById('county').value,
+      pin: document.getElementById('pin').value,
+      notifyNumber: document.getElementById('notifyNumber').value,
+      notifyEmail: document.getElementById('notifyEmail').value,
+      notifyMethod: method,
+      retryOnUnknown: document.getElementById('retryOnUnknown').checked
+    })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.error) { st.className = 'status error'; st.textContent = d.error; }
+    btn.disabled = false;
+    btn.textContent = '📞 Call Now';
+  });
+};
+
+document.getElementById('scheduleForm').onsubmit = function(e) {
+  e.preventDefault();
+  var method = document.getElementById('schedMethod').value;
+  if (method === 'sms' && !document.getElementById('schedSmsConsent').checked) {
+    alert('Please agree to receive SMS messages.');
+    return;
+  }
+  var county = document.getElementById('schedCounty').value;
+  var hour, minute;
+  
+  if (county === 'ftbend') {
+    hour = parseInt(document.getElementById('ftbendNotifyHour').value) || 5;
+    minute = parseInt(document.getElementById('ftbendNotifyMin').value) || 10;
+  } else {
+    hour = parseInt(document.getElementById('schedHour').value) || 6;
+    minute = parseInt(document.getElementById('schedMin').value) || 0;
+    if (hour < 6 || hour > 14) {
+      alert('Schedule time must be between 6:00 AM and 2:59 PM');
+      return;
+    }
+  }
+  var btn = document.getElementById('schedBtn');
+  btn.disabled = true;
+  fetch('/api/schedule', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({
+      county: document.getElementById('schedCounty').value,
+      pin: document.getElementById('schedPin').value,
+      notifyNumber: document.getElementById('schedNotify').value,
+      notifyEmail: document.getElementById('schedEmail').value,
+      notifyMethod: method,
+      hour: hour,
+      minute: minute,
+      timezone: document.getElementById('schedTZ').value,
+      retryOnUnknown: document.getElementById('schedRetry').checked,
+      quietMode: document.getElementById('schedQuiet') ? document.getElementById('schedQuiet').checked : false,
+      ftbend_office: document.getElementById('ftbendOffice') ? document.getElementById('ftbendOffice').value : 'missouri'
+    })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    btn.disabled = false;
+    if (d.success) { alert('✅ Schedule saved!'); loadUser(); }
+    else { alert('Error: ' + (d.error || 'Unknown')); }
+  });
+};
+
+function deleteSchedule() {
+  if (!confirm('Delete schedule?')) return;
+  fetch('/api/schedule', { method: 'DELETE', headers: { Authorization: 'Bearer ' + token } })
+    .then(function() { alert('Deleted'); loadUser(); });
+}
+
+function testEmail() {
+  var st = document.getElementById('testStatus');
+  st.style.display = 'block';
+  st.className = 'status calling';
+  st.textContent = 'Sending...';
+  fetch('/api/test-email', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({ email: document.getElementById('testEmail').value })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    st.className = 'status ' + (d.success ? 'success' : 'error');
+    st.textContent = d.success ? '✅ Email sent!' : '❌ ' + (d.error || 'Failed');
+  });
+}
+
+function testSMS() {
+  var st = document.getElementById('testStatus');
+  st.style.display = 'block';
+  st.className = 'status calling';
+  st.textContent = 'Sending...';
+  fetch('/api/test-sms', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({ notifyNumber: document.getElementById('testPhone').value })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    st.className = 'status ' + (d.success ? 'success' : 'error');
+    st.textContent = d.success ? '✅ SMS sent!' : '❌ ' + (d.error || 'Failed');
+  });
+}
+
+function logout() {
+  supabase.auth.signOut().then(function() { window.location.href = '/login?logout=true'; });
+}
+
+
+var probationEndDate = null;
+var calcData = null;
+
+function showProbationModal() {
+  var modal = document.getElementById('probationModal');
+  var input = document.getElementById('probationEndDate');
+  if (modal) modal.classList.add('active');
+  if (input && probationEndDate) {
+    input.value = probationEndDate;
+    calculateCreditsNeeded();
+  }
+}
+
+function closeProbationModal() {
+  document.getElementById('probationModal').classList.remove('active');
+}
+
+function calculateCreditsNeeded() {
+  var el = document.getElementById('probationEndDate');
+  if (!el) return;
+  var endDate = el.value;
+  var calcEl = document.getElementById('probationCalc');
+  if (!endDate) {
+    if (calcEl) calcEl.style.display = 'none';
+    return;
+  }
+  
+  fetch('/api/calculate-credits?endDate=' + endDate, { headers: { Authorization: 'Bearer ' + token } })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      calcData = d;
+      document.getElementById('calcDays').textContent = d.daysRemaining;
+      document.getElementById('calcCredits').textContent = d.creditsNeeded;
+      document.getElementById('calcPrice').textContent = d.priceDisplay;
+      document.getElementById('probationCalc').style.display = 'block';
+    });
+}
+
+// Event listener added in modal
+
+function saveProbationDate() {
+  var el = document.getElementById('probationEndDate');
+  if (!el) return;
+  var endDate = el.value;
+  var st = document.getElementById('probationStatus');
+  
+  if (!endDate) {
+    st.style.display = 'block';
+    st.className = 'status error';
+    st.textContent = 'Please select a date';
+    return;
+  }
+  
+  fetch('/api/profile/probation-end', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({ endDate: endDate })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.success) {
+      st.style.display = 'block';
+      st.className = 'status success';
+      st.textContent = 'Saved!';
+      probationEndDate = endDate;
+      updateProbationDisplay();
+      setTimeout(closeProbationModal, 1000);
+    }
+  });
+}
+
+function buyExactCredits() {
+  if (!calcData) return;
+  
+  fetch('/api/checkout/custom', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({ credits: calcData.creditsNeeded, priceCents: calcData.priceCents })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.url) window.location.href = d.url;
+  });
+}
+
+function updateProbationDisplay() {
+  if (!probationEndDate) {
+    document.getElementById('probationCard').style.display = 'none';
+    document.getElementById('noProbationCard').style.display = 'block';
+    return;
+  }
+  
+  document.getElementById('noProbationCard').style.display = 'none';
+  document.getElementById('probationCard').style.display = 'block';
+  
+  var end = new Date(probationEndDate);
+  var today = new Date();
+  today.setHours(0, 0, 0, 0);
+  var days = Math.ceil((end - today) / (1000 * 60 * 60 * 24));
+  
+  if (days <= 0) {
+    document.getElementById('probationCountdown').innerHTML = '<span style="color:#22c55e">🎉 Complete!</span>';
+  } else if (days <= 7) {
+    document.getElementById('probationCountdown').innerHTML = '<span style="color:#22c55e">' + days + ' days left!</span>';
+  } else {
+    document.getElementById('probationCountdown').textContent = days + ' days left';
+  }
+  
+  document.getElementById('probationEndDisplay').textContent = 'Ends: ' + end.toLocaleDateString();
+}
+
+// Onboarding functions
+function checkOnboarding(profile) {
+  // Show onboarding for new users who haven't completed it
+  if (!profile.onboarding_complete) {
+    document.getElementById('onboardingModal').classList.add('active');
+  }
+}
+
+function onboardNext(step) {
+  // Validate current step
+  if (step === 2) {
+    var county = document.getElementById('onboardCounty').value;
+    if (!county) { alert('Please select your county'); return; }
+  }
+  if (step === 3) {
+    var county = document.getElementById('onboardCounty').value;
+    if (county !== 'ftbend') {
+      var pin = document.getElementById('onboardPin').value;
+      if (!pin || pin.length !== 6) { alert('Please enter your 6-digit PIN'); return; }
+    }
+  }
+  if (step === 4) {
+    var method = document.getElementById('onboardMethod').value;
+    if (method === 'sms') {
+      var phone = document.getElementById('onboardPhone').value;
+      if (!phone) { alert('Please enter your phone number'); return; }
+    }
+  }
+  
+  document.querySelectorAll('.onboard-step').forEach(function(el) { el.style.display = 'none'; });
+  document.getElementById('onboardStep' + step).style.display = 'block';
+  
+  // Show/hide PIN vs Color based on county
+  if (step === 2) {
+    var county = document.getElementById('onboardCounty').value;
+    document.getElementById('onboardPinGroup').style.display = county === 'ftbend' ? 'none' : 'block';
+    document.getElementById('onboardColorGroup').style.display = county === 'ftbend' ? 'block' : 'none';
+  }
+}
+
+function selectOnboardMethod(method) {
+  document.querySelectorAll('#onboardingModal .method-option').forEach(function(el) { el.classList.remove('active'); });
+  event.target.closest('.method-option').classList.add('active');
+  document.getElementById('onboardMethod').value = method;
+  document.getElementById('onboardPhoneGroup').style.display = (method === 'sms' || method === 'both') ? 'block' : 'none';
+}
+
+function completeOnboarding() {
+  var county = document.getElementById('onboardCounty').value;
+  var pin = document.getElementById('onboardPin').value;
+  var color = document.getElementById('onboardColor').value;
+  var method = document.getElementById('onboardMethod').value;
+  var phone = document.getElementById('onboardPhone').value;
+  var endDate = document.getElementById('onboardEndDate').value;
+  var userEmail = document.getElementById('userEmail').textContent;
+  
+  // Save schedule with all the collected data
+  fetch('/api/schedule', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({
+      county: county,
+      pin: county === 'ftbend' ? '' : pin,
+      notifyNumber: phone || '',
+      notifyEmail: userEmail,
+      notifyMethod: method,
+      hour: 6 + Math.floor(Math.random() * 3),  // Random 6, 7, or 8
+      minute: Math.floor(Math.random() * (county === 'montgomery' ? 30 : 60)),  // 0-29 for 6-7am, 0-59 for 7-8am
+      timezone: 'America/Chicago',
+      retryOnUnknown: false,
+      quietMode: false
+    })
+  });
+  
+  // Save color if Ft Bend
+  if (county === 'ftbend' && color) {
+    fetch('/api/profile/color', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+      body: JSON.stringify({ color: color })
+    });
+  }
+  
+  // Save probation end date if provided
+  if (endDate) {
+    fetch('/api/profile/probation-end', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+      body: JSON.stringify({ endDate: endDate })
+    });
+  }
+  
+  // Mark onboarding complete
+  fetch('/api/profile/onboarding-complete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }
+  });
+  
+  document.getElementById('onboardingModal').classList.remove('active');
+  alert('🎉 Setup complete! Your schedule is now active.');
+  loadUser();
+}
+
+
+
+function calculateExactCredits() {
+  var endDate = document.getElementById('buyEndDate').value;
+  if (!endDate) {
+    document.getElementById('exactCalc').style.display = 'none';
+    return;
+  }
+  
+  var end = new Date(endDate);
+  var today = new Date();
+  today.setHours(0, 0, 0, 0);
+  
+  var days = Math.ceil((end - today) / (1000 * 60 * 60 * 24));
+  if (days < 1) {
+    document.getElementById('exactCalc').style.display = 'none';
+    alert('Please select a future date');
+    return;
+  }
+  
+  // Pricing: bulk rate of $0.22/credit, minimum $5
+  var currentCredits = parseInt(document.getElementById('credits').textContent) || 0; var credits = Math.max(0, days - currentCredits);
+  // Graduated pricing (like tax brackets)
+  var priceCents = 0;
+  if (credits <= 30) {
+    priceCents = credits * 50;                           // First 30 at $0.50
+  } else if (credits <= 90) {
+    priceCents = (30 * 50) + ((credits - 30) * 42);      // First 30 at $0.50, rest at $0.42
+  } else {
+    priceCents = (30 * 50) + (60 * 42) + ((credits - 90) * 33); // First 30 at $0.50, next 60 at $0.42, rest at $0.33
+  }
+  priceCents = Math.max(500, priceCents);
+  
+  document.getElementById('exactDays').textContent = days;
+  document.getElementById('exactCredits').textContent = credits; document.getElementById('existingCreditsNote').textContent = currentCredits > 0 ? '(You have ' + currentCredits + ' credits - already deducted)' : '';
+  document.getElementById('exactPrice').textContent = '$' + (priceCents / 100).toFixed(2);
+  document.getElementById('exactCalc').style.display = 'block';
+  
+  // Store for purchase
+  window.exactPurchase = { credits: credits, priceCents: priceCents, endDate: endDate };
+}
+
+function buyExactCredits() {
+  if (!window.exactPurchase) return;
+  
+  // Save probation end date
+  fetch('/api/profile/probation-end', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({ endDate: window.exactPurchase.endDate })
+  });
+  
+  // Checkout for exact credits
+  fetch('/api/checkout/custom', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({ 
+      credits: window.exactPurchase.credits, 
+      priceCents: window.exactPurchase.priceCents 
+    })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.url) window.location.href = d.url;
+    else if (d.error) alert('Error: ' + d.error);
+  });
+}
+
+init();
+// Admin check moved to loadUser()
+
+// Toggle PIN field based on county
+function updateCountyUI(selectId, pinId) {
+  var county = document.getElementById(selectId).value;
+  var pinEl = document.getElementById(pinId);
+  if (!pinEl) return;
+  var pinGroup = pinEl.closest('.form-group');
+  if (!pinGroup) pinGroup = pinEl.parentElement;
+  
+  var isFtbend = county === 'ftbend';
+  
+  if (isFtbend) {
+    pinGroup.style.display = 'none';
+    pinEl.required = false;
+    pinEl.value = '';
+  } else {
+    pinGroup.style.display = 'block';
+    pinEl.required = true;
+  }
+  
+  // Handle Ft Bend time selector
+  var ftbendNote = document.getElementById('schedFtbendNote');
+  var ftbendTime = document.getElementById('ftbendTimeSelect');
+  var schedTimeNote = document.getElementById('schedTimeNote');
+  var schedHourGroup = document.getElementById('schedHour');
+  
+  var ftbendOfficeGroup = document.getElementById("ftbendOfficeGroup");
+  var callFtbendOfficeGroup = document.getElementById("callFtbendOfficeGroup");
+  if (callFtbendOfficeGroup) callFtbendOfficeGroup.style.display = isFtbend ? "block" : "none";
+  if (ftbendOfficeGroup) ftbendOfficeGroup.style.display = isFtbend ? "block" : "none";
+  
+  if (ftbendNote) ftbendNote.style.display = isFtbend ? 'block' : 'none';
+  if (ftbendTime) ftbendTime.style.display = isFtbend ? 'flex' : 'none';
+  if (schedTimeNote) schedTimeNote.style.display = isFtbend ? 'none' : 'block';
+  if (schedHourGroup && schedHourGroup.parentElement) schedHourGroup.parentElement.style.display = isFtbend ? 'none' : 'flex';
+  
+  // Handle time picker for schedule form
+  if (selectId === 'schedCounty') {
+    var timeNote = document.getElementById('schedTimeNote');
+    var ftbendNote = document.getElementById('schedFtbendNote');
+    var schedHour = document.getElementById('schedHour');
+    if (timeNote && ftbendNote && schedHour) {
+      var timeRow = schedHour.closest('div[style*="flex"]');
+      if (county === 'ftbend') {
+        timeNote.style.display = 'none';
+        ftbendNote.style.display = 'block';
+        if (timeRow) timeRow.style.display = 'none';
+      } else {
+        timeNote.style.display = 'block';
+        ftbendNote.style.display = 'none';
+        if (timeRow) timeRow.style.display = 'flex';
+      }
+    }
+  }
+}
+document.getElementById('county').addEventListener('change', function() { updateCountyUI('county', 'pin'); });
+if (document.getElementById('schedCounty')) {
+  document.getElementById('schedCounty').addEventListener('change', function() { updateCountyUI('schedCounty', 'schedPin'); });
+}
+</script>
+
+<!-- PROBATION MODAL -->
+<div class="modal" id="probationModal">
+  <div class="modal-content" style="max-width:450px">
+    <button class="modal-close" onclick="closeProbationModal()">&times;</button>
+    <h2 style="margin-bottom:20px">📅 Probation End Date</h2>
+    
+    <div class="form-group">
+      <label>When does your probation end?</label>
+      <input type="date" id="probationEndDate">
+    </div>
+    
+    <div id="probationCalc" style="display:none;margin:20px 0">
+      <div class="info-box green">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <strong id="calcDays">0</strong> days remaining<br>
+            <span style="color:#8892b0">= <strong id="calcCredits">0</strong> credits needed</span>
+          </div>
+          <div style="text-align:right">
+            <div style="font-size:1.5rem;font-weight:700;color:#22c55e" id="calcPrice">$0</div>
+            <div style="font-size:0.75rem;color:#8892b0">one-time</div>
+          </div>
+        </div>
+      </div>
+      <button class="btn btn-green" onclick="buyExactCredits()" style="margin-top:10px">Buy Exact Credits</button>
+    </div>
+    
+    <button class="btn" onclick="saveProbationDate()">💾 Save Date</button>
+    <div id="probationStatus" class="status" style="display:none;margin-top:10px"></div>
+  </div>
+</div>
+
+<!-- ONBOARDING MODAL -->
+<div class="modal" id="onboardingModal">
+  <div class="modal-content" style="max-width:500px">
+    <h2 style="color:#00d9ff;margin-bottom:20px">👋 Welcome to ProbationCall!</h2>
+    
+    <div id="onboardStep1" class="onboard-step">
+      <h3 style="margin-bottom:15px">Step 1: Select Your County</h3>
+      <div class="form-group">
+        <select id="onboardCounty" style="font-size:1.1rem;padding:15px">
+          <option value="">-- Select County --</option>
+          <option value="montgomery">Montgomery County</option>
+          <option value="ftbend">Fort Bend County</option>
+        </select>
+      </div>
+      <button class="btn" onclick="onboardNext(2)">Next →</button>
+    </div>
+    
+    <div id="onboardStep2" class="onboard-step" style="display:none">
+      <h3 style="margin-bottom:15px">Step 2: Your Details</h3>
+      <div class="form-group" id="onboardPinGroup">
+        <label>Your 6-Digit PIN</label>
+        <input type="text" id="onboardPin" maxlength="6" placeholder="123456" style="font-size:1.2rem;text-align:center;letter-spacing:5px">
+      </div>
+      <div class="form-group" id="onboardColorGroup" style="display:none">
+        <label>Your Assigned Color</label>
+        <input type="text" id="onboardColor" placeholder="e.g. Blue, Red, Green" style="font-size:1.1rem">
+      </div>
+      <button class="btn" onclick="onboardNext(3)">Next →</button>
+    </div>
+    
+    <div id="onboardStep3" class="onboard-step" style="display:none">
+      <h3 style="margin-bottom:15px">Step 3: Notification Preference</h3>
+      <div class="method-select">
+        <div class="method-option active" onclick="selectOnboardMethod('email')"><div class="icon">📧</div><div class="label">Email</div></div>
+        <div class="method-option" onclick="selectOnboardMethod('sms')"><div class="icon">💬</div><div class="label">SMS</div></div>
+        <div class="method-option" onclick="selectOnboardMethod('both')"><div class="icon">📧+💬</div><div class="label">Both</div></div>
+      </div>
+      <input type="hidden" id="onboardMethod" value="email">
+      <div class="form-group" id="onboardPhoneGroup" style="display:none;margin-top:15px">
+        <label>Phone Number</label>
+        <input type="tel" id="onboardPhone" placeholder="+1234567890" onblur="formatPhoneNumber(this)">
+      </div>
+      <button class="btn" onclick="onboardNext(4)">Next →</button>
+    </div>
+    
+    <div id="onboardStep4" class="onboard-step" style="display:none">
+      <h3 style="margin-bottom:15px">Step 4: Probation End Date (Optional)</h3>
+      <p style="color:#8892b0;margin-bottom:15px">This helps you buy the exact credits you need.</p>
+      <div class="form-group">
+        <input type="date" id="onboardEndDate">
+      </div>
+      <button class="btn btn-green" onclick="completeOnboarding()">🎉 Complete Setup</button>
+      <button class="btn btn-secondary" onclick="completeOnboarding()" style="margin-top:10px">Skip for now</button>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

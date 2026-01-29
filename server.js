@@ -287,7 +287,7 @@ app.get('/r/:code', function(req, res) {
 });
 
 app.get('/api/user', auth, async function(req, res) {
-  var historyResult = await supabase.from('call_history').select('*').eq('user_id', req.user.id).or('county.is.null,county.neq.ftbend').order('created_at', { ascending: false }).limit(30);
+  var historyResult = await supabase.from('call_history').select('*').eq('user_id', req.user.id).or('county.is.null,county.neq.ftbend').order('created_at', { ascending: false }).limit(500);
   var scheduleResult = await supabase.from('user_schedules').select('*').eq('user_id', req.user.id).single();
   
   // Get referral stats
