@@ -174,6 +174,24 @@ select option { background: #1a1a2e; color: #fff; }
 
 .ftbend-grid { grid-template-columns: repeat(3, 1fr) !important; }
 @media (max-width: 768px) { .ftbend-grid { grid-template-columns: 1fr !important; } }
+/* Test Stats Card */
+.test-stats-card{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:20px;margin-bottom:20px}
+.test-stats-card h3{color:#00d9ff;margin-bottom:15px;font-size:1rem;display:flex;align-items:center;gap:8px}
+.test-stats-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+.test-stat{background:rgba(0,0,0,0.2);border-radius:8px;padding:12px;text-align:center}
+.test-stat .value{font-size:1.4rem;font-weight:700;color:#fff}
+.test-stat .label{font-size:0.75rem;color:#8892b0;margin-top:4px}
+.test-stat.highlight .value{color:#00d9ff}
+.test-stat.warning .value{color:#f59e0b}
+.test-stat.danger .value{color:#ef4444}
+.test-prediction{background:rgba(0,217,255,0.1);border:1px solid rgba(0,217,255,0.3);border-radius:8px;padding:12px;margin-top:12px;text-align:center}
+.test-prediction .predict-text{font-size:1.1rem;font-weight:600;color:#00d9ff}
+.test-prediction .confidence{font-size:0.75rem;color:#8892b0;margin-top:5px}
+.pattern-row{display:flex;gap:4px;justify-content:center;margin-top:8px}
+.pattern-day{width:28px;height:28px;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.65rem;font-weight:600}
+.pattern-day.low{background:rgba(34,197,94,0.2);color:#22c55e}
+.pattern-day.med{background:rgba(245,158,11,0.2);color:#f59e0b}
+.pattern-day.high{background:rgba(239,68,68,0.2);color:#ef4444}
 </style>
 </head>
 <body>
@@ -248,6 +266,24 @@ select option { background: #1a1a2e; color: #fff; }
     <button class="buy-btn" onclick="showBuyModal()">Buy Credits</button>
   </div>
   
+
+  <div class="test-stats-card" id="testStatsCard" style="display:none">
+    <h3>📊 Test Frequency Analysis</h3>
+    <div class="test-stats-grid">
+      <div class="test-stat highlight"><div class="value" id="statAvgInterval">--</div><div class="label">Avg Days Between Tests</div></div>
+      <div class="test-stat"><div class="value" id="statTotalTests">--</div><div class="label">Total Tests</div></div>
+      <div class="test-stat" id="statDaysSinceBox"><div class="value" id="statDaysSince">--</div><div class="label">Days Since Last Test</div></div>
+      <div class="test-stat"><div class="value" id="statTestRate">--</div><div class="label">Tests Per Month</div></div>
+    </div>
+    <div class="test-prediction" id="testPrediction">
+      <div class="predict-text" id="predictText">Gathering data...</div>
+      <div class="confidence" id="predictConfidence"></div>
+    </div>
+    <div style="margin-top:12px;text-align:center">
+      <div style="font-size:0.75rem;color:#8892b0;margin-bottom:6px">Test Likelihood by Day</div>
+      <div class="pattern-row" id="patternRow"></div>
+    </div>
+  </div>
   <div class="card" id="probationCard" style="display:none">
     <div style="display:flex;justify-content:space-between;align-items:center">
       <div>
@@ -988,6 +1024,7 @@ function loadUser() {
           return '<div class="history-item"><div class="history-header"><div><span class="history-date">' + new Date(h.created_at).toLocaleString() + '</span><span class="history-county">' + county + '</span>' + pin + '</div><span class="history-result ' + h.result + '">' + txt + '</span></div>' + recording + transcript + '</div>';
         }).join('');
       }
+      calculateTestStats(d.history);
     });
 }
 
@@ -1638,6 +1675,59 @@ function updateCountyUI(selectId, pinId) {
 document.getElementById('county').addEventListener('change', function() { updateCountyUI('county', 'pin'); });
 if (document.getElementById('schedCounty')) {
   document.getElementById('schedCounty').addEventListener('change', function() { updateCountyUI('schedCounty', 'schedPin'); });
+}
+
+// Test Frequency Analysis
+function calculateTestStats(history) {
+  var card = document.getElementById("testStatsCard");
+  if (!history || history.length < 2) { card.style.display = "none"; return; }
+  var tests = history.filter(function(h) { return h.result === "MUST_TEST"; }).sort(function(a, b) { return new Date(a.created_at) - new Date(b.created_at); });
+  if (tests.length < 2) { card.style.display = "none"; return; }
+  card.style.display = "block";
+  var intervals = [];
+  for (var i = 1; i < tests.length; i++) {
+    var days = Math.round((new Date(tests[i].created_at) - new Date(tests[i-1].created_at)) / (1000 * 60 * 60 * 24));
+    if (days > 0) intervals.push(days);
+  }
+  var avgInterval = intervals.length > 0 ? (intervals.reduce(function(a,b) { return a+b; }, 0) / intervals.length).toFixed(1) : "--";
+  var lastTest = tests[tests.length - 1];
+  var daysSince = Math.round((new Date() - new Date(lastTest.created_at)) / (1000 * 60 * 60 * 24));
+  var firstTest = tests[0];
+  var totalDays = Math.max(1, Math.round((new Date() - new Date(firstTest.created_at)) / (1000 * 60 * 60 * 24)));
+  var testsPerMonth = ((tests.length / totalDays) * 30).toFixed(1);
+  var dayCount = [0,0,0,0,0,0,0];
+  tests.forEach(function(t) { dayCount[new Date(t.created_at).getDay()]++; });
+  var maxDay = Math.max.apply(null, dayCount);
+  var dayNames = ["S","M","T","W","T","F","S"];
+  document.getElementById("statAvgInterval").textContent = avgInterval;
+  document.getElementById("statTotalTests").textContent = tests.length;
+  document.getElementById("statDaysSince").textContent = daysSince;
+  document.getElementById("statTestRate").textContent = testsPerMonth;
+  var dsBox = document.getElementById("statDaysSinceBox");
+  dsBox.className = "test-stat";
+  if (avgInterval !== "--") {
+    var avg = parseFloat(avgInterval);
+    if (daysSince >= avg) dsBox.className = "test-stat danger";
+    else if (daysSince >= avg * 0.7) dsBox.className = "test-stat warning";
+  }
+  var predictEl = document.getElementById("predictText");
+  var confEl = document.getElementById("predictConfidence");
+  if (avgInterval !== "--" && intervals.length >= 2) {
+    var avg = parseFloat(avgInterval);
+    var daysUntil = Math.round(avg - daysSince);
+    if (daysUntil <= 0) { predictEl.textContent = "⚠️ Test likely any day now"; predictEl.style.color = "#ef4444"; }
+    else if (daysUntil <= 2) { predictEl.textContent = "🔶 Test likely within " + daysUntil + " day" + (daysUntil > 1 ? "s" : ""); predictEl.style.color = "#f59e0b"; }
+    else { predictEl.textContent = "📊 Next test estimated in ~" + daysUntil + " days"; predictEl.style.color = "#00d9ff"; }
+    var confidence = Math.min(95, 50 + (intervals.length * 5));
+    confEl.textContent = "Based on " + tests.length + " tests over " + totalDays + " days (" + confidence + "% confidence)";
+  } else { predictEl.textContent = "Need more data for prediction"; predictEl.style.color = "#8892b0"; confEl.textContent = "Keep logging tests to improve accuracy"; }
+  var patternHtml = "";
+  for (var d = 0; d < 7; d++) {
+    var pct = maxDay > 0 ? (dayCount[d] / maxDay) : 0;
+    var cls = pct >= 0.7 ? "high" : pct >= 0.3 ? "med" : "low";
+    patternHtml += "<div class=\"pattern-day " + cls + "\">" + dayNames[d] + "</div>";
+  }
+  document.getElementById("patternRow").innerHTML = patternHtml;
 }
 </script>
 
