@@ -863,15 +863,18 @@ function renderColorAnalytics(data) {
     predHtml += "<div class='prediction-item " + cls + "'><div class='color-name'>" + p.color + "</div><div class='days'>" + p.daysSince + " days ago</div><div class='days'>avg: every " + p.avgInterval + "d</div></div>";
   });
   document.getElementById("colorPredictions").innerHTML = predHtml;
-  var days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  var dayHtml = "";
-  days.forEach(function(day) {
-    var colors = (data.dayPatterns[day] || []).filter(function(c) { return skipColors.indexOf(c.color.toLowerCase()) === -1; });
+  var days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  var shortDays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  var dayHtml = "<div style='max-width:500px;margin:0 auto'>";
+  days.forEach(function(day, idx) {
+    var colors = (data.dayPatterns[shortDays[idx]] || []).filter(function(c) { return skipColors.indexOf(c.color.toLowerCase()) === -1; });
     if (colors.length === 0) return;
-    var colorList = colors.slice(0, 4).map(function(c) { return "<span style='color:#fff;margin-right:10px'>" + c.color + " <span style='color:#8892b0'>(" + c.count + ")</span></span>"; }).join("");
-    dayHtml += "<div style='display:flex;flex-wrap:wrap;align-items:center;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.05)'><div style='width:50px;color:#00d9ff;font-weight:700'>" + day + "</div><div style='flex:1;text-transform:capitalize;font-size:0.9rem'>" + colorList + "</div></div>";
+    var colorList = colors.slice(0, 3).map(function(c) { return c.color + " (" + c.count + ")"; }).join(", ");
+    dayHtml += "<div style='display:flex;justify-content:space-between;padding:12px 15px;margin-bottom:6px;background:rgba(0,0,0,0.2);border-radius:8px'><span style='color:#00d9ff;font-weight:600'>" + day + "</span><span style='color:#fff;text-transform:capitalize'>" + colorList + "</span></div>";
   });
-  document.getElementById("dayPatterns").innerHTML = dayHtml || "<p style='color:#666;text-align:center'>No pattern data yet</p>";
+  dayHtml += "</div>";
+  document.getElementById("dayPatterns").innerHTML = dayHtml;
+}
 }
 
 
