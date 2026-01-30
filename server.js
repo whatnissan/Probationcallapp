@@ -8,41 +8,39 @@ const path = require('path');
 const cron = require('node-cron');
 const Stripe = require('stripe');
 const { createClient } = require('@supabase/supabase-js');
-const nodemailer = require("nodemailer");
 
-// --- BREVO EMAIL CONFIGURATION ---
-const brevoTransporter = nodemailer.createTransport({
-  host: 'smtp-relay.brevo.com',
-  port: 587,
-  secure: false, // Port 587 uses STARTTLS to prevent hanging
-  auth: {
-    user: process.env.BREVO_USER,
-    pass: process.env.BREVO_KEY
-  },
-  tls: {
-    rejectUnauthorized: false // Helps prevent handshake errors
-  },
-  connectionTimeout: 10000, // Throw error after 10 seconds instead of hanging
-  logger: true, // Log details to console
-  debug: true
-});
 
-// Shim to make Brevo compatible with your existing code
+// --- BREVO EMAIL VIA HTTP API ---
 const sgMail = {
   setApiKey: () => {},
   send: async (msg) => {
     try {
-      var fromAddr = typeof msg.from === "object" ? msg.from.name + " <" + msg.from.email + ">" : msg.from;
-      console.log("[EMAIL] Sending via Brevo to:", msg.to);
-      await brevoTransporter.sendMail({
-        from: fromAddr,
-        to: msg.to,
-        subject: msg.subject,
-        text: msg.text || "",
-        html: msg.html || msg.text
+      var fromEmail = typeof msg.from === "object" ? msg.from.email : msg.from;
+      var fromName = typeof msg.from === "object" ? msg.from.name : "ProbationCall";
+      console.log("[EMAIL] Sending via Brevo API to:", msg.to);
+      var response = await fetch("https://api.brevo.com/v3/smtp/email", {
+        method: "POST",
+        headers: {
+          "accept": "application/json",
+          "api-key": process.env.BREVO_KEY,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          sender: { name: fromName, email: fromEmail },
+          to: [{ email: msg.to }],
+          subject: msg.subject,
+          textContent: msg.text || "",
+          htmlContent: msg.html || msg.text
+        })
       });
-      console.log("[EMAIL] ✅ Sent successfully to", msg.to);
-      return { success: true };
+      if (response.ok) {
+        console.log("[EMAIL] ✅ Sent successfully to", msg.to);
+        return { success: true };
+      } else {
+        var err = await response.text();
+        console.error("[EMAIL] ❌ Brevo API Error:", err);
+        throw new Error(err);
+      }
     } catch (error) {
       console.error("[EMAIL] ❌ Brevo Error:", error.message);
       throw error;
