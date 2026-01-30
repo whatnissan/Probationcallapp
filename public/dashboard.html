@@ -193,6 +193,25 @@ select option { background: #1a1a2e; color: #fff; }
 .pattern-day.med{background:rgba(245,158,11,0.2);color:#f59e0b}
 .pattern-day.high{background:rgba(239,68,68,0.2);color:#ef4444}
 </style>
+/* Fort Bend Analytics */
+.analytics-card{background:linear-gradient(135deg,rgba(139,92,246,0.1),rgba(0,217,255,0.1));border:1px solid rgba(139,92,246,0.3);border-radius:12px;padding:20px;margin-bottom:15px}
+.analytics-card h3{color:#a78bfa;margin-bottom:15px;font-size:1rem}
+.color-bar{display:flex;align-items:center;margin-bottom:8px;gap:10px}
+.color-bar .name{width:80px;font-size:0.85rem;text-transform:capitalize}
+.color-bar .bar-wrap{flex:1;background:rgba(0,0,0,0.3);border-radius:4px;height:24px;overflow:hidden}
+.color-bar .bar{height:100%;border-radius:4px;display:flex;align-items:center;justify-content:flex-end;padding-right:8px;font-size:0.75rem;font-weight:600;min-width:30px}
+.color-bar .count{width:50px;text-align:right;font-size:0.8rem;color:#8892b0}
+.prediction-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px}
+.prediction-item{background:rgba(0,0,0,0.2);border-radius:8px;padding:12px;text-align:center}
+.prediction-item .color-name{font-size:0.9rem;font-weight:600;text-transform:capitalize;margin-bottom:5px}
+.prediction-item .days{font-size:0.75rem;color:#8892b0}
+.prediction-item.high{border:2px solid #ef4444}.prediction-item.high .color-name{color:#ef4444}
+.prediction-item.medium{border:2px solid #f59e0b}.prediction-item.medium .color-name{color:#f59e0b}
+.prediction-item.low{border:2px solid #22c55e}.prediction-item.low .color-name{color:#22c55e}
+.day-pattern-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:8px;margin-top:10px}
+.day-col{background:rgba(0,0,0,0.2);border-radius:8px;padding:10px 5px;text-align:center}
+.day-col .day-name{font-size:0.75rem;color:#8892b0;margin-bottom:8px}
+.day-col .colors{font-size:0.7rem;line-height:1.6}
 </head>
 <body>
 
@@ -529,6 +548,24 @@ select option { background: #1a1a2e; color: #fff; }
             </div>
           </div>
         </div>
+    <div class="analytics-card" id="ftbendAnalytics" style="display:none">
+      <h3>📊 Color Analytics & Predictions</h3>
+      <div style="margin-bottom:20px">
+        <h4 style="color:#00d9ff;font-size:0.9rem;margin-bottom:12px">🏆 Most Called Colors (All Time)</h4>
+        <div id="topColorsChart"></div>
+      </div>
+      <div style="margin-bottom:20px">
+        <h4 style="color:#00d9ff;font-size:0.9rem;margin-bottom:12px">🔮 Prediction: Colors Due Soon</h4>
+        <p style="font-size:0.75rem;color:#8892b0;margin-bottom:10px">Based on historical patterns - colors that havent been called recently</p>
+        <div class="prediction-grid" id="colorPredictions"></div>
+        <div style="font-size:0.65rem;color:#666;margin-top:10px;text-align:center">🔴 High chance (overdue) · 🟡 Medium · 🟢 Low chance</div>
+      </div>
+      <div>
+        <h4 style="color:#00d9ff;font-size:0.9rem;margin-bottom:12px">📅 Colors by Day of Week</h4>
+        <p style="font-size:0.75rem;color:#8892b0;margin-bottom:10px">Which colors get called most on each day</p>
+        <div class="day-pattern-grid" id="dayPatterns"></div>
+      </div>
+    </div>
         <div style="color:#8892b0;text-align:center;margin-top:15px" id="colorDate"></div>
       </div>
       <div class="info-box">
@@ -791,6 +828,53 @@ function loadFtbendColors() {
       window.ftbendColorData = d.colors || [];
       renderFtbendHistory("all");
     });
+
+  // Load analytics
+  fetch("/api/ftbend/analytics", { headers: { Authorization: "Bearer " + token } })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.error || !d.topColors || d.topColors.length === 0) {
+        document.getElementById("ftbendAnalytics").style.display = "none";
+        return;
+      }
+      document.getElementById("ftbendAnalytics").style.display = "block";
+      renderColorAnalytics(d);
+    }).catch(function() { document.getElementById("ftbendAnalytics").style.display = "none"; });
+}
+
+
+function renderColorAnalytics(data) {
+  // Top Colors Bar Chart
+  var maxCount = data.topColors[0] ? data.topColors[0].count : 1;
+  var colorMap = {red:"#ef4444",blue:"#3b82f6",green:"#22c55e",yellow:"#eab308",orange:"#f97316",purple:"#a855f7",pink:"#ec4899",brown:"#92400e",black:"#374151",white:"#e5e7eb",gray:"#6b7280",grey:"#6b7280",gold:"#fbbf24",silver:"#9ca3af",tan:"#d4a574",teal:"#14b8a6",navy:"#1e3a5a",maroon:"#7f1d1d",coral:"#f97171",salmon:"#fa8072",peach:"#ffcba4",cream:"#fffdd0",ivory:"#fffff0",lavender:"#e6e6fa",violet:"#8b5cf6",magenta:"#d946ef",cyan:"#06b6d4",aqua:"#00ffff",turquoise:"#40e0d0",lime:"#84cc16",olive:"#84cc16",jade:"#00a86b",emerald:"#50c878",forest:"#228b22",mint:"#98fb98",ruby:"#e0115f",scarlet:"#ff2400",crimson:"#dc143c",burgundy:"#800020",wine:"#722f37",cherry:"#de3163",rose:"#ff007f",rust:"#b7410e",copper:"#b87333",bronze:"#cd7f32",amber:"#ffbf00",canary:"#ffef00",lemon:"#fff44f",apricot:"#fbceb1",auburn:"#a52a2a",beaver:"#9f8170",chestnut:"#954535",fuchsia:"#ff00ff",lilac:"#c8a2c8",orchid:"#da70d6",plum:"#dda0dd",pearl:"#eae0c8",sapphire:"#0f52ba"};
+  var barsHtml = "";
+  data.topColors.forEach(function(c) {
+    var barColor = colorMap[c.color] || "#8892b0";
+    var width = Math.max(5, (c.count / maxCount) * 100);
+    barsHtml += "<div class='color-bar'><div class='name'>" + c.color + "</div><div class='bar-wrap'><div class='bar' style='width:" + width + "%;background:" + barColor + "'>" + c.pct + "%</div></div><div class='count'>" + c.count + "x</div></div>";
+  });
+  document.getElementById("topColorsChart").innerHTML = barsHtml;
+  
+  // Predictions
+  var predHtml = "";
+  var sorted = data.predictions.sort(function(a, b) {
+    var order = {high: 0, medium: 1, low: 2};
+    return (order[a.likelihood] || 2) - (order[b.likelihood] || 2);
+  });
+  sorted.slice(0, 12).forEach(function(p) {
+    predHtml += "<div class='prediction-item " + p.likelihood + "'><div class='color-name'>" + p.color + "</div><div class='days'>" + p.daysSince + " days ago</div><div class='days'>avg: every " + p.avgInterval + "d</div></div>";
+  });
+  document.getElementById("colorPredictions").innerHTML = predHtml;
+  
+  // Day Patterns
+  var days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  var dayHtml = "";
+  days.forEach(function(day) {
+    var colors = data.dayPatterns[day] || [];
+    var colorsStr = colors.slice(0, 3).map(function(c) { return "<span style='text-transform:capitalize'>" + c.color + "</span> <span style='color:#666'>(" + c.count + ")</span>"; }).join("<br>");
+    dayHtml += "<div class='day-col'><div class='day-name'>" + day + "</div><div class='colors'>" + (colorsStr || "-") + "</div></div>";
+  });
+  document.getElementById("dayPatterns").innerHTML = dayHtml;
 }
 
 function renderFtbendHistory(filter) {

@@ -324,6 +324,55 @@ app.get('/api/user', auth, async function(req, res) {
   });
 });
 
+// Fort Bend Color Analytics
+app.get("/api/ftbend/analytics", auth, async function(req, res) {
+  try {
+    var result = await supabase.from("daily_county_status").select("*").order("date", { ascending: false }).limit(365);
+    if (result.error) return res.status(500).json({ error: result.error.message });
+    var data = result.data || [];
+    var colorCounts = {};
+    var dayOfWeekCounts = {};
+    var officeColors = { missouri: {}, rosenberg: {}, rosenberg2: {} };
+    var recentColors = { missouri: [], rosenberg: [], rosenberg2: [] };
+    var dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    data.forEach(function(r) {
+      if (!r.color) return;
+      var color = r.color.toLowerCase();
+      colorCounts[color] = (colorCounts[color] || 0) + 1;
+      var dow = new Date(r.date).getDay();
+      if (!dayOfWeekCounts[dow]) dayOfWeekCounts[dow] = {};
+      dayOfWeekCounts[dow][color] = (dayOfWeekCounts[dow][color] || 0) + 1;
+      var office = r.county ? r.county.replace("ftbend_", "") : "missouri";
+      if (officeColors[office]) {
+        officeColors[office][color] = (officeColors[office][color] || 0) + 1;
+        if (recentColors[office].length < 30) recentColors[office].push({ date: r.date, color: r.color });
+      }
+    });
+    var sortedColors = Object.keys(colorCounts).sort(function(a, b) { return colorCounts[b] - colorCounts[a]; });
+    var topColors = sortedColors.slice(0, 15).map(function(c) { return { color: c, count: colorCounts[c], pct: ((colorCounts[c] / data.length) * 100).toFixed(1) }; });
+    var dayPatterns = {};
+    for (var d = 0; d < 7; d++) {
+      if (dayOfWeekCounts[d]) {
+        var sorted = Object.keys(dayOfWeekCounts[d]).sort(function(a, b) { return dayOfWeekCounts[d][b] - dayOfWeekCounts[d][a]; });
+        dayPatterns[dayNames[d]] = sorted.slice(0, 5).map(function(c) { return { color: c, count: dayOfWeekCounts[d][c] }; });
+      }
+    }
+    var lastCalled = {};
+    data.forEach(function(r) {
+      if (r.color && !lastCalled[r.color.toLowerCase()]) lastCalled[r.color.toLowerCase()] = r.date;
+    });
+    var predictions = sortedColors.slice(0, 20).map(function(c) {
+      var lastDate = lastCalled[c];
+      var daysSince = lastDate ? Math.round((new Date() - new Date(lastDate)) / (1000 * 60 * 60 * 24)) : 999;
+      var avgInterval = data.length > 0 ? Math.round(data.length / (colorCounts[c] || 1)) : 0;
+      return { color: c, count: colorCounts[c], daysSince: daysSince, avgInterval: avgInterval, likelihood: daysSince >= avgInterval ? "high" : daysSince >= avgInterval * 0.7 ? "medium" : "low" };
+    });
+    res.json({ totalRecords: data.length, topColors: topColors, dayPatterns: dayPatterns, predictions: predictions, recentColors: recentColors, officeColors: officeColors });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Apply referral code (called during signup or first visit)
 app.post('/api/apply-referral', auth, async function(req, res) {
   var code = req.body.code;
