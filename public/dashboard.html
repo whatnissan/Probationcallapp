@@ -863,24 +863,17 @@ function renderColorAnalytics(data) {
     predHtml += "<div class='prediction-item " + cls + "'><div class='color-name'>" + p.color + "</div><div class='days'>" + p.daysSince + " days ago</div><div class='days'>avg: every " + p.avgInterval + "d</div></div>";
   });
   document.getElementById("colorPredictions").innerHTML = predHtml;
-  var days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  var dayHtml = "<table style='width:100%;border-collapse:collapse;font-size:0.8rem'><thead><tr>";
-  days.forEach(function(d) { dayHtml += "<th style='padding:8px 4px;color:#8892b0;font-weight:600'>" + d + "</th>"; });
-  dayHtml += "</tr></thead><tbody>";
-  for (var row = 0; row < 3; row++) {
-    dayHtml += "<tr>";
-    days.forEach(function(day) {
-      var colors = (data.dayPatterns[day] || []).filter(function(c) { return skipColors.indexOf(c.color.toLowerCase()) === -1; });
-      var c = colors[row];
-      if (c) {
-        var bg = colorMap[c.color.toLowerCase()] || "#8892b0";
-        var txt = lightColors.indexOf(c.color.toLowerCase()) !== -1 ? "#000" : "#fff";
-        dayHtml += "<td style='padding:4px;text-align:center'><span style='background:" + bg + ";color:" + txt + ";padding:3px 6px;border-radius:4px;font-size:0.7rem'>" + c.color + " (" + c.count + ")</span></td>";
-      } else {
-        dayHtml += "<td></td>";
-      }
-    });
-    dayHtml += "</tr>";
+  var days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  var dayHtml = "";
+  days.forEach(function(day) {
+    var colors = (data.dayPatterns[day.slice(0,3)] || []).filter(function(c) { return skipColors.indexOf(c.color.toLowerCase()) === -1; });
+    if (colors.length === 0) return;
+    var topColors = colors.slice(0, 3).map(function(c) { return c.color + " (" + c.count + ")"; }).join(", ");
+    dayHtml += "<div style='display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.05)'><span style='color:#00d9ff;font-weight:600'>" + day + "</span><span style='color:#8892b0'>" + topColors + "</span></div>";
+  });
+  document.getElementById("dayPatterns").innerHTML = dayHtml;
+}
+
   }
   dayHtml += "</tbody></table>";
   document.getElementById("dayPatterns").innerHTML = dayHtml;
