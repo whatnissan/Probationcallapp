@@ -7,7 +7,38 @@ const path = require('path');
 const cron = require('node-cron');
 const Stripe = require('stripe');
 const { createClient } = require('@supabase/supabase-js');
-const sgMail = require('@sendgrid/mail');
+const nodemailer = require('nodemailer');
+
+// --- BREVO EMAIL CONFIGURATION ---
+const brevoTransporter = nodemailer.createTransport({
+  host: 'smtp-relay.brevo.com',
+  port: 587,
+  auth: {
+    user: process.env.BREVO_USER,
+    pass: process.env.BREVO_KEY
+  }
+});
+
+// Shim to make Brevo compatible with your existing code
+const sgMail = {
+  setApiKey: () => {}, 
+  send: async (msg) => {
+    try {
+      console.log('Sending email via Brevo to:', msg.to);
+      await brevoTransporter.sendMail({
+        from: msg.from,
+        to: msg.to,
+        subject: msg.subject,
+        html: msg.html || msg.text,
+      });
+      console.log('✅ Email sent successfully');
+    } catch (error) {
+      console.error('❌ Brevo Error:', error);
+    }
+  }
+};
+// ---------------------------------
+
 
 const app = express();
 const server = http.createServer(app);
@@ -24,8 +55,8 @@ const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_A
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
-if (process.env.SENDGRID_API_KEY) {
-  sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+if (process.env.BREVO_KEY) {
+  sgMail.setApiKey(process.env.BREVO_KEY);
   console.log('[EMAIL] SendGrid configured');
 }
 
@@ -541,7 +572,7 @@ app.post('/api/affiliate/request-payout', auth, async function(req, res) {
   await supabase.from('profiles').update({ affiliate_balance_cents: 0 }).eq('id', req.user.id);
   
   // Notify you (the owner) about payout request
-  if (process.env.SENDGRID_API_KEY) {
+  if (process.env.BREVO_KEY) {
     await sgMail.send({
       to: 'whatnissan@gmail.com',
       from: FROM_EMAIL,
@@ -1230,7 +1261,7 @@ async function notify(phone, email, method, message, callId) {
 
 
 async function sendEmail(to, message, callId) {
-  if (!process.env.SENDGRID_API_KEY) {
+  if (!process.env.BREVO_KEY) {
     log(callId, "SendGrid not configured", "error");
     return { success: false, error: "Email not configured" };
   }
@@ -1346,7 +1377,7 @@ server.listen(PORT, function() {
   console.log('ProbationCall Server Running');
   console.log('Port: ' + PORT);
   console.log('Voice: ' + TWILIO_VOICE_NUMBER);
-  console.log('Email: ' + (process.env.SENDGRID_API_KEY ? 'SendGrid configured' : 'Not configured'));
+  console.log('Email: ' + (process.env.BREVO_KEY ? 'SendGrid configured' : 'Not configured'));
   console.log('SMS: Messaging Service ' + MESSAGING_SERVICE_SID);
   console.log('WhatsApp: ' + WHATSAPP_NUMBER);
   console.log('Call Hours: ' + MIN_HOUR + ':00 AM - ' + MAX_HOUR + ':59 PM');
