@@ -864,11 +864,11 @@ function renderColorAnalytics(data) {
   });
   document.getElementById("colorPredictions").innerHTML = predHtml;
   var shortDays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  var dayHtml = "<div style='display:flex;justify-content:center;gap:10px;overflow-x:auto'>";
+  var dayHtml = "<div style='display:grid;grid-template-columns:repeat(7,1fr);gap:8px;width:100%'>";
   shortDays.forEach(function(day) {
     var colors = (data.dayPatterns[day] || []).filter(function(c) { return skipColors.indexOf(c.color.toLowerCase()) === -1; });
     var top = colors[0] ? colors[0].color : "-";
-    dayHtml += "<div style='background:rgba(0,0,0,0.3);border-radius:8px;padding:12px 16px;text-align:center;flex-shrink:0'><div style='color:#00d9ff;font-weight:700;font-size:0.85rem;margin-bottom:4px'>" + day + "</div><div style='color:#fff;text-transform:capitalize;font-size:0.9rem'>" + top + "</div></div>";
+    dayHtml += "<div style='background:rgba(0,0,0,0.3);border-radius:8px;padding:12px 8px;text-align:center'><div style='color:#00d9ff;font-weight:700;font-size:0.85rem;margin-bottom:4px'>" + day + "</div><div style='color:#fff;text-transform:capitalize;font-size:0.85rem'>" + top + "</div></div>";
   });
   dayHtml += "</div>";
   document.getElementById("dayPatterns").innerHTML = dayHtml;
