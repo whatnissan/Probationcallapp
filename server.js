@@ -1303,7 +1303,7 @@ async function sendEmail(to, message, callId) {
     "<div style=\"background:linear-gradient(135deg,#0a0a1a,#1a1a2e);border-radius:16px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.15);\">" +
     "<div style=\"background:" + headerColor + ";padding:25px;text-align:center;\">" +
     "<img src=\"https://i.imgur.com/6ZPpeQW.png\" alt=\"ProbationCall\" style=\"width:150px;height:auto;margin-bottom:10px;border-radius:8px;\" />" +
-    "<h1 style=\"margin:0;color:#fff;font-size:24px;font-weight:700;\">ProbationCall</h1></div>" +
+    "</div>" +
     "<div style=\"padding:30px;background:#0a0a1a;\">" + resultBadge +
     "<div style=\"background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:20px;margin:15px 0;\">" +
     "<p style=\"margin:0;color:#e4e4e7;font-size:16px;line-height:1.6;white-space:pre-line;\">" + message + "</p></div>" +
