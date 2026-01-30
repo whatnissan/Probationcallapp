@@ -863,14 +863,14 @@ function renderColorAnalytics(data) {
     predHtml += "<div class='prediction-item " + cls + "'><div class='color-name'>" + p.color + "</div><div class='days'>" + p.daysSince + " days ago</div><div class='days'>avg: every " + p.avgInterval + "d</div></div>";
   });
   document.getElementById("colorPredictions").innerHTML = predHtml;
-  var days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-  var dayHtml = "";
+  var days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  var dayHtml = "<div style='display:grid;grid-template-columns:repeat(7,1fr);gap:8px;text-align:center'>";
   days.forEach(function(day) {
-    var colors = (data.dayPatterns[day.slice(0,3)] || []).filter(function(c) { return skipColors.indexOf(c.color.toLowerCase()) === -1; });
-    if (colors.length === 0) return;
-    var topColors = colors.slice(0, 3).map(function(c) { return c.color + " (" + c.count + ")"; }).join(", ");
-    dayHtml += "<div style='display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.05)'><span style='color:#00d9ff;font-weight:600'>" + day + "</span><span style='color:#8892b0'>" + topColors + "</span></div>";
+    var colors = (data.dayPatterns[day] || []).filter(function(c) { return skipColors.indexOf(c.color.toLowerCase()) === -1; });
+    var top1 = colors[0] ? colors[0].color : "-";
+    dayHtml += "<div style='background:rgba(0,0,0,0.2);border-radius:8px;padding:10px 5px'><div style='color:#00d9ff;font-weight:600;margin-bottom:5px'>" + day + "</div><div style='color:#fff;font-size:0.85rem;text-transform:capitalize'>" + top1 + "</div></div>";
   });
+  dayHtml += "</div>";
   document.getElementById("dayPatterns").innerHTML = dayHtml;
 }
 
