@@ -60,19 +60,23 @@ const brevoTransporter = nodemailer.createTransport({
 
 // Shim to make Brevo compatible with your existing code
 const sgMail = {
-  setApiKey: () => {}, 
+  setApiKey: () => {},
   send: async (msg) => {
     try {
-      console.log('Sending email via Brevo to:', msg.to);
+      var fromAddr = typeof msg.from === "object" ? msg.from.name + " <" + msg.from.email + ">" : msg.from;
+      console.log("[EMAIL] Sending via Brevo to:", msg.to);
       await brevoTransporter.sendMail({
-        from: msg.from,
+        from: fromAddr,
         to: msg.to,
         subject: msg.subject,
-        html: msg.html || msg.text,
+        text: msg.text || "",
+        html: msg.html || msg.text
       });
-      console.log('✅ Email sent successfully');
+      console.log("[EMAIL] ✅ Sent successfully to", msg.to);
+      return { success: true };
     } catch (error) {
-      console.error('❌ Brevo Error:', error);
+      console.error("[EMAIL] ❌ Brevo Error:", error.message);
+      throw error;
     }
   }
 };
