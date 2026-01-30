@@ -1301,7 +1301,7 @@ async function sendEmail(to, message, callId) {
     "<body style=\"margin:0;padding:0;background:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;\">" +
     "<div style=\"max-width:500px;margin:0 auto;padding:20px;\">" +
     "<div style=\"background:linear-gradient(135deg,#0a0a1a,#1a1a2e);border-radius:16px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.15);\">" +
-    "<div style=\"background:" + headerColor + ";padding:25px;text-align:center;\">" +
+    "<div style=\"background:#ffffff;padding:25px;text-align:center;\">" +
     "<img src=\"https://i.imgur.com/6ZPpeQW.png\" alt=\"ProbationCall\" style=\"width:150px;height:auto;margin-bottom:10px;border-radius:8px;\" />" +
     "</div>" +
     "<div style=\"padding:30px;background:#0a0a1a;\">" + resultBadge +
