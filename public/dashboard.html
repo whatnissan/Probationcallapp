@@ -892,7 +892,7 @@ function renderFtbendHistory(filter) {
     return;
   }
   
-  el.innerHTML = colors.map(function(c) {
+  el.innerHTML = colors.filter(function(c) { return c.color !== "UNKNOWN"; }).map(function(c) {
     var officeLabel = c.office_name || c.county.replace("ftbend_", "");
     var colorDisplay = "";
     
@@ -1073,7 +1073,7 @@ function loadUser() {
       if (!d.history || !d.history.length) {
         el.innerHTML = '<p style="color:#666">No calls yet</p>';
       } else {
-        el.innerHTML = d.history.map(function(h) {
+        el.innerHTML = d.history.filter(function(h) { return h.result !== "UNKNOWN"; }).map(function(h) {
           var txt = h.result === 'NO_TEST' ? '✅ No Test' : h.result === 'MUST_TEST' ? '🚨 Must Test' : h.result === 'RETRY_PENDING' ? '🔄 Retrying...' : '⚠️ Unknown';
           var county = h.county === 'ftbend' ? 'Ft Bend' : 'Montgomery';
           var pin = h.pin_used ? '<br><small>PIN: ' + h.pin_used + '</small>' : '';
