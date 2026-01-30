@@ -1065,12 +1065,21 @@ app.post('/twiml/result', async function(req, res) {
       broadcastToClients({ type: 'result', callId: callId, result: 'RETRY_PENDING', speech: speech });
     } else {
       var message;
-      if (result === 'MUST_TEST') {
-        message = '🚨 TEST REQUIRED! 🚨\n\nYour color was called. Report for testing today.\n\nPIN: ' + config.pin;
-      } else if (result === 'NO_TEST') {
-        message = '✅ No test today!\n\nYour color was NOT called.\n\nPIN: ' + config.pin;
+      var isFtbend = config.county === "ftbend";
+      if (result === "MUST_TEST") {
+        if (isFtbend) {
+          message = "🚨 TEST REQUIRED! 🚨\n\nYour color was called. Report for testing today.\n\n- ProbationCall.com";
+        } else {
+          message = "🚨 TEST REQUIRED! 🚨\n\nYour PIN was called. You MUST test today.\n\nPIN: " + config.pin + "\n\n- ProbationCall.com";
+        }
+      } else if (result === "NO_TEST") {
+        if (isFtbend) {
+          message = "✅ No test today!\n\nYour color was NOT called. Enjoy your day!\n\n- ProbationCall.com";
+        } else {
+          message = "✅ No test today!\n\nYour PIN was NOT called. Enjoy your day!\n\nPIN: " + config.pin + "\n\n- ProbationCall.com";
+        }
       } else {
-        message = '⚠️ Could not determine result.\n\nHeard: "' + speech.slice(0, 100) + '"\n\nPlease verify manually.\nPIN: ' + config.pin;
+        message = "⚠️ Could not determine result.\n\nHeard: \"" + speech.slice(0, 100) + "\"\n\nPlease call the hotline to verify.\n\n- ProbationCall.com";
       }
       
       await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, message, callId);
