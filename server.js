@@ -1,35 +1,4 @@
 
-// REPLACED: SMTP Transporter with Direct API Call
-const sendEmail = async (to, subject, text) => {
-  console.log(`[API] Sending to ${to}...`);
-  try {
-    const response = await fetch('https://api.brevo.com/v3/smtp/email', {
-      method: 'POST',
-      headers: {
-        'accept': 'application/json',
-        'api-key': process.env.BREVO_KEY, 
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        sender: { name: 'Probation Alerts', email: 'alerts@probationcall.com' },
-        to: [{ email: to }],
-        subject: subject,
-        htmlContent: `<html><body><p>${text}</p></body></html>`
-      })
-    });
-    
-    if (response.ok) {
-      const data = await response.json();
-      console.log('✅ [API] Email Sent:', data.messageId);
-    } else {
-      const err = await response.text();
-      console.error('❌ [API] Error:', err);
-    }
-  } catch (err) {
-    console.error('❌ [API] Network Error:', err.message);
-  }
-};
-
 require('dotenv').config();
 const express = require('express');
 const http = require('http');
@@ -2392,5 +2361,3 @@ cron.schedule('45 * * * *', async function() {
 
 
 // SAFETY FALLBACK
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log('Server running on port ' + PORT));
