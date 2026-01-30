@@ -436,7 +436,7 @@ select option { background: #1a1a2e; color: #fff; }
       <h2>💰 Earn Cash - Affiliate Program</h2>
       
       <div class="info-box green">
-        <strong>Earn 30% commission</strong> on every purchase made by people you refer! Get paid via PayPal when you reach $20.
+        <strong>Earn 30% commission</strong> on every purchase made by people you refer!
       </div>
       
       <div class="affiliate-balance">
@@ -483,18 +483,6 @@ select option { background: #1a1a2e; color: #fff; }
         <p style="color:#8892b0;font-size:0.85rem;margin-bottom:15px">Connect your bank account to receive commissions instantly when your referrals purchase.</p>
         <div id="connectStatus" style="margin-bottom:10px"></div>
         <button class="btn" id="connectBtn" onclick="setupStripeConnect()" style="background:#00d9ff;color:#000">Connect Bank Account</button>
-      </div>
-      
-      <div class="card" style="background:rgba(34,197,94,0.1);border-color:rgba(34,197,94,0.3)">
-        <h3 style="color:#22c55e;margin-bottom:15px">💵 Request Payout (Manual)</h3>
-        <div class="form-group">
-          <label>PayPal Email</label>
-          <input type="email" id="payoutEmail" placeholder="your@paypal.email">
-        </div>
-        <button class="btn btn-green" onclick="savePayoutEmail()" style="margin-bottom:10px">Save PayPal Email</button>
-        <button class="btn" id="requestPayoutBtn" onclick="requestPayout()">Request Payout</button>
-        <p style="color:#8892b0;font-size:0.8rem;margin-top:10px">Minimum payout: $20.00. Payouts processed within 48 hours.</p>
-        <div id="payoutStatus" class="status" style="display:none;margin-top:10px"></div>
       </div>
       
       <div class="payout-history" id="payoutHistorySection" style="display:none">
