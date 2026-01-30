@@ -916,15 +916,6 @@ function loadUser() {
           document.getElementById('payoutEmail').value = d.affiliate.payoutEmail;
         }
         
-        // Update payout button
-        var payoutBtn = document.getElementById('requestPayoutBtn');
-        if (d.affiliate.balance < d.affiliate.minPayout) {
-          payoutBtn.disabled = true;
-          payoutBtn.textContent = 'Need $' + ((d.affiliate.minPayout - d.affiliate.balance) / 100).toFixed(2) + ' more';
-        } else {
-          payoutBtn.disabled = false;
-          payoutBtn.textContent = 'Request Payout ($' + (d.affiliate.balance / 100).toFixed(2) + ')';
-        }
         
         // Show earnings
         if (d.affiliate.earnings && d.affiliate.earnings.length > 0) {
