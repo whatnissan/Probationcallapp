@@ -324,6 +324,92 @@ app.get('/api/user', auth, async function(req, res) {
   });
 });
 
+// Global Montgomery Test Analytics (for learning patterns)
+app.get("/api/admin/montgomery-analytics", adminAuth, async function(req, res) {
+  try {
+    var result = await supabase.from("call_history").select("*").eq("result", "MUST_TEST").order("created_at", { ascending: true });
+    if (result.error) return res.status(500).json({ error: result.error.message });
+    var tests = result.data || [];
+    if (tests.length < 5) return res.json({ error: "Not enough data", totalTests: tests.length });
+    
+    // Calculate system-wide interval
+    var userTests = {};
+    tests.forEach(function(t) {
+      if (!userTests[t.user_id]) userTests[t.user_id] = [];
+      userTests[t.user_id].push(new Date(t.created_at));
+    });
+    
+    var allIntervals = [];
+    Object.keys(userTests).forEach(function(uid) {
+      var dates = userTests[uid].sort(function(a,b) { return a-b; });
+      for (var i = 1; i < dates.length; i++) {
+        var days = Math.round((dates[i] - dates[i-1]) / (1000*60*60*24));
+        if (days > 0 && days < 60) allIntervals.push(days);
+      }
+    });
+    
+    var avgSystemInterval = allIntervals.length > 0 ? (allIntervals.reduce(function(a,b){return a+b},0) / allIntervals.length) : 0;
+    var medianInterval = allIntervals.sort(function(a,b){return a-b})[Math.floor(allIntervals.length/2)] || 0;
+    
+    // Day of week analysis
+    var dayCount = [0,0,0,0,0,0,0];
+    var dayNames = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+    tests.forEach(function(t) { dayCount[new Date(t.created_at).getDay()]++; });
+    var maxDay = Math.max.apply(null, dayCount);
+    var dayPatterns = dayNames.map(function(name, i) {
+      return { day: name, count: dayCount[i], pct: ((dayCount[i]/tests.length)*100).toFixed(1), likelihood: dayCount[i] >= maxDay*0.7 ? "high" : dayCount[i] >= maxDay*0.3 ? "medium" : "low" };
+    });
+    
+    // Day of month analysis
+    var domCount = {};
+    tests.forEach(function(t) {
+      var dom = new Date(t.created_at).getDate();
+      domCount[dom] = (domCount[dom] || 0) + 1;
+    });
+    var domPatterns = Object.keys(domCount).map(function(d) { return { day: parseInt(d), count: domCount[d] }; }).sort(function(a,b) { return b.count - a.count; });
+    
+    // Week of month analysis
+    var weekCount = [0,0,0,0,0];
+    tests.forEach(function(t) {
+      var dom = new Date(t.created_at).getDate();
+      var week = Math.min(4, Math.floor((dom-1)/7));
+      weekCount[week]++;
+    });
+    var weekLabels = ["Week 1 (1-7)","Week 2 (8-14)","Week 3 (15-21)","Week 4 (22-28)","Week 5 (29-31)"];
+    var weekPatterns = weekLabels.map(function(label, i) { return { week: label, count: weekCount[i], pct: ((weekCount[i]/tests.length)*100).toFixed(1) }; });
+    
+    // Consecutive test analysis
+    var consecutiveCount = 0;
+    var userConsec = {};
+    Object.keys(userTests).forEach(function(uid) {
+      var dates = userTests[uid].sort(function(a,b){return a-b});
+      for (var i = 1; i < dates.length; i++) {
+        var days = Math.round((dates[i] - dates[i-1]) / (1000*60*60*24));
+        if (days <= 2) consecutiveCount++;
+      }
+    });
+    var consecPct = allIntervals.length > 0 ? ((consecutiveCount/allIntervals.length)*100).toFixed(1) : 0;
+    
+    // Interval distribution
+    var intervalDist = {};
+    allIntervals.forEach(function(i) { intervalDist[i] = (intervalDist[i] || 0) + 1; });
+    var topIntervals = Object.keys(intervalDist).map(function(i) { return { days: parseInt(i), count: intervalDist[i] }; }).sort(function(a,b) { return b.count - a.count; }).slice(0, 10);
+    
+    res.json({
+      totalTests: tests.length,
+      totalUsers: Object.keys(userTests).length,
+      avgSystemInterval: avgSystemInterval.toFixed(1),
+      medianInterval: medianInterval,
+      dayPatterns: dayPatterns,
+      weekPatterns: weekPatterns,
+      topDaysOfMonth: domPatterns.slice(0, 10),
+      consecutiveTestPct: consecPct,
+      topIntervals: topIntervals,
+      confidence: Math.min(95, 50 + tests.length)
+    });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // Fort Bend Color Analytics
 app.get("/api/ftbend/analytics", auth, async function(req, res) {
   try {
