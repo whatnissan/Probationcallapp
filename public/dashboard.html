@@ -120,6 +120,7 @@ small{color:#666;font-size:0.75rem}
 .history-result.NO_TEST{background:rgba(0,212,170,0.2);color:#00d4aa}
 .history-result.MUST_TEST{background:rgba(255,107,107,0.2);color:#ff6b6b}
 .history-result.UNKNOWN{background:rgba(245,158,11,0.2);color:#f59e0b}
+.history-result.FTBEND{background:rgba(139,92,246,0.2);color:#a78bfa}
 .history-result.RETRY_PENDING{background:rgba(100,100,255,0.2);color:#6b7fff}
 .history-transcript{font-size:0.75rem;color:#666;margin-top:8px;padding:8px;background:rgba(0,0,0,0.2);border-radius:6px;font-style:italic}
 .ftbend-recording{background:rgba(0,212,170,0.05);border:1px solid rgba(0,212,170,0.2);border-radius:10px;padding:15px;margin-top:15px}
@@ -192,6 +193,9 @@ select option { background: #1a1a2e; color: #fff; }
 .pattern-day.low{background:rgba(34,197,94,0.2);color:#22c55e}
 .pattern-day.med{background:rgba(245,158,11,0.2);color:#f59e0b}
 .pattern-day.high{background:rgba(239,68,68,0.2);color:#ef4444}
+.filter-btn{background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);color:#8892b0;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:0.85rem;transition:all 0.2s}
+.filter-btn:hover{background:rgba(0,217,255,0.1);border-color:rgba(0,217,255,0.3)}
+.filter-btn.active{background:rgba(0,217,255,0.2);border-color:#00d9ff;color:#00d9ff}
 /* Fort Bend Analytics */
 .analytics-card{background:linear-gradient(135deg,rgba(139,92,246,0.1),rgba(0,217,255,0.1));border:1px solid rgba(139,92,246,0.3);border-radius:12px;padding:20px;margin-bottom:15px}
 .analytics-card h3{color:#a78bfa;margin-bottom:15px;font-size:1rem}
@@ -446,7 +450,7 @@ select option { background: #1a1a2e; color: #fff; }
   
   <!-- HISTORY TAB -->
   <div id="historyTab" class="tab-content">
-    <div class="card"><h2>Call History</h2><div id="historyList"></div></div>
+    <div class="card"><h2>Call History</h2><div style="margin-bottom:15px;display:flex;gap:8px;flex-wrap:wrap"><button class="filter-btn active" onclick="filterHistory('all')">All</button><button class="filter-btn" onclick="filterHistory('montgomery')">Montgomery</button><button class="filter-btn" onclick="filterHistory('ftbend')">Fort Bend</button></div><div id="historyList"></div></div>
   </div>
   
   <!-- AFFILIATE TAB -->
@@ -1067,24 +1071,8 @@ function loadUser() {
         document.getElementById('noSchedInfo').style.display = 'block';
       }
       
-      var el = document.getElementById('historyList');
-      if (!d.history || !d.history.length) {
-        el.innerHTML = '<p style="color:#666">No calls yet</p>';
-      } else {
-        el.innerHTML = d.history.filter(function(h) { return h.result !== "UNKNOWN"; }).map(function(h) {
-          var txt = h.result === 'NO_TEST' ? '✅ No Test' : h.result === 'MUST_TEST' ? '🚨 Must Test' : h.result === 'RETRY_PENDING' ? '🔄 Retrying...' : '⚠️ Unknown';
-          var county = h.county === 'ftbend' ? 'Ft Bend' : 'Montgomery';
-          var pin = h.pin_used ? '<br><small>PIN: ' + h.pin_used + '</small>' : '';
-          var recUrl = h.recording_url;
-          if (recUrl && recUrl.includes('Recordings/')) {
-            var sid = recUrl.match(/Recordings\/([A-Za-z0-9]+)/);
-            if (sid) recUrl = '/api/recording/' + sid[1];
-          }
-          var recording = h.recording_url ? '<div class="audio-player"><audio controls preload="none" src="' + recUrl + '"></audio></div>' : '';
-          var transcript = h.transcript ? '<div class="history-transcript">"' + h.transcript + '"</div>' : '';
-          return '<div class="history-item"><div class="history-header"><div><span class="history-date">' + new Date(h.created_at).toLocaleString() + '</span><span class="history-county">' + county + '</span>' + pin + '</div><span class="history-result ' + h.result + '">' + txt + '</span></div>' + recording + transcript + '</div>';
-        }).join('');
-      }
+      window.callHistoryData = d.history || [];
+      renderCallHistory("all");
       calculateTestStats(d.history);
     });
 }
@@ -1789,6 +1777,56 @@ function calculateTestStats(history) {
     patternHtml += "<div class=\"pattern-day " + cls + "\">" + dayNames[d] + "</div>";
   }
   document.getElementById("patternRow").innerHTML = patternHtml;
+}
+function renderCallHistory(filter) {
+  var el = document.getElementById("historyList");
+  var data = window.callHistoryData || [];
+  if (filter !== "all") {
+    data = data.filter(function(h) {
+      if (filter === "ftbend") return h.county && h.county.startsWith("ftbend");
+      return !h.county || h.county === "montgomery" || (!h.county.startsWith("ftbend"));
+    });
+  }
+  data = data.filter(function(h) { return h.result !== "UNKNOWN"; });
+  if (!data.length) {
+    el.innerHTML = "<p style='color:#666'>No calls yet</p>";
+    return;
+  }
+  el.innerHTML = data.map(function(h) {
+    var isFtbend = h.county && h.county.startsWith("ftbend");
+    var txt, countyLabel;
+    if (isFtbend) {
+      var office = h.ftbend_office || h.county.replace("ftbend_", "") || "missouri";
+      office = office.charAt(0).toUpperCase() + office.slice(1);
+      countyLabel = "Ft Bend - " + office;
+      if (h.result && h.result.startsWith("COLOR:")) {
+        txt = "🎨 " + h.result.replace("COLOR:", "");
+      } else if (h.result && h.result.startsWith("P1:")) {
+        txt = "🎨 " + h.result.replace("P1:", "").replace("P2:", " / ");
+      } else if (h.result === "NO_CREDITS") {
+        txt = "⚠️ No Credits";
+      } else {
+        txt = h.result || "Notified";
+      }
+    } else {
+      countyLabel = "Montgomery";
+      txt = h.result === "NO_TEST" ? "✅ No Test" : h.result === "MUST_TEST" ? "🚨 Must Test" : h.result === "RETRY_PENDING" ? "🔄 Retrying..." : "⚠️ " + (h.result || "Unknown");
+    }
+    var pin = h.pin_used ? "<br><small>PIN: " + h.pin_used + "</small>" : "";
+    var recUrl = h.recording_url;
+    if (recUrl && recUrl.includes("Recordings/")) {
+      var sid = recUrl.match(/Recordings\/([A-Za-z0-9]+)/);
+      if (sid) recUrl = "/api/recording/" + sid[1];
+    }
+    var recording = h.recording_url ? "<div class='audio-player'><audio controls preload='none' src='" + recUrl + "'></audio></div>" : "";
+    var transcript = h.transcript ? "<div class='history-transcript'>\"" + h.transcript + "\"</div>" : "";
+    return "<div class='history-item'><div class='history-header'><div><span class='history-date'>" + new Date(h.created_at).toLocaleString() + "</span><span class='history-county'>" + countyLabel + "</span>" + pin + "</div><span class='history-result " + (isFtbend ? "FTBEND" : h.result) + "'>" + txt + "</span></div>" + recording + transcript + "</div>";
+  }).join("");
+}
+function filterHistory(filter) {
+  document.querySelectorAll(".filter-btn").forEach(function(b) { b.classList.remove("active"); });
+  event.target.classList.add("active");
+  renderCallHistory(filter);
 }
 </script>
 
