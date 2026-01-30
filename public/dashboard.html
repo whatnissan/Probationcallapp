@@ -864,14 +864,14 @@ function renderColorAnalytics(data) {
   });
   document.getElementById("colorPredictions").innerHTML = predHtml;
   var days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  var dayHtml = "<div style='display:grid;grid-template-columns:repeat(7,1fr);gap:8px;text-align:center'>";
+  var dayHtml = "";
   days.forEach(function(day) {
     var colors = (data.dayPatterns[day] || []).filter(function(c) { return skipColors.indexOf(c.color.toLowerCase()) === -1; });
-    var top1 = colors[0] ? colors[0].color : "-";
-    dayHtml += "<div style='background:rgba(0,0,0,0.2);border-radius:8px;padding:10px 5px'><div style='color:#00d9ff;font-weight:600;margin-bottom:5px'>" + day + "</div><div style='color:#fff;font-size:0.85rem;text-transform:capitalize'>" + top1 + "</div></div>";
+    if (colors.length === 0) return;
+    var colorList = colors.slice(0, 4).map(function(c) { return "<span style='color:#fff;margin-right:10px'>" + c.color + " <span style='color:#8892b0'>(" + c.count + ")</span></span>"; }).join("");
+    dayHtml += "<div style='display:flex;flex-wrap:wrap;align-items:center;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.05)'><div style='width:50px;color:#00d9ff;font-weight:700'>" + day + "</div><div style='flex:1;text-transform:capitalize;font-size:0.9rem'>" + colorList + "</div></div>";
   });
-  dayHtml += "</div>";
-  document.getElementById("dayPatterns").innerHTML = dayHtml;
+  document.getElementById("dayPatterns").innerHTML = dayHtml || "<p style='color:#666;text-align:center'>No pattern data yet</p>";
 }
 
 
