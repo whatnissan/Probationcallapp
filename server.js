@@ -133,7 +133,7 @@ function detectColor(transcript) {
     'all of ': 'olive', 'all live': 'olive', 
     'i very': 'ivory', 'i vory': 'ivory',
     'grey': 'gray',
-    'can': 'cyan', 'cyn': 'cyan', 'zion': 'cyan', 'sign': 'cyan',
+    'can': 'cyan', 'cyn': 'cyan', 'ten': 'tan', 'dan': 'tan', 'pan': 'tan', 'tin': 'tan', 'ton': 'tan', 'hand': 'tan', 'man': 'tan', 'fan': 'tan', 'tanned': 'tan', 'tent': 'tan', 'zion': 'cyan', 'sign': 'cyan',
     'sigh in': 'cyan', 'sigh an': 'cyan', 'sy an': 'cyan', 'psy an': 'cyan', 'sign': 'cyan'
   };
   
