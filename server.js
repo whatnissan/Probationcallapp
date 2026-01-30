@@ -39,13 +39,13 @@ const path = require('path');
 const cron = require('node-cron');
 const Stripe = require('stripe');
 const { createClient } = require('@supabase/supabase-js');
-// const nodemailer = require("nodemailer");
+const nodemailer = require("nodemailer");
 
 // --- BREVO EMAIL CONFIGURATION ---
 const brevoTransporter = nodemailer.createTransport({
   host: 'smtp-relay.brevo.com',
-  port: 465,
-  secure: true, // Critical for Port 587 to prevent hanging
+  port: 587,
+  secure: false, // Port 587 uses STARTTLS to prevent hanging
   auth: {
     user: process.env.BREVO_USER,
     pass: process.env.BREVO_KEY
