@@ -863,14 +863,12 @@ function renderColorAnalytics(data) {
     predHtml += "<div class='prediction-item " + cls + "'><div class='color-name'>" + p.color + "</div><div class='days'>" + p.daysSince + " days ago</div><div class='days'>avg: every " + p.avgInterval + "d</div></div>";
   });
   document.getElementById("colorPredictions").innerHTML = predHtml;
-  var days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
   var shortDays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  var dayHtml = "<div style='max-width:500px;margin:0 auto'>";
-  days.forEach(function(day, idx) {
-    var colors = (data.dayPatterns[shortDays[idx]] || []).filter(function(c) { return skipColors.indexOf(c.color.toLowerCase()) === -1; });
-    if (colors.length === 0) return;
-    var colorList = colors.slice(0, 3).map(function(c) { return c.color + " (" + c.count + ")"; }).join(", ");
-    dayHtml += "<div style='display:flex;justify-content:space-between;padding:12px 15px;margin-bottom:6px;background:rgba(0,0,0,0.2);border-radius:8px'><span style='color:#00d9ff;font-weight:600'>" + day + "</span><span style='color:#fff;text-transform:capitalize'>" + colorList + "</span></div>";
+  var dayHtml = "<div style='display:flex;justify-content:center;gap:10px;flex-wrap:wrap'>";
+  shortDays.forEach(function(day) {
+    var colors = (data.dayPatterns[day] || []).filter(function(c) { return skipColors.indexOf(c.color.toLowerCase()) === -1; });
+    var top = colors[0] ? colors[0].color : "-";
+    dayHtml += "<div style='background:rgba(0,0,0,0.3);border-radius:8px;padding:12px 16px;text-align:center;min-width:70px'><div style='color:#00d9ff;font-weight:700;font-size:0.85rem;margin-bottom:4px'>" + day + "</div><div style='color:#fff;text-transform:capitalize;font-size:0.9rem'>" + top + "</div></div>";
   });
   dayHtml += "</div>";
   document.getElementById("dayPatterns").innerHTML = dayHtml;
