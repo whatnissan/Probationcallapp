@@ -13,10 +13,17 @@ const nodemailer = require('nodemailer');
 const brevoTransporter = nodemailer.createTransport({
   host: 'smtp-relay.brevo.com',
   port: 587,
+  secure: false, // Critical for Port 587 to prevent hanging
   auth: {
     user: process.env.BREVO_USER,
     pass: process.env.BREVO_KEY
-  }
+  },
+  tls: {
+    rejectUnauthorized: false // Helps prevent handshake errors
+  },
+  connectionTimeout: 10000, // Throw error after 10 seconds instead of hanging
+  logger: true, // Log details to console
+  debug: true
 });
 
 // Shim to make Brevo compatible with your existing code
