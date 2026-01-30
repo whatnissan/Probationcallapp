@@ -12,8 +12,8 @@ const nodemailer = require('nodemailer');
 // --- BREVO EMAIL CONFIGURATION ---
 const brevoTransporter = nodemailer.createTransport({
   host: 'smtp-relay.brevo.com',
-  port: 2525,
-  secure: false, // Critical for Port 587 to prevent hanging
+  port: 465,
+  secure: true, // Critical for Port 587 to prevent hanging
   auth: {
     user: process.env.BREVO_USER,
     pass: process.env.BREVO_KEY
