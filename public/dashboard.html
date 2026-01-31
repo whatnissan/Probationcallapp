@@ -215,6 +215,23 @@ select option { background: #1a1a2e; color: #fff; }
 .day-col{background:rgba(0,0,0,0.2);border-radius:8px;padding:10px 5px;text-align:center}
 .day-col .day-name{font-size:0.75rem;color:#8892b0;margin-bottom:8px}
 .day-col .colors{font-size:0.7rem;line-height:1.6}
+/* Mobile Responsive */
+@media (max-width: 600px) {
+  nav{flex-wrap:wrap;gap:10px}
+  .nav-right{flex-wrap:wrap;justify-content:flex-end;gap:6px}
+  .nav-right span{font-size:0.7rem;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .logo-container span{font-size:1rem!important}
+  .logo-container svg{height:32px!important;width:32px!important}
+  #adminLink{padding:6px 10px;font-size:0.75rem}
+  .logout-btn{padding:6px 10px;font-size:0.75rem}
+  .day-col{padding:8px 3px!important}
+  .day-col .day-name{font-size:0.7rem!important}
+  .day-col div:last-child{font-size:0.65rem!important}
+  .prediction-grid{grid-template-columns:repeat(2,1fr)!important}
+  .prediction-item{padding:10px 8px}
+  .prediction-item .color-name{font-size:0.8rem}
+  .prediction-item .days{font-size:0.65rem}
+}
 </style>
 </head>
 <body>
