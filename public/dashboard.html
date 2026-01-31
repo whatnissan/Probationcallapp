@@ -14,7 +14,7 @@ body::after{content:"";position:fixed;bottom:-150px;right:-150px;width:600px;hei
 .loading{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:15px}
 .spinner{width:40px;height:40px;border:3px solid #333;border-top-color:#00d9ff;border-radius:50%;animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-.container{max-width:800px;margin:0 auto;padding:20px;display:none}
+.container{max-width:800px;margin:0 auto;padding:20px;display:none;overflow-x:hidden}
 nav{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;padding-bottom:15px;border-bottom:1px solid rgba(255,255,255,0.1)}
 .logo{font-size:1.2rem;font-weight:700;color:#00d9ff}
 .nav-right{display:flex;align-items:center;gap:10px}
@@ -224,7 +224,7 @@ select option { background: #1a1a2e; color: #fff; }
   .logo-container svg{height:32px!important;width:32px!important}
   #adminLink{padding:6px 10px;font-size:0.75rem}
   .logout-btn{padding:6px 10px;font-size:0.75rem}
-  .day-col{padding:8px 3px!important}
+  .day-col{padding:6px 2px!important;min-width:40px}
   .day-col .day-name{font-size:0.7rem!important}
   .day-col div:last-child{font-size:0.65rem!important}
   .prediction-grid{grid-template-columns:repeat(2,1fr)!important}
@@ -885,7 +885,7 @@ function renderColorAnalytics(data) {
   });
   document.getElementById("colorPredictions").innerHTML = predHtml;
   var shortDays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  var dayHtml = "<div style='display:grid;grid-template-columns:repeat(7,1fr);gap:8px;width:100%'>";
+  var dayHtml = "<div style='display:grid;grid-template-columns:repeat(7,1fr);gap:6px;width:100%;overflow-x:auto;min-width:0'>";
   shortDays.forEach(function(day) {
     var colors = (data.dayPatterns[day] || []).filter(function(c) { return skipColors.indexOf(c.color.toLowerCase()) === -1; });
     var top = colors[0] ? colors[0].color : "-";
