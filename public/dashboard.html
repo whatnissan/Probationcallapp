@@ -212,13 +212,13 @@ select option { background: #1a1a2e; color: #fff; }
 .prediction-item.medium{border:2px solid #f59e0b}.prediction-item.medium .color-name{color:#f59e0b}
 .prediction-item.low{border:2px solid #22c55e}.prediction-item.low .color-name{color:#22c55e}
 .day-pattern-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:8px;margin-top:10px}
-.day-grid{display:grid;grid-template-columns:repeat(7,auto);gap:10px;width:100%;justify-content:center}
+.day-grid{display:grid;grid-template-columns:repeat(7,auto);gap:10px;margin:0 auto;justify-content:center}
 .day-col{background:rgba(0,0,0,0.2);border-radius:8px;padding:10px 5px;text-align:center}
 .day-col .day-name{font-size:0.75rem;color:#8892b0;margin-bottom:8px}
 .day-col .colors{font-size:0.7rem;line-height:1.6}
 /* Mobile Responsive */
 @media (max-width: 600px) {
-  .day-grid{grid-template-columns:repeat(3,auto);justify-content:center}
+  .day-grid{grid-template-columns:repeat(3,auto);margin:0 auto;justify-content:center}
   .day-grid>div:nth-child(7){grid-column:2}
   nav{flex-wrap:wrap;gap:10px}
   .nav-right{flex-wrap:wrap;justify-content:flex-end;gap:6px}
