@@ -885,7 +885,7 @@ function renderColorAnalytics(data) {
   });
   document.getElementById("colorPredictions").innerHTML = predHtml;
   var shortDays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  var dayHtml = "<div style='display:grid;grid-template-columns:repeat(7,1fr);gap:6px;width:100%;overflow-x:auto;min-width:0'>";
+  var dayHtml = "<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(70px,1fr));gap:8px;width:100%'>";
   shortDays.forEach(function(day) {
     var colors = (data.dayPatterns[day] || []).filter(function(c) { return skipColors.indexOf(c.color.toLowerCase()) === -1; });
     var top = colors[0] ? colors[0].color : "-";
