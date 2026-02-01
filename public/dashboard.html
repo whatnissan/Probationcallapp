@@ -232,7 +232,7 @@ select option { background: #1a1a2e; color: #fff; }
   .color-bar .bar{font-size:0.65rem;padding-right:4px}
   .color-bar{gap:6px}
   .color-bar .name{width:65px;font-size:0.75rem}
-  .color-bar .bar-wrap{display:none}
+  .color-bar .bar-wrap{flex:1;height:20px}
   .color-bar .count{width:auto;font-size:0.75rem}
   .color-bar::after{content:attr(data-pct);color:#00d9ff;font-size:0.75rem;font-weight:600}
   .day-col .day-name{font-size:0.7rem!important}
@@ -881,7 +881,7 @@ function renderColorAnalytics(data) {
   var barsHtml = "";
   data.topColors.filter(function(c) { return skipColors.indexOf(c.color.toLowerCase()) === -1; }).forEach(function(c) {
     var barColor = colorMap[c.color.toLowerCase()] || "#8892b0";
-    var width = Math.max(8, (c.count / maxCount) * 100);
+    var width = Math.max(20, (c.count / maxCount) * 100);
     var textColor = lightColors.indexOf(c.color.toLowerCase()) !== -1 ? "#000" : "#fff";
     barsHtml += "<div class='color-bar'><div class='name'>" + c.color + "</div><div class='bar-wrap'><div class='bar' style='width:" + width + "%;background:" + barColor + ";color:" + textColor + "'>" + c.pct + "%</div></div><div class='count'>" + c.count + "x</div></div>";
   });
