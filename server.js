@@ -1298,19 +1298,25 @@ async function sendEmail(to, message, callId) {
   }
   
   var html = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"></head>" +
-    "<body style=\"margin:0;padding:0;background:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;\">" +
-    "<div style=\"max-width:500px;margin:0 auto;padding:20px;\">" +
-    "<div style=\"background:linear-gradient(135deg,#0a0a1a,#1a1a2e);border-radius:16px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.15);\">" +
-    "<div style=\"background:#ffffff;padding:25px;text-align:center;\">" +
-    "<img src=\"https://i.imgur.com/6ZPpeQW.png\" alt=\"ProbationCall\" style=\"width:150px;height:auto;margin-bottom:10px;border-radius:8px;\" />" +
-    "</div>" +
-    "<div style=\"padding:30px;background:#0a0a1a;\">" + resultBadge +
-    "<div style=\"background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:20px;margin:15px 0;\">" +
-    "<p style=\"margin:0;color:#e4e4e7;font-size:16px;line-height:1.6;white-space:pre-line;\">" + message + "</p></div>" +
-    "<p style=\"margin:20px 0 0;color:#71717a;font-size:13px;text-align:center;\">This is an automated message from ProbationCall</p></div>" +
-    "<div style=\"background:rgba(255,255,255,0.03);padding:15px;text-align:center;border-top:1px solid rgba(255,255,255,0.05);\">" +
-    "<a href=\"https://probationcall.com\" style=\"color:#00d9ff;text-decoration:none;font-size:14px;\">probationcall.com</a></div>" +
-    "</div></div></body></html>";
+    "<body style=\"margin:0;padding:0;background:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;\">" +
+    "<table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#f4f4f5;padding:20px 0;\">" +
+    "<tr><td align=\"center\">" +
+    "<table width=\"500\" cellpadding=\"0\" cellspacing=\"0\" style=\"max-width:500px;background:#0a0a1a;border-radius:16px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.15);\">" +
+    "<tr><td style=\"background:#ffffff;padding:25px;text-align:center;\">" +
+    "<img src=\"https://i.imgur.com/6ZPpeQW.png\" alt=\"ProbationCall\" style=\"width:150px;height:auto;display:block;margin:0 auto;border-radius:8px;\" />" +
+    "</td></tr>" +
+    "<tr><td style=\"padding:30px;background:#0a0a1a;\">" + resultBadge +
+    "<table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:12px;margin:15px 0;\">" +
+    "<tr><td style=\"padding:20px;\">" +
+    "<p style=\"margin:0;color:#e4e4e7;font-size:16px;line-height:1.6;white-space:pre-line;\">" + message + "</p>" +
+    "</td></tr></table>" +
+    "<p style=\"margin:20px 0 0;color:#71717a;font-size:13px;text-align:center;\">This is an automated message from ProbationCall</p>" +
+    "</td></tr>" +
+    "<tr><td style=\"background:rgba(255,255,255,0.03);padding:15px;text-align:center;border-top:1px solid rgba(255,255,255,0.05);\">" +
+    "<a href=\"https://probationcall.com\" style=\"color:#00d9ff;text-decoration:none;font-size:14px;\">probationcall.com</a>" +
+    "</td></tr>" +
+    "</table>" +
+    "</td></tr></table></body></html>";
   try {
     await sgMail.send({
       to: to,
