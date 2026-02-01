@@ -1065,6 +1065,7 @@ function loadUser() {
           document.getElementById("schedDisplayOfficeRow").style.display = "none";
         }
         document.getElementById('schedDisplayPin').textContent = d.schedule.pin;
+        if (d.schedule.pin) document.getElementById('pin').value = d.schedule.pin;
         document.getElementById('schedDisplayNotify').textContent = d.schedule.notify_method === 'sms' ? d.schedule.notify_number : (d.schedule.notify_method === 'both' ? (d.schedule.notify_number + ' & ' + d.schedule.notify_email) : d.schedule.notify_email) || '-';
         document.getElementById('schedDisplayMethod').textContent = (d.schedule.notify_method || 'email').toUpperCase();
         document.getElementById('schedDisplayRetry').textContent = d.schedule.retry_on_unknown ? 'Yes (5 min delay)' : 'No';
