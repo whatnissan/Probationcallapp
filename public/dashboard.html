@@ -444,21 +444,15 @@ select option { background: #1a1a2e; color: #fff; }
           <div class="time-note" id="schedFtbendNote" style="display:none;background:rgba(0,255,136,0.1);border-color:rgba(0,255,136,0.3);color:#00ff88">📱 Fort Bend: Color is detected at 5:05 AM. Choose when to receive your notification:</div>
         <div id="ftbendTimeSelect" style="display:none;margin-top:10px">
           <select id="ftbendNotifyHour" style="width:100px">
-            <option value="5">5 AM</option><option value="6">6 AM</option><option value="7">7 AM</option><option value="8">8 AM</option>
-            <option value="9">9 AM</option><option value="10">10 AM</option><option value="11">11 AM</option>
-            <option value="12">12 PM</option>
+            <option value="5">5 AM</option><option value="6">6 AM</option><option value="7">7 AM</option><option value="8">8 AM</option><option value="9">9 AM</option>
           </select>
           <span style="padding:10px">:</span>
-          <input type="number" id="ftbendNotifyMin" min="0" max="59" value="10" style="width:70px">
+          <select id="ftbendNotifyMin" style="width:70px"><option value="0">00</option><option value="5">05</option><option value="10" selected>10</option><option value="15">15</option><option value="20">20</option><option value="25">25</option><option value="30">30</option><option value="35">35</option><option value="40">40</option><option value="45">45</option><option value="50">50</option><option value="55">55</option></select>
         </div>
           <div style="display:flex;gap:10px;margin-top:10px">
-            <select id="schedHour" style="width:100px">
-              <option value="6">6 AM</option><option value="7">7 AM</option><option value="8">8 AM</option>
-              <option value="9">9 AM</option><option value="10">10 AM</option><option value="11">11 AM</option>
-              <option value="12">12 PM</option><option value="13">1 PM</option><option value="14">2 PM</option>
-            </select>
+            <select id="schedHour" style="width:100px"><option value="6">6 AM</option><option value="7">7 AM</option><option value="8">8 AM</option><option value="9">9 AM</option><option value="10">10 AM</option><option value="11">11 AM</option><option value="12">12 PM</option><option value="13">1 PM</option><option value="14">2 PM</option></select>
             <span style="padding:10px">:</span>
-            <input type="number" id="schedMin" min="0" max="59" value="0" style="width:70px">
+            <select id="schedMin" style="width:70px"><option value="0" selected>00</option><option value="5">05</option><option value="10">10</option><option value="15">15</option><option value="20">20</option><option value="25">25</option><option value="30">30</option><option value="35">35</option><option value="40">40</option><option value="45">45</option><option value="50">50</option><option value="55">55</option></select>
             <select id="schedTZ"><option value="America/Chicago">Central Time</option></select>
           </div>
         </div>
