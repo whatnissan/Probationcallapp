@@ -1365,6 +1365,24 @@ async function sendWhatsApp(to, message, callId) {
   }
 }
 
+// === LOW CREDIT ALERT ===
+async function sendLowCreditAlert(userId, remainingCredits, notifyNumber, notifyEmail, notifyMethod) {
+  if (remainingCredits > 2 || remainingCredits < 0) return;
+  var message;
+  if (remainingCredits <= 1) {
+    message = '\u{1F6A8} URGENT - ProbationCall: You only have ' + remainingCredits + ' credit(s) left! After that, your daily check-ins STOP and you could miss a required test.\nLog in now and buy credits: https://probationcall.com\nDont risk jail over $15.';
+  } else {
+    message = '\u26A0\uFE0F ProbationCall: You only have ' + remainingCredits + ' credits left. Running out means missed check-ins.\nLog in and buy credits now: https://probationcall.com';
+  }
+  console.log('[LOW-CREDIT] Alerting user ' + userId.slice(0,8) + '... (' + remainingCredits + ' credits left)');
+  if (notifyNumber) {
+    await sendSMS(notifyNumber, message, 'low_credit').catch(function(e) { console.error('[LOW-CREDIT] SMS failed:', e.message); });
+  }
+  if (notifyEmail) {
+    await sendEmail(notifyEmail, message, 'low_credit').catch(function(e) { console.error('[LOW-CREDIT] Email failed:', e.message); });
+  }
+}
+
 app.post('/api/test-email', auth, async function(req, res) {
   var result = await sendEmail(req.body.email, '✅ Test email from ProbationCall!\n\nIf you see this, email notifications are working.', 'test');
   res.json(result);
@@ -2102,8 +2120,9 @@ async function notifyFtbendOfficeUsers(officeId, config) {
         console.log('[FTBEND] Sending ' + oid + ' notification to ' + s.user_id.slice(0,8));
         await notify(s.notify_number, s.notify_email, s.notify_method, msg, 'ftbend_daily');
         if (!isDevUser) {
-          await supabase.from('profiles').update({ credits: profile.credits - 1 }).eq('id', s.user_id);
+          var newCredits = profile.credits - 1; await supabase.from('profiles').update({ credits: newCredits }).eq('id', s.user_id);
           console.log('[FTBEND] Deducted 1 credit from ' + s.user_id.slice(0,8));
+          if (newCredits <= 2) { sendLowCreditAlert(s.user_id, newCredits, s.notify_number, s.notify_email, s.notify_method); }
         }
         await supabase.from('call_history').insert({
           user_id: s.user_id,
