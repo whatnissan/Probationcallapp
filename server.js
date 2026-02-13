@@ -809,7 +809,7 @@ function rescheduleUser(userId, sched) {
         await initiateCall(sched.target_number, sched.pin, sched.notify_number, sched.notify_email, sched.notify_method, userId, sched.retry_on_unknown, 0);
         
         if (!isDevUser) {
-          await supabase.from('profiles').update({ credits: profile.credits - 1 }).eq('id', userId); await supabase.from('user_schedules').update({ no_credit_skip_count: 0 }).eq('user_id', userId);
+          var newCredits = profile.credits - 1; await supabase.from('profiles').update({ credits: newCredits }).eq('id', userId); await supabase.from('user_schedules').update({ no_credit_skip_count: 0 }).eq('user_id', userId); if (newCredits <= 2) { sendLowCreditAlert(userId, newCredits, sched.notify_number, sched.notify_email, sched.notify_method); }
         }
       } catch (e) {
         console.error('[SCHED] Error for ' + userId.slice(0,8) + '...:', e.message);
