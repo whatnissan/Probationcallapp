@@ -282,7 +282,7 @@ async function auth(req, res, next) {
     
     if (!profile) {
       var referralCode = generateReferralCode();
-      var startCredits = isDev(user.email) ? 9999 : 1;
+      var startCredits = isDev(user.email) ? 9999 : 5;
       await supabase.from('profiles').insert({ 
         id: user.id, 
         email: user.email, 
@@ -293,7 +293,7 @@ async function auth(req, res, next) {
       });
       profile = { id: user.id, email: user.email, credits: startCredits, referral_code: referralCode };
       // Send welcome email to new user
-      sendEmail(user.email, 'Welcome to ProbationCall! \n\nYour account is set up and ready to go. You have ' + startCredits + ' free credit to get started.\n\nNext steps:\n1. Set up your daily schedule\n2. Enter your PIN and notification preferences\n3. We handle the rest - you get notified only when you need to test\n\nQuestions? Reply to this email anytime.\n\n- The ProbationCall Team\nhttps://probationcall.com', 'welcome').catch(function(e) { console.log('[WELCOME] Email failed:', e.message); });
+      sendWelcomeEmail(user.email, startCredits, 'welcome').catch(function(e) { console.log('[WELCOME] Email failed:', e.message); });
     }
     
     // Generate referral code if user doesn't have one
@@ -740,6 +740,10 @@ app.post('/api/schedule', auth, async function(req, res) {
     result = await supabase.from('user_schedules').update(data).eq('user_id', req.user.id);
   } else {
     result = await supabase.from('user_schedules').insert(data);
+    // Send welcome SMS on first schedule setup
+    if (data.notify_number) {
+      sendSMS(data.notify_number, 'Welcome to ProbationCall! Your daily check-in is set up. We will call the hotline for you every day and notify you of results. Manage your account at https://probationcall.com', 'welcome').catch(function(e) { console.log('[WELCOME] SMS failed:', e.message); });
+    }
   }
   
   if (result.error) {
@@ -1364,6 +1368,32 @@ async function sendWhatsApp(to, message, callId) {
   } catch (e) {
     log(callId, 'WhatsApp failed: ' + e.message, 'error');
     return { success: false, error: e.message };
+  }
+}
+
+// === WELCOME MESSAGE ===
+async function sendWelcomeEmail(email, credits, callId) {
+  var subject = 'Welcome To ProbationCall';
+  var message = 'Welcome to ProbationCall!' +
+    '\n\nYour account is set up and ready to go. You have ' + credits + ' free credits to get started.' +
+    '\n\nNext steps:' +
+    '\n1. Set up your daily schedule' +
+    '\n2. Enter your PIN and notification preferences' +
+    '\n3. We handle the rest - you get notified only when you need to test' +
+    '\n\nQuestions? Reply to this email anytime.' +
+    '\n\n- The ProbationCall Team' +
+    '\nhttps://probationcall.com';
+  try {
+    await sgMail.send({
+      to: email,
+      from: { email: FROM_EMAIL, name: 'ProbationCall' },
+      subject: subject,
+      text: message,
+      html: message.replace(/\n/g, '<br>')
+    });
+    console.log('[WELCOME] Email sent to ' + email);
+  } catch (e) {
+    console.error('[WELCOME] Email failed:', e.message);
   }
 }
 
