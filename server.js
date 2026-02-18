@@ -292,6 +292,8 @@ async function auth(req, res, next) {
         affiliate_total_earned_cents: 0
       });
       profile = { id: user.id, email: user.email, credits: startCredits, referral_code: referralCode };
+      // Send welcome email to new user
+      sendEmail(user.email, 'Welcome to ProbationCall! \n\nYour account is set up and ready to go. You have ' + startCredits + ' free credit to get started.\n\nNext steps:\n1. Set up your daily schedule\n2. Enter your PIN and notification preferences\n3. We handle the rest - you get notified only when you need to test\n\nQuestions? Reply to this email anytime.\n\n- The ProbationCall Team\nhttps://probationcall.com', 'welcome').catch(function(e) { console.log('[WELCOME] Email failed:', e.message); });
     }
     
     // Generate referral code if user doesn't have one
@@ -1370,7 +1372,7 @@ async function sendLowCreditAlert(userId, remainingCredits, notifyNumber, notify
   if (remainingCredits > 2 || remainingCredits < 0) return;
   var message;
   if (remainingCredits <= 1) {
-    message = '\u{1F6A8} URGENT - ProbationCall: You only have ' + remainingCredits + ' credit(s) left! After that, your daily check-ins STOP and you could miss a required test.\nLog in now and buy credits: https://probationcall.com\nDont risk jail over $15.';
+    message = '\u{1F6A8} URGENT - ProbationCall: You only have ' + remainingCredits + ' credit(s) left! After that, your daily check-ins STOP and you could miss a required test.\nLog in now and buy credits: https://probationcall.com';
   } else {
     message = '\u26A0\uFE0F ProbationCall: You only have ' + remainingCredits + ' credits left. Running out means missed check-ins.\nLog in and buy credits now: https://probationcall.com';
   }
