@@ -701,7 +701,15 @@ function acceptTerms() {
       termsAccepted = true;
       document.getElementById('disclaimerModal').classList.remove('active');
       // Show onboarding for new users
-      fetch('/api/user', { headers: { Authorization: 'Bearer ' + token } })
+      window.systemStats = null;
+  fetch('/api/system-stats', { headers: { Authorization: 'Bearer ' + token } })
+    .then(function(r) { return r.json(); })
+    .then(function(ss) {
+      window.systemStats = (ss && ss.scheduledAvg) ? ss : null;
+      if (window.callHistoryData) { calculateTestStats(window.callHistoryData, window.systemStats); }
+    })
+    .catch(function() { window.systemStats = null; });
+  fetch('/api/user', { headers: { Authorization: 'Bearer ' + token } })
         .then(function(r) { return r.json(); })
         .then(function(d) { 
           if (!d.profile.onboarding_complete) {
@@ -1096,7 +1104,7 @@ function loadUser() {
       
       window.callHistoryData = d.history || [];
       renderCallHistory("all");
-      calculateTestStats(d.history);
+      calculateTestStats(d.history, window.systemStats);
     });
 }
 
@@ -1750,54 +1758,96 @@ if (document.getElementById('schedCounty')) {
 }
 
 // Test Frequency Analysis
-function calculateTestStats(history) {
+function calculateTestStats(history, sysStats) {
   var card = document.getElementById("testStatsCard");
   if (!history || history.length < 2) { card.style.display = "none"; return; }
-  var tests = history.filter(function(h) { return h.result === "MUST_TEST"; }).sort(function(a, b) { return new Date(a.created_at) - new Date(b.created_at); });
-  if (tests.length < 1) { card.style.display = "none"; return; }
+  var allTests = history.filter(function(h) { return h.result === "MUST_TEST"; })
+    .sort(function(a,b) { return new Date(a.created_at) - new Date(b.created_at); });
+  if (allTests.length < 1) { card.style.display = "none"; return; }
   card.style.display = "block";
-  var intervals = [];
-  for (var i = 1; i < tests.length; i++) {
-    var days = Math.round((new Date(tests[i].created_at) - new Date(tests[i-1].created_at)) / (1000 * 60 * 60 * 24));
-    if (days > 0) intervals.push(days);
+  var scheduledIntervals = [], retestCount = 0;
+  for (var i = 1; i < allTests.length; i++) {
+    var days = Math.round((new Date(allTests[i].created_at) - new Date(allTests[i-1].created_at)) / (1000*60*60*24));
+    if (days <= 0) continue;
+    if (days < 7) retestCount++;
+    else if (days < 60) scheduledIntervals.push(days);
   }
-  var avgInterval = intervals.length > 0 ? (intervals.reduce(function(a,b) { return a+b; }, 0) / intervals.length).toFixed(1) : "--";
-  var lastTest = tests[tests.length - 1];
-  var daysSince = Math.round((new Date() - new Date(lastTest.created_at)) / (1000 * 60 * 60 * 24));
-  var firstTest = tests[0];
-  var totalDays = Math.max(1, Math.round((new Date() - new Date(firstTest.created_at)) / (1000 * 60 * 60 * 24)));
-  var testsPerMonth = ((tests.length / totalDays) * 30).toFixed(1);
+  var personalAvg = null, personalStdDev = null;
+  if (scheduledIntervals.length > 0) {
+    personalAvg = scheduledIntervals.reduce(function(a,b){return a+b},0) / scheduledIntervals.length;
+    if (scheduledIntervals.length >= 2) {
+      var variance = scheduledIntervals.reduce(function(s,v){return s+Math.pow(v-personalAvg,2)},0) / scheduledIntervals.length;
+      personalStdDev = Math.sqrt(variance);
+    }
+  }
+  var sysAvg = sysStats ? sysStats.scheduledAvg : null;
+  var sysStdDev = sysStats ? sysStats.scheduledStdDev : null;
+  var blendedAvg = null, blendedStdDev = null, dataSource = "none";
+  if (personalAvg && sysAvg) {
+    var pw = Math.min(1.0, scheduledIntervals.length / 8), sw = 1 - pw;
+    blendedAvg = (sysAvg * sw) + (personalAvg * pw);
+    blendedStdDev = ((sysStdDev||3) * sw) + ((personalStdDev||(sysStdDev||3)) * pw);
+    dataSource = pw < 0.5 ? "system+personal" : "personal+system";
+  } else if (personalAvg) {
+    blendedAvg = personalAvg; blendedStdDev = personalStdDev || 3; dataSource = "personal";
+  } else if (sysAvg) {
+    blendedAvg = sysAvg; blendedStdDev = sysStdDev || 3; dataSource = "system";
+  }
+  var lastTest = allTests[allTests.length-1];
+  var daysSince = Math.round((new Date() - new Date(lastTest.created_at)) / (1000*60*60*24));
+  var firstTest = allTests[0];
+  var totalDays = Math.max(1, Math.round((new Date() - new Date(firstTest.created_at)) / (1000*60*60*24)));
+  var testsPerMonth = ((allTests.length / totalDays) * 30).toFixed(1);
   var dayCount = [0,0,0,0,0,0,0];
-  tests.forEach(function(t) { dayCount[new Date(t.created_at).getDay()]++; });
+  allTests.forEach(function(t) { dayCount[new Date(t.created_at).getDay()]++; });
+  if (sysStats && sysStats.dayOfWeekCounts && allTests.length < 6) {
+    var sd = sysStats.dayOfWeekCounts, sm = Math.max.apply(null, sd);
+    if (sm > 0) {
+      var pw2 = Math.min(1.0, allTests.length/6), sw2 = 1-pw2;
+      for (var d = 0; d < 7; d++) dayCount[d] = Math.round(dayCount[d]*pw2 + (sd[d]/sm)*10*sw2);
+    }
+  }
   var maxDay = Math.max.apply(null, dayCount);
-  var dayNames = ["S","M","T","W","T","F","S"];
-  document.getElementById("statAvgInterval").textContent = avgInterval;
-  document.getElementById("statTotalTests").textContent = tests.length;
+  document.getElementById("statAvgInterval").textContent = blendedAvg ? blendedAvg.toFixed(1) : "--";
+  document.getElementById("statTotalTests").textContent = allTests.length;
   document.getElementById("statDaysSince").textContent = daysSince;
   document.getElementById("statTestRate").textContent = testsPerMonth;
   var dsBox = document.getElementById("statDaysSinceBox");
   dsBox.className = "test-stat";
-  if (avgInterval !== "--") {
-    var avg = parseFloat(avgInterval);
-    if (daysSince >= avg) dsBox.className = "test-stat danger";
-    else if (daysSince >= avg * 0.7) dsBox.className = "test-stat warning";
+  if (blendedAvg) {
+    if (daysSince >= blendedAvg) dsBox.className = "test-stat danger";
+    else if (daysSince >= blendedAvg * 0.7) dsBox.className = "test-stat warning";
   }
   var predictEl = document.getElementById("predictText");
   var confEl = document.getElementById("predictConfidence");
-  if (avgInterval !== "--" && intervals.length >= 2) {
-    var avg = parseFloat(avgInterval);
-    var daysUntil = Math.round(avg - daysSince);
-    if (daysUntil <= 0) { predictEl.textContent = "⚠️ Test likely any day now"; predictEl.style.color = "#ef4444"; }
-    else if (daysUntil <= 2) { predictEl.textContent = "🔶 Test likely within " + daysUntil + " day" + (daysUntil > 1 ? "s" : ""); predictEl.style.color = "#f59e0b"; }
-    else { predictEl.textContent = "📊 Next test estimated in ~" + daysUntil + " days"; predictEl.style.color = "#00d9ff"; }
-    var confidence = Math.min(95, 50 + (intervals.length * 5));
-    confEl.textContent = "Based on " + tests.length + " tests over " + totalDays + " days (" + confidence + "% confidence)";
-  } else { predictEl.textContent = "Need more data for prediction"; predictEl.style.color = "#8892b0"; confEl.textContent = "Keep logging tests to improve accuracy"; }
-  var patternHtml = "";
+  if (blendedAvg) {
+    var daysUntil = Math.round(blendedAvg - daysSince);
+    var lo = Math.max(0, Math.round(blendedAvg - (blendedStdDev||3) - daysSince));
+    var hi = Math.round(blendedAvg + (blendedStdDev||3) - daysSince);
+    if (daysUntil <= 0) { predictEl.textContent = "Test likely any day now"; predictEl.style.color = "#ef4444"; }
+    else if (daysUntil <= 2) { predictEl.textContent = "Test likely within " + daysUntil + " day" + (daysUntil!==1?"s":""); predictEl.style.color = "#f59e0b"; }
+    else {
+      var rangeText = (hi > lo && hi > 0) ? " (range: "+lo+"-"+hi+"d)" : "";
+      predictEl.textContent = "Next test ~" + daysUntil + " days" + rangeText;
+      predictEl.style.color = "#00d9ff";
+    }
+    var dataPoints = scheduledIntervals.length + (sysStats ? Math.min(5,(sysStats.scheduledIntervalCount||0)/4) : 0);
+    var varConf = blendedStdDev > 0 ? Math.max(0, 100-(blendedStdDev/blendedAvg*100)) : 80;
+    var confidence = Math.round(Math.min(88, Math.max(40, dataPoints*6 + varConf*0.3)));
+    var srcMap = {"system":"county avg","personal":"your history","personal+system":"your history + county","system+personal":"county + your history"};
+    var srcLabel = srcMap[dataSource] || "mixed";
+    var confText = "Based on "+allTests.length+" tests over "+totalDays+"d · "+srcLabel+" · "+confidence+"% confidence";
+    if (retestCount > 0) confText += " · "+retestCount+" retest"+(retestCount>1?"s":"")+" excluded";
+    confEl.textContent = confText;
+  } else {
+    predictEl.textContent = "Need more data for prediction"; predictEl.style.color = "#8892b0";
+    confEl.textContent = "Keep logging tests to improve accuracy";
+  }
+  var dayNames = ["S","M","T","W","T","F","S"], patternHtml = "";
   for (var d = 0; d < 7; d++) {
-    var pct = maxDay > 0 ? (dayCount[d] / maxDay) : 0;
+    var pct = maxDay > 0 ? (dayCount[d]/maxDay) : 0;
     var cls = pct >= 0.7 ? "high" : pct >= 0.3 ? "med" : "low";
-    patternHtml += "<div class=\"pattern-day " + cls + "\">" + dayNames[d] + "</div>";
+    patternHtml += "<div class='pattern-day " + cls + "'>" + dayNames[d] + "</div>";
   }
   document.getElementById("patternRow").innerHTML = patternHtml;
 }

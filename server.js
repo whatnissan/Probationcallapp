@@ -453,6 +453,68 @@ app.get("/api/admin/montgomery-analytics", adminAuth, async function(req, res) {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+
+app.get('/api/system-stats', auth, async function(req, res) {
+  try {
+    var now = Date.now();
+    if (global.systemStatsCache && (now - global.systemStatsCache.timestamp) < 3600000) {
+      return res.json(global.systemStatsCache.data);
+    }
+    var result = await supabase.from('call_history').select('user_id, created_at, result, county')
+      .eq('result', 'MUST_TEST').order('created_at', { ascending: true });
+    if (result.error) return res.status(500).json({ error: result.error.message });
+    var tests = (result.data || []).filter(function(t) {
+      var c = t.county || 'montgomery';
+      return c === 'montgomery' || c.indexOf('montgomery') === 0;
+    });
+    var userTests = {};
+    tests.forEach(function(t) {
+      if (!userTests[t.user_id]) userTests[t.user_id] = [];
+      userTests[t.user_id].push(t.created_at);
+    });
+    var scheduledIntervals = [], retestIntervals = [];
+    Object.keys(userTests).forEach(function(uid) {
+      var dates = userTests[uid].map(function(d) { return new Date(d); }).sort(function(a,b) { return a-b; });
+      for (var i = 1; i < dates.length; i++) {
+        var days = Math.round((dates[i]-dates[i-1])/(1000*60*60*24));
+        if (days <= 0) continue;
+        if (days < 7) retestIntervals.push(days);
+        else if (days < 60) scheduledIntervals.push(days);
+      }
+    });
+    var scheduledAvg = 0, scheduledMedian = 0, scheduledStdDev = 0;
+    if (scheduledIntervals.length > 0) {
+      scheduledAvg = scheduledIntervals.reduce(function(a,b){return a+b},0) / scheduledIntervals.length;
+      var sorted = scheduledIntervals.slice().sort(function(a,b){return a-b});
+      scheduledMedian = sorted[Math.floor(sorted.length/2)];
+      var variance = scheduledIntervals.reduce(function(s,v){return s+Math.pow(v-scheduledAvg,2)},0) / scheduledIntervals.length;
+      scheduledStdDev = Math.sqrt(variance);
+    }
+    var dateCounts = {};
+    tests.forEach(function(t) {
+      var date = t.created_at.substring(0,10);
+      if (!dateCounts[date]) dateCounts[date] = [];
+      if (dateCounts[date].indexOf(t.user_id) === -1) dateCounts[date].push(t.user_id);
+    });
+    var confirmedTestingDays = Object.keys(dateCounts).filter(function(d){return dateCounts[d].length >= 2;}).sort();
+    var dayCount = [0,0,0,0,0,0,0];
+    tests.forEach(function(t) { dayCount[new Date(t.created_at).getDay()]++; });
+    var data = {
+      scheduledAvg: parseFloat(scheduledAvg.toFixed(1)),
+      scheduledMedian: scheduledMedian,
+      scheduledStdDev: parseFloat(scheduledStdDev.toFixed(1)),
+      scheduledIntervalCount: scheduledIntervals.length,
+      retestCount: retestIntervals.length,
+      totalMustTestEvents: tests.length,
+      totalUsersWithTests: Object.keys(userTests).length,
+      confirmedTestingDays: confirmedTestingDays.slice(-60),
+      dayOfWeekCounts: dayCount,
+      generatedAt: new Date().toISOString()
+    };
+    global.systemStatsCache = { timestamp: now, data: data };
+    res.json(data);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
 // Fort Bend Color Analytics
 app.get("/api/ftbend/analytics", auth, async function(req, res) {
   try {
