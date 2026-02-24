@@ -1790,6 +1790,14 @@ app.post('/api/admin/set-referral-code', adminAuth, async function(req, res) {
 });
 
 // Unlock user from affiliate
+app.post('/api/admin/set-lock', adminAuth, async function(req, res) {
+  var { userId, code } = req.body;
+  if (!userId || !code) return res.status(400).json({ error: 'Missing userId or code' });
+  var { error } = await supabase.from('profiles').update({ referred_by: code.toUpperCase() }).eq('id', userId);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
 app.post('/api/admin/unlock-user', adminAuth, async function(req, res) {
   var userId = req.body.userId;
   
