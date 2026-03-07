@@ -1331,7 +1331,7 @@ app.post('/webhook/recording', async function(req, res) {
             target_number: config.targetNumber || '+19362834848',
             pin_used: config.pin,
             result: result,
-            speech_result: transcript,
+            
             recording_url: recordingUrl + '.mp3',
             created_at: new Date().toISOString()
           });
