@@ -2637,8 +2637,7 @@ cron.schedule('45 * * * *', async function() {
     
     if (!isDevUser && profile.credits < 1) {
       console.log('[RECOVERY] User ' + sched.user_id.slice(0,8) + '... has no credits, skipping');
-      await notify(sched.notify_number, sched.notify_email, sched.notify_method, '⚠️ ProbationCall: Your scheduled call was missed and you have no credits!', 'recovery'); await supabase.from('call_history').insert({ user_id: sched.user_id, target_number: sched.target_number, pin_used: sched.pin, result: 'NO_CREDITS' });
-      await supabase.from('call_history').insert({ user_id: sched.user_id, target_number: sched.target_number, pin_used: sched.pin, result: 'NO_CREDITS' });
+      await notify(sched.notify_number, sched.notify_email, sched.notify_method, '⚠️ ProbationCall: Your scheduled call was missed and you have no credits!\n\nPlease purchase credits at probationcall.com\n\n- ProbationCall.com', 'recovery');
       await supabase.from('call_history').insert({ user_id: sched.user_id, target_number: sched.target_number, pin_used: sched.pin, result: 'NO_CREDITS' });
       continue;
     }
