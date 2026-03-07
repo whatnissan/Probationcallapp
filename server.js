@@ -1324,7 +1324,7 @@ app.post('/webhook/recording', async function(req, res) {
       
       config.result = result;
       if (config.userId) {
-        await supabase.from('call_history')
+        var insertResult = await supabase.from('call_history')
           .insert({
             user_id: config.userId,
             call_sid: config.callSid || 'unknown',
@@ -1335,7 +1335,11 @@ app.post('/webhook/recording', async function(req, res) {
             recording_url: recordingUrl + '.mp3',
             created_at: new Date().toISOString()
           });
-        console.log('[TRANSCRIBE] Saved result to call_history:', result);
+        if (insertResult.error) {
+          console.error('[TRANSCRIBE] INSERT ERROR:', JSON.stringify(insertResult.error));
+        } else {
+          console.log('[TRANSCRIBE] Saved result to call_history:', result);
+        }
       }
       broadcastToClients({ type: 'result', callId: callId, result: result, speech: transcript });
     }
