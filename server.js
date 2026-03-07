@@ -1138,8 +1138,8 @@ app.post('/twiml/answer', function(req, res) {
   log(callId, 'Call answered, sending DTMF', 'success');
   twiml.play({ digits: 'wwwwwwwwww1wwwwwwwwwwwwwwwwwwww' + config.pin + 'wwwwwwwwwwwwwwwwwwww1' });
   twiml.pause({ length: 2 });
-  twiml.gather({ input: 'speech', timeout: 15, speechTimeout: 3, speechModel: 'googlev2_short', language: 'en-US', action: process.env.BASE_URL + '/twiml/result?callId=' + callId, hints: 'do not test, required to test, must test' });
-  twiml.redirect(process.env.BASE_URL + '/twiml/fallback?callId=' + callId);
+  twiml.pause({ length: 20 });
+  twiml.hangup();
   res.type('text/xml').send(twiml.toString());
 });
 
@@ -1238,33 +1238,96 @@ app.post('/webhook/recording', async function(req, res) {
   var recordingUrl = req.body.RecordingUrl;
   
   console.log('[RECORDING] CallId:', callId, 'URL:', recordingUrl);
+  res.sendStatus(200);
   
-  if (recordingUrl && callId) {
-    var mp3Url = recordingUrl + '.mp3';
-    var config = pendingCalls.get(callId);
+  if (!recordingUrl || !callId) return;
+  
+  var mp3Url = recordingUrl + '.mp3';
+  var config = pendingCalls.get(callId);
+  
+  if (!config) return;
+  
+  // Save recording URL first
+  if (config.isFtbendDaily) {
+    var now = new Date();
+    var cst = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
+    var today = cst.getFullYear() + '-' + String(cst.getMonth() + 1).padStart(2, '0') + '-' + String(cst.getDate()).padStart(2, '0');
+    var countyKey = 'ftbend_' + (config.officeId || 'missouri');
+    await supabase.from('daily_county_status')
+      .update({ recording_url: mp3Url })
+      .eq('county', countyKey)
+      .eq('date', today);
+    console.log('[RECORDING] Saved Fort Bend daily recording for', countyKey, today);
+  } else if (config.callSid) {
+    await supabase.from('call_history')
+      .update({ recording_url: mp3Url })
+      .eq('call_sid', config.callSid);
+    console.log('[RECORDING] Saved Montgomery recording for', config.callSid);
+  }
+  
+  // Transcribe with Deepgram
+  try {
+    console.log('[TRANSCRIBE] Starting Deepgram transcription for', callId);
+    var audioUrl = recordingUrl + '.mp3';
+    var dgResponse = await fetch('https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Token ' + process.env.DEEPGRAM_API_KEY,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ url: audioUrl })
+    });
+    var dgResult = await dgResponse.json();
+    var transcript = (dgResult.results && dgResult.results.channels && dgResult.results.channels[0] && dgResult.results.channels[0].alternatives && dgResult.results.channels[0].alternatives[0] && dgResult.results.channels[0].alternatives[0].transcript) || '';
     
-    if (config) {
-      if (config.isFtbendDaily) {
-        // Fort Bend - save to daily_county_status (overwrites daily)
-        var now = new Date();
-        var cst = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
-        var today = cst.getFullYear() + '-' + String(cst.getMonth() + 1).padStart(2, '0') + '-' + String(cst.getDate()).padStart(2, '0');
-        var countyKey = 'ftbend_' + (config.officeId || 'missouri');
-        await supabase.from('daily_county_status')
-          .update({ recording_url: mp3Url })
-          .eq('county', countyKey)
-          .eq('date', today);
-        console.log('[RECORDING] Saved Fort Bend daily recording for', countyKey, today);
-      } else if (config.callSid) {
-        // Montgomery - save to call_history
-        await supabase.from('call_history')
-          .update({ recording_url: mp3Url })
-          .eq('call_sid', config.callSid);
-        console.log('[RECORDING] Saved Montgomery recording for', config.callSid);
+    console.log('[TRANSCRIBE] Result: "' + transcript + '"');
+    
+    if (!transcript) {
+      console.log('[TRANSCRIBE] Empty transcript for', callId);
+      return;
+    }
+    
+    var lower = transcript.toLowerCase();
+    
+    if (config.isFtbendDaily) {
+      // Fort Bend - detect color
+      var detectedColor = detectColor(lower);
+      if (detectedColor) {
+        console.log('[TRANSCRIBE] Fort Bend color detected:', detectedColor);
+        await storeFtbendColor(detectedColor, transcript);
+      } else {
+        console.log('[TRANSCRIBE] No Fort Bend color detected in:', transcript);
       }
+    } else {
+      // Montgomery - detect test/no-test
+      var result = 'UNKNOWN';
+      if (KEYWORDS.MUST_TEST.some(function(k) { return lower.includes(k); })) {
+        result = 'MUST_TEST';
+        console.log('[TRANSCRIBE] 🚨 MUST TEST detected for', callId);
+        await notify(config.notifyNumber, '🚨 DRUG TEST ALERT: You ARE REQUIRED to test today! (PIN: ' + config.pin + ')', callId);
+      } else if (KEYWORDS.NO_TEST.some(function(k) { return lower.includes(k); })) {
+        result = 'NO_TEST';
+        console.log('[TRANSCRIBE] ✅ No test detected for', callId);
+        await notify(config.notifyNumber, '✅ NO TEST TODAY: You do NOT need to test today. (PIN: ' + config.pin + ')', callId);
+      } else {
+        console.log('[TRANSCRIBE] ⚠️ Unknown result for', callId, ':', transcript);
+        await notify(config.notifyNumber, '📞 Call done. Heard: "' + transcript.substring(0, 100) + '". Verify manually.', callId);
+      }
+      
+      config.result = result;
+      if (config.userId && config.callSid) {
+        await supabase.from('call_history')
+          .update({ result: result, speech_result: transcript })
+          .eq('call_sid', config.callSid);
+      }
+      broadcastToClients({ type: 'result', callId: callId, result: result, speech: transcript });
+    }
+  } catch (err) {
+    console.error('[TRANSCRIBE] Deepgram error:', err.message);
+    if (!config.isFtbendDaily && config.notifyNumber) {
+      await notify(config.notifyNumber, '📞 Call completed but transcription failed. Please verify manually. (PIN: ' + config.pin + ')', callId);
     }
   }
-  res.sendStatus(200);
 });
 
 // Cron job to delete old recordings (runs daily at 3am)
@@ -1996,16 +2059,8 @@ app.post('/twiml/ftbend-answer', function(req, res) {
   
   console.log('[FTBEND] Call answered for office: ' + officeId);
   twiml.pause({ length: 3 });
-  twiml.gather({
-    input: 'speech',
-    timeout: 45,
-    speechTimeout: 10,
-    action: process.env.BASE_URL + '/twiml/ftbend-result?callId=' + callId + '&officeId=' + officeId,
-    hints: FTBEND_COLORS.join(', ') + ', color, today, is, phase, one, two, 1, 2',
-    language: 'en-US',
-    profanityFilter: false
-  });
-  twiml.redirect(process.env.BASE_URL + '/twiml/ftbend-fallback?callId=' + callId + '&officeId=' + officeId);
+  twiml.pause({ length: 45 });
+  twiml.hangup();
   
   res.type('text/xml').send(twiml.toString());
 });
