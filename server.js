@@ -1312,14 +1312,21 @@ app.post('/webhook/recording', async function(req, res) {
       if (KEYWORDS.MUST_TEST.some(function(k) { return lower.includes(k); })) {
         result = 'MUST_TEST';
         console.log('[TRANSCRIBE] 🚨 MUST TEST detected for', callId);
-        await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, '🚨 DRUG TEST ALERT: You ARE REQUIRED to test today! (PIN: ' + config.pin + ')', callId);
+        var isFtbend = config.county === 'ftbend';
+        var mustMsg = isFtbend
+          ? '🚨 TEST REQUIRED! 🚨\n\nYour color was called. Report for testing today.\n\n- ProbationCall.com'
+          : '🚨 TEST REQUIRED! 🚨\n\nYour PIN was called. You MUST test today.\n\nPIN: ' + config.pin + '\n\n- ProbationCall.com';
+        await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, mustMsg, callId);
       } else if (KEYWORDS.NO_TEST.some(function(k) { return lower.includes(k); })) {
         result = 'NO_TEST';
         console.log('[TRANSCRIBE] ✅ No test detected for', callId);
-        await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, '✅ NO TEST TODAY: You do NOT need to test today. (PIN: ' + config.pin + ')', callId);
+        var noTestMsg = isFtbend
+          ? '✅ No test today!\n\nYour color was NOT called. Enjoy your day!\n\n- ProbationCall.com'
+          : '✅ No test today!\n\nYour PIN was NOT called. Enjoy your day!\n\nPIN: ' + config.pin + '\n\n- ProbationCall.com';
+        await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, noTestMsg, callId);
       } else {
         console.log('[TRANSCRIBE] ⚠️ Unknown result for', callId, ':', transcript);
-        await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, '📞 Call done. Heard: "' + transcript.substring(0, 100) + '". Verify manually.', callId);
+        await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, '⚠️ Could not determine result.\n\nHeard: "' + transcript.substring(0, 100) + '"\n\nPlease call the hotline to verify.\n\n- ProbationCall.com', callId);
       }
       
       config.result = result;
@@ -1346,7 +1353,7 @@ app.post('/webhook/recording', async function(req, res) {
   } catch (err) {
     console.error('[TRANSCRIBE] Deepgram error:', err.message);
     if (!config.isFtbendDaily && config.notifyNumber) {
-      await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, '📞 Call completed but transcription failed. Please verify manually. (PIN: ' + config.pin + ')', callId);
+      await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, '⚠️ Call completed but no result detected.\n\nPlease verify manually.\nPIN: ' + config.pin + '\n\n- ProbationCall.com', callId);
     }
   }
 });
