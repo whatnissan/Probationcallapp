@@ -1269,13 +1269,21 @@ app.post('/webhook/recording', async function(req, res) {
   try {
     console.log('[TRANSCRIBE] Starting Deepgram transcription for', callId);
     var audioUrl = recordingUrl + '.mp3';
+    // Download from Twilio with auth
+    var audioResponse = await fetch(audioUrl, {
+      headers: {
+        'Authorization': 'Basic ' + Buffer.from(process.env.TWILIO_ACCOUNT_SID + ':' + process.env.TWILIO_AUTH_TOKEN).toString('base64')
+      }
+    });
+    var audioBuffer = Buffer.from(await audioResponse.arrayBuffer());
+    console.log('[TRANSCRIBE] Downloaded audio:', audioBuffer.length, 'bytes');
     var dgResponse = await fetch('https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true', {
       method: 'POST',
       headers: {
         'Authorization': 'Token ' + process.env.DEEPGRAM_API_KEY,
-        'Content-Type': 'application/json'
+        'Content-Type': 'audio/mpeg'
       },
-      body: JSON.stringify({ url: audioUrl })
+      body: audioBuffer
     });
     var dgResult = await dgResponse.json();
     var transcript = (dgResult.results && dgResult.results.channels && dgResult.results.channels[0] && dgResult.results.channels[0].alternatives && dgResult.results.channels[0].alternatives[0] && dgResult.results.channels[0].alternatives[0].transcript) || '';
