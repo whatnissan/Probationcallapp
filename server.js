@@ -1138,7 +1138,7 @@ app.post('/twiml/answer', function(req, res) {
   log(callId, 'Call answered, sending DTMF', 'success');
   twiml.play({ digits: 'wwwwwwwwww1wwwwwwwwwwwwwwwwwwww' + config.pin + 'wwwwwwwwwwwwwwwwwwww1' });
   twiml.pause({ length: 2 });
-  twiml.gather({ input: 'speech', timeout: 15, speechTimeout: 3, action: process.env.BASE_URL + '/twiml/result?callId=' + callId, hints: 'do not test, required to test, must test' });
+  twiml.gather({ input: 'speech', timeout: 15, speechTimeout: 3, speechModel: 'googlev2_short', language: 'en-US', action: process.env.BASE_URL + '/twiml/result?callId=' + callId, hints: 'do not test, required to test, must test' });
   twiml.redirect(process.env.BASE_URL + '/twiml/fallback?callId=' + callId);
   res.type('text/xml').send(twiml.toString());
 });
