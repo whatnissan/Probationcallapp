@@ -1590,6 +1590,102 @@ wss.on('connection', function(ws, req) {
   }
 });
 
+
+// Mass text all active users
+app.post('/api/admin/mass-text', adminAuth, async function(req, res) {
+  try {
+    var message = req.body.message;
+    if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
+    
+    // Get all active schedules with notify numbers
+    var result = await supabase.from('user_schedules').select('user_id, notify_number, notify_email, notify_method').eq('enabled', true);
+    var schedules = result.data || [];
+    
+    var sent = 0, failed = 0, skipped = 0;
+    var fullMessage = message.trim() + '\n\n- ProbationCall.com';
+    
+    for (var i = 0; i < schedules.length; i++) {
+      var s = schedules[i];
+      if (!s.notify_number) { skipped++; continue; }
+      try {
+        await sendSMS(s.notify_number, fullMessage, 'mass_text');
+        sent++;
+        // Small delay to avoid rate limiting
+        await new Promise(function(resolve) { setTimeout(resolve, 200); });
+      } catch (e) {
+        console.error('[MASS TEXT] Failed for', s.user_id, e.message);
+        failed++;
+      }
+    }
+    
+    console.log('[MASS TEXT] Sent:', sent, 'Failed:', failed, 'Skipped:', skipped);
+    res.json({ success: true, sent: sent, failed: failed, skipped: skipped, total: schedules.length });
+  } catch (e) {
+    console.error('[MASS TEXT] Error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Admin alert - check if calls are failing
+var adminAlertSent = false;
+var adminAlertDate = null;
+async function checkCallHealth() {
+  var now = new Date();
+  var cst = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
+  var today = cst.getFullYear() + '-' + String(cst.getMonth() + 1).padStart(2, '0') + '-' + String(cst.getDate()).padStart(2, '0');
+  
+  // Reset alert flag each day
+  if (adminAlertDate !== today) {
+    adminAlertSent = false;
+    adminAlertDate = today;
+  }
+  
+  if (adminAlertSent) return;
+  
+  // Only check between 7am-10am CST (after calls should have gone out)
+  var hour = cst.getHours();
+  if (hour < 7 || hour > 10) return;
+  
+  // Get today's scheduled users
+  var schedResult = await supabase.from('user_schedules').select('user_id').eq('enabled', true);
+  var scheduled = schedResult.data || [];
+  if (scheduled.length === 0) return;
+  
+  // Get today's call results
+  var callResult = await supabase.from('call_history')
+    .select('result')
+    .gte('created_at', today + 'T00:00:00')
+    .lte('created_at', today + 'T23:59:59');
+  var calls = callResult.data || [];
+  
+  var successCalls = calls.filter(function(c) { return c.result === 'NO_TEST' || c.result === 'MUST_TEST'; });
+  
+  // Alert if less than half of scheduled users got results
+  if (calls.length > 0 && successCalls.length < scheduled.length / 2) {
+    // Get admin users
+    var adminResult = await supabase.from('profiles').select('id').eq('is_admin', true);
+    var admins = adminResult.data || [];
+    
+    for (var i = 0; i < admins.length; i++) {
+      var adminSched = await supabase.from('user_schedules').select('notify_number').eq('user_id', admins[i].id).single();
+      if (adminSched.data && adminSched.data.notify_number) {
+        await sendSMS(adminSched.data.notify_number, 
+          '⚠️ ADMIN ALERT: Call issues detected!\n\n' +
+          'Scheduled: ' + scheduled.length + '\n' +
+          'Completed: ' + calls.length + '\n' +
+          'Successful: ' + successCalls.length + '\n\n' +
+          'Check admin panel immediately.\n\n- ProbationCall.com', 
+          'admin_alert');
+      }
+    }
+    adminAlertSent = true;
+    console.log('[ADMIN ALERT] Call health warning sent to admins');
+  }
+}
+
+// Run health check every 30 minutes
+setInterval(checkCallHealth, 30 * 60 * 1000);
+
 var PORT = process.env.PORT || 3000;
 server.listen(PORT, function() {
   console.log('========================================');
