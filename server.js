@@ -1323,10 +1323,19 @@ app.post('/webhook/recording', async function(req, res) {
       }
       
       config.result = result;
-      if (config.userId && config.callSid) {
+      if (config.userId) {
         await supabase.from('call_history')
-          .update({ result: result, speech_result: transcript })
-          .eq('call_sid', config.callSid);
+          .upsert({
+            user_id: config.userId,
+            call_sid: config.callSid || 'unknown',
+            target_number: config.targetNumber || '+19362834848',
+            pin_used: config.pin,
+            result: result,
+            speech_result: transcript,
+            recording_url: recordingUrl + '.mp3',
+            created_at: new Date().toISOString()
+          }, { onConflict: 'call_sid' });
+        console.log('[TRANSCRIBE] Saved result to call_history:', result);
       }
       broadcastToClients({ type: 'result', callId: callId, result: result, speech: transcript });
     }
