@@ -2072,6 +2072,11 @@ app.delete('/api/admin/promo/:id', adminAuth, async function(req, res) {
 });
 
 
+
+app.get("/api/admin/user/:id/calls", adminAuth, async function(req, res) {
+  var result = await supabase.from("call_history").select("*").eq("user_id", req.params.id).order("created_at", { ascending: false }).limit(500);
+  res.json({ calls: result.data || [] });
+});
 app.delete('/api/admin/user/:id', adminAuth, async function(req, res) {
   try {
     var userId = req.params.id;
