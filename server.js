@@ -1301,15 +1301,22 @@ app.post('/webhook/recording', async function(req, res) {
       // Fort Bend - detect color and phases
       var officeId = config.officeId || 'missouri';
       var detectedColor = detectColor(lower);
-      var phases = detectPhaseColors ? detectPhaseColors(transcript) : { phase1: null, phase2: null };
+      var phases = (typeof detectPhaseColors === 'function') ? detectPhaseColors(transcript) : { phase1: null, phase2: null };
+      
+      // Set on config so notifyFtbendOfficeUsers can read them
+      config.phase1 = phases.phase1;
+      config.phase2 = phases.phase2;
       
       if (detectedColor) {
+        config.result = detectedColor;
         console.log('[TRANSCRIBE] Fort Bend ' + officeId + ' color detected:', detectedColor);
         await storeFtbendColor(detectedColor, transcript, officeId, phases.phase1, phases.phase2);
       } else if (phases.phase1) {
+        config.result = phases.phase1;
         console.log('[TRANSCRIBE] Fort Bend ' + officeId + ' phase detected:', phases.phase1);
         await storeFtbendColor(phases.phase1, transcript, officeId, phases.phase1, phases.phase2);
       } else {
+        config.result = 'UNKNOWN';
         console.log('[TRANSCRIBE] Fort Bend ' + officeId + ' no color detected in:', transcript);
         await storeFtbendColor('UNKNOWN', transcript, officeId, null, null);
       }
