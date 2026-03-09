@@ -1766,7 +1766,7 @@ app.get('/api/admin/dashboard', adminAuth, async function(req, res) {
     var schedulesResult = await supabase.from('user_schedules').select('*');
     var schedules = schedulesResult.data || [];
     
-    var callsResult = await supabase.from('call_history').select('*, profiles(email)').order('created_at', { ascending: false }).limit(500);
+    var callsResult = await supabase.from('call_history').select('*, profiles(email)').order('created_at', { ascending: false }).limit(2000);
     var calls = (callsResult.data || []).map(function(c) {
       return Object.assign({}, c, { user_email: c.profiles ? c.profiles.email : null });
     });
