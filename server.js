@@ -804,7 +804,7 @@ app.post('/api/schedule', auth, async function(req, res) {
     result = await supabase.from('user_schedules').insert(data);
     // Send welcome SMS on first schedule setup
     if (data.notify_number) {
-      sendSMS(data.notify_number, 'Welcome to ProbationCall! Your daily check-in is set up. We will call the hotline for you every day and notify you of results. Manage your account at https://probationcall.com', 'welcome').catch(function(e) { console.log('[WELCOME] SMS failed:', e.message); });
+      sendSMS(data.notify_number, '🎉 Welcome to ProbationCall!\n\nYour daily check-in is now active. We\'ll call the hotline for you every day and text you the results.\n\nManage your account anytime at:\nprobationcall.com\n\n- ProbationCall.com', 'welcome').catch(function(e) { console.log('[WELCOME] SMS failed:', e.message); });
     }
   }
   
