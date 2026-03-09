@@ -1298,14 +1298,24 @@ app.post('/webhook/recording', async function(req, res) {
     var lower = transcript.toLowerCase();
     
     if (config.isFtbendDaily) {
-      // Fort Bend - detect color
+      // Fort Bend - detect color and phases
+      var officeId = config.officeId || 'missouri';
       var detectedColor = detectColor(lower);
+      var phases = detectPhaseColors ? detectPhaseColors(transcript) : { phase1: null, phase2: null };
+      
       if (detectedColor) {
-        console.log('[TRANSCRIBE] Fort Bend color detected:', detectedColor);
-        await storeFtbendColor(detectedColor, transcript);
+        console.log('[TRANSCRIBE] Fort Bend ' + officeId + ' color detected:', detectedColor);
+        await storeFtbendColor(detectedColor, transcript, officeId, phases.phase1, phases.phase2);
+      } else if (phases.phase1) {
+        console.log('[TRANSCRIBE] Fort Bend ' + officeId + ' phase detected:', phases.phase1);
+        await storeFtbendColor(phases.phase1, transcript, officeId, phases.phase1, phases.phase2);
       } else {
-        console.log('[TRANSCRIBE] No Fort Bend color detected in:', transcript);
+        console.log('[TRANSCRIBE] Fort Bend ' + officeId + ' no color detected in:', transcript);
+        await storeFtbendColor('UNKNOWN', transcript, officeId, null, null);
       }
+      
+      // Notify Fort Bend users for this office
+      await notifyFtbendOfficeUsers(officeId, config);
     } else {
       // Montgomery - detect test/no-test
       var result = 'UNKNOWN';
