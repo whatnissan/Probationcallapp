@@ -865,10 +865,10 @@ function rescheduleUser(userId, sched) {
           if (skipCount >= 2) {
             await supabase.from('user_schedules').delete().eq('user_id', userId);
             if (scheduledJobs.has(userId)) { scheduledJobs.get(userId).stop(); scheduledJobs.delete(userId); }
-            await notify(sched.notify_number, sched.notify_email, sched.notify_method, 'ProbationCall: Your schedule has been removed due to no credits. Please log in, purchase credits, and set up your schedule again at probationcall.com', 'sched');
+            await notify(sched.notify_number, sched.notify_email, sched.notify_method, '⚠️ Schedule Removed\n\nYour daily check-ins have stopped due to no credits remaining.\n\nPurchase credits and set up your schedule again at:\nprobationcall.com\n\n- ProbationCall.com', 'sched');
           } else {
             await supabase.from('user_schedules').update({ no_credit_skip_count: skipCount }).eq('user_id', userId);
-            await notify(sched.notify_number, sched.notify_email, sched.notify_method, 'ProbationCall: Your scheduled call was skipped due to insufficient credits. Please log in and purchase credits at probationcall.com to continue service. Your schedule will be removed tomorrow if credits are not added.', 'sched');
+            await notify(sched.notify_number, sched.notify_email, sched.notify_method, '⚠️ Call Skipped - Low Credits\n\nToday\'s check-in was skipped because you\'re out of credits. Your schedule will be removed tomorrow if credits are not added.\n\nPurchase credits now at:\nprobationcall.com\n\n- ProbationCall.com', 'sched');
           }
 
           return;
@@ -881,7 +881,7 @@ function rescheduleUser(userId, sched) {
         }
       } catch (e) {
         console.error('[SCHED] Error for ' + userId.slice(0,8) + '...:', e.message);
-        await notify(sched.notify_number, sched.notify_email, sched.notify_method, 'ProbationCall: Scheduled call failed!', 'sched');
+        await notify(sched.notify_number, sched.notify_email, sched.notify_method, '⚠️ Call Failed\n\nYour scheduled check-in could not be completed. We\'ll try again shortly.\n\nIf this persists, please call the hotline manually.\n\n- ProbationCall.com', 'sched');
       }
     }, staggerDelay);
   }, { timezone: sched.timezone });
@@ -1112,7 +1112,7 @@ async function scheduleRetry(config) {
   if (retryCount > 2) {
     log('retry', 'Max retries reached for user ' + config.userId.slice(0,8) + '...', 'warning');
     await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, 
-      '⚠️ ProbationCall: Could not determine result after multiple attempts. Please call manually.\n\nPIN: ' + config.pin, 'retry');
+      '⚠️ Could not determine result.\n\nWe tried multiple times but couldn\'t get a clear result. Please call the hotline manually to check.\n\nPIN: ' + config.pin + '\n\n- ProbationCall.com', 'retry');
     return;
   }
   
@@ -1572,9 +1572,9 @@ async function sendLowCreditAlert(userId, remainingCredits, notifyNumber, notify
   if (remainingCredits > 2 || remainingCredits < 0) return;
   var message;
   if (remainingCredits <= 1) {
-    message = '\u{1F6A8} URGENT - ProbationCall: You only have ' + remainingCredits + ' credit(s) left! After that, your daily check-ins STOP and you could miss a required test.\nLog in now and buy credits: https://probationcall.com';
+    message = '🚨 Low Credits Warning!\n\nYou only have ' + remainingCredits + ' credit(s) left! After that, your daily check-ins STOP and you could miss a required test.\n\nPurchase credits now at:\nprobationcall.com\n\n- ProbationCall.com';
   } else {
-    message = '\u26A0\uFE0F ProbationCall: You only have ' + remainingCredits + ' credits left. Running out means missed check-ins.\nLog in and buy credits now: https://probationcall.com';
+    message = '⚠️ Credits Running Low\n\nYou have ' + remainingCredits + ' credits remaining. Running out means missed check-ins.\n\nPurchase credits at:\nprobationcall.com\n\n- ProbationCall.com';
   }
   console.log('[LOW-CREDIT] Alerting user ' + userId.slice(0,8) + '... (' + remainingCredits + ' credits left)');
   if (notifyNumber) {
@@ -2407,10 +2407,10 @@ async function notifyFtbendOfficeUsers(officeId, config) {
           console.log('[FTBEND] User ' + s.user_id.slice(0,8) + '... has no credits, skipping');
           if (skipCount >= 2) {
             await supabase.from('user_schedules').delete().eq('user_id', s.user_id);
-            await notify(s.notify_number, s.notify_email, s.notify_method, 'ProbationCall: Your schedule has been removed due to no credits. Please log in, purchase credits, and set up your schedule again at probationcall.com', 'ftbend');
+            await notify(s.notify_number, s.notify_email, s.notify_method, '⚠️ Schedule Removed\n\nYour daily check-ins have stopped due to no credits remaining.\n\nPurchase credits and set up your schedule again at:\nprobationcall.com\n\n- ProbationCall.com', 'ftbend');
           } else {
             await supabase.from('user_schedules').update({ no_credit_skip_count: skipCount }).eq('user_id', s.user_id);
-            await notify(s.notify_number, s.notify_email, s.notify_method, 'ProbationCall: Your scheduled call was skipped due to insufficient credits. Please log in and purchase credits at probationcall.com to continue service. Your schedule will be removed tomorrow if credits are not added.', 'ftbend');
+            await notify(s.notify_number, s.notify_email, s.notify_method, '⚠️ Call Skipped - Low Credits\n\nToday\'s check-in was skipped because you\'re out of credits. Your schedule will be removed tomorrow if credits are not added.\n\nPurchase credits now at:\nprobationcall.com\n\n- ProbationCall.com', 'ftbend');
           }
           await supabase.from('call_history').insert({ user_id: s.user_id, target_number: FTBEND_OFFICES[oid] ? FTBEND_OFFICES[oid].number : COUNTIES.ftbend.number, result: 'NO_CREDITS', county: 'ftbend', ftbend_office: oid });
           return;
@@ -2669,7 +2669,7 @@ cron.schedule('45 * * * *', async function() {
       }
     } catch (e) {
       console.error('[RECOVERY] Call failed for ' + sched.user_id.slice(0,8) + '...:', e.message);
-      await notify(sched.notify_number, sched.notify_email, sched.notify_method, '⚠️ ProbationCall: Recovery call failed! Please check manually.', 'recovery');
+      await notify(sched.notify_number, sched.notify_email, sched.notify_method, '⚠️ Call Issue\n\nWe had trouble completing your check-in today. Please call the hotline manually to verify.\n\n- ProbationCall.com', 'recovery');
     }
     
     // Small delay between recovery calls
