@@ -2368,17 +2368,15 @@ async function notifyFtbendOfficeUsers(officeId, config) {
   
   console.log('[FTBEND] Notifying ' + result.data.length + ' users for ' + office.name);
   
-  var message;
-  if (config.phase1 || config.phase2) {
-    message = '🎨 Fort Bend ' + office.name + ' Colors:\n';
-    if (config.phase1) message += '• Color 1: ' + config.phase1.toUpperCase() + '\n';
-    if (config.phase2) message += '• Color 2: ' + config.phase2.toUpperCase() + '\n';
-    message += '\nCheck if this is your assigned color.';
-  } else if (config.result && config.result !== 'UNKNOWN' && config.result !== 'PHASES') {
-    message = '🎨 Fort Bend ' + office.name + ': ' + config.result.toUpperCase() + '\n\nCheck if this is your assigned color.';
-  } else {
-    message = '⚠️ ProbationCall: Could not detect ' + office.name + ' color. Please call ' + (FTBEND_OFFICES[officeId] ? FTBEND_OFFICES[officeId].number : '+12812383668');
+  // Determine today's color(s)
+  var todayColors = [];
+  if (config.phase1) todayColors.push(config.phase1.toLowerCase());
+  if (config.phase2) todayColors.push(config.phase2.toLowerCase());
+  if (config.result && config.result !== 'UNKNOWN' && config.result !== 'PHASES' && todayColors.length === 0) {
+    todayColors.push(config.result.toLowerCase());
   }
+  var todayDisplay = todayColors.map(function(c) { return c.charAt(0).toUpperCase() + c.slice(1); }).join(' & ');
+  var isUnknown = todayColors.length === 0;
   
   var now = new Date();
   var cst = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
@@ -2415,8 +2413,23 @@ async function notifyFtbendOfficeUsers(officeId, config) {
           await supabase.from('call_history').insert({ user_id: s.user_id, target_number: FTBEND_OFFICES[oid] ? FTBEND_OFFICES[oid].number : COUNTIES.ftbend.number, result: 'NO_CREDITS', county: 'ftbend', ftbend_office: oid });
           return;
         }
-        console.log('[FTBEND] Sending ' + oid + ' notification to ' + s.user_id.slice(0,8));
-        await notify(s.notify_number, s.notify_email, s.notify_method, msg, 'ftbend_daily');
+        // Get user's assigned color
+        var userProfileResult = await supabase.from('profiles').select('user_color').eq('id', s.user_id).single();
+        var userColor = (userProfileResult.data && userProfileResult.data.user_color) ? userProfileResult.data.user_color.toLowerCase() : null;
+        
+        var personalMsg;
+        if (isUnknown) {
+          personalMsg = '⚠️ Could not detect today\'s color.\n\nPlease call the hotline to verify:\n' + (FTBEND_OFFICES[oid] ? FTBEND_OFFICES[oid].number : '+12812383668') + '\n\n- ProbationCall.com';
+        } else if (userColor && todayColors.indexOf(userColor) >= 0) {
+          personalMsg = '🚨 TEST REQUIRED! 🚨\n\nToday\'s color is ' + todayDisplay + '.\n\nYour color (' + userColor.charAt(0).toUpperCase() + userColor.slice(1) + ') was called. You MUST test today.\n\n- ProbationCall.com';
+        } else if (userColor) {
+          personalMsg = '✅ No test today!\n\nToday\'s color is ' + todayDisplay + '.\nYour color (' + userColor.charAt(0).toUpperCase() + userColor.slice(1) + ') was NOT called. Enjoy your day!\n\n- ProbationCall.com';
+        } else {
+          personalMsg = '🎨 Today\'s Color: ' + todayDisplay + '\n\nFort Bend ' + office.name + '\n\nCheck if this is your assigned color.\n\n- ProbationCall.com';
+        }
+        
+        console.log('[FTBEND] Sending ' + oid + ' notification to ' + s.user_id.slice(0,8) + ' (user color: ' + (userColor || 'none') + ', today: ' + todayDisplay + ')');
+        await notify(s.notify_number, s.notify_email, s.notify_method, personalMsg, 'ftbend_daily');
         if (!isDevUser) {
           var newCredits = profile.credits - 1; await supabase.from('profiles').update({ credits: newCredits }).eq('id', s.user_id);
           console.log('[FTBEND] Deducted 1 credit from ' + s.user_id.slice(0,8));
