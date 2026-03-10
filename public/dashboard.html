@@ -248,42 +248,32 @@ select option { background: #1a1a2e; color: #fff; }
 
 <!-- DISCLAIMER MODAL -->
 <div class="disclaimer-modal" id="disclaimerModal">
-<div class="disclaimer-content">
-<h2>⚠️ Important Disclaimer</h2>
-<div class="warning-banner">
-<p>THIS SERVICE IS NOT A SUBSTITUTE FOR PERSONALLY CALLING YOUR PROBATION HOTLINE</p>
+<div class="disclaimer-content" style="text-align:center">
+<div style="font-size:2.5rem;margin-bottom:10px">✅</div>
+<h2 style="color:#00d9ff;margin-bottom:5px">Before We Get Started</h2>
+<p style="color:#8892b0;font-size:0.8rem;margin-bottom:20px">Step 1 of 2 — Takes about 30 seconds</p>
+
+<div style="background:rgba(0,217,255,0.1);border:1px solid rgba(0,217,255,0.2);border-radius:12px;padding:20px;margin-bottom:20px;text-align:left">
+<p style="color:#fff;font-size:1rem;margin-bottom:10px"><strong>ProbationCall automatically calls your probation hotline every day</strong> so you never have to worry about forgetting.</p>
+<p style="color:#ccc;font-size:0.9rem;margin-bottom:0">We check your status and text you the results — it's that simple.</p>
 </div>
-<p>Before using ProbationCall, you must understand and agree to the following:</p>
-<h3>🚨 Critical Warnings</h3>
-<ul>
-<li><strong>This is a convenience tool ONLY</strong> - not a guaranteed service</li>
-<li><strong>Technology can fail</strong> - calls may not connect, speech recognition may be wrong</li>
-<li><strong>YOU are responsible</strong> for your probation compliance, not us</li>
-<li><strong>Always verify</strong> your testing status through official channels</li>
-</ul>
-<h3>⚖️ What Could Go Wrong</h3>
-<ul>
-<li>The automated call might not connect</li>
-<li>Speech recognition might misinterpret the message</li>
-<li>You might receive an incorrect "No Test" notification when testing IS required</li>
-<li>Notifications might be delayed or not delivered</li>
-<li>Server outages could prevent scheduled calls</li>
-</ul>
-<h3>🛡️ Your Responsibilities</h3>
-<ul>
-<li>Use this as a BACKUP, not your only method</li>
-<li>Call the hotline yourself if anything seems wrong</li>
-<li>Never blame this service for missed tests</li>
-<li>Understand that YOU face the legal consequences, not us</li>
-</ul>
-<h3>📋 Legal Agreement</h3>
-<p>By using this service, you agree that ProbationCall and its operators are <strong>NOT LIABLE</strong> for any consequences including but not limited to: arrest, incarceration, probation revocation, fines, or any other legal penalties resulting from service failures or inaccuracies.</p>
-<div class="agree-section">
-<label><input type="checkbox" id="agreeCheck1"><span>I understand this service may fail or provide incorrect information, and I will NOT rely on it as my only method of checking my probation status.</span></label>
-<label><input type="checkbox" id="agreeCheck2"><span>I accept FULL RESPONSIBILITY for my probation compliance and will not hold ProbationCall liable for any consequences.</span></label>
-<label><input type="checkbox" id="agreeCheck3"><span>I have read and agree to the <a href="/terms.html" target="_blank" style="color:#00d9ff">Terms of Service</a> and <a href="/privacy.html" target="_blank" style="color:#00d9ff">Privacy Policy</a>.</span></label>
-<button class="agree-btn" id="agreeBtn" disabled onclick="acceptTerms()">I Understand and Accept All Risks</button>
-<button class="decline-btn" onclick="declineTerms()">I Do Not Agree - Exit</button>
+
+<div style="background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.2);border-radius:12px;padding:15px;margin-bottom:20px;text-align:left">
+<p style="color:#22c55e;font-weight:600;margin-bottom:8px">🔒 Your Privacy Matters</p>
+<p style="color:#ccc;font-size:0.85rem;margin-bottom:0">Your information is private and encrypted. We never share your data with probation offices or anyone else.</p>
+</div>
+
+<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:15px;margin-bottom:20px;text-align:left">
+<p style="color:#f59e0b;font-weight:600;margin-bottom:8px">ℹ️ Important to Know</p>
+<p style="color:#ccc;font-size:0.85rem;margin-bottom:8px">ProbationCall is a <strong>convenience tool</strong> designed to help you stay on top of your testing schedule. While we work hard to be accurate, no technology is perfect.</p>
+<p style="color:#ccc;font-size:0.85rem;margin-bottom:0">You are still responsible for your probation compliance. We recommend using this alongside your own checks. Full details are in our <a href="/terms.html" target="_blank" style="color:#00d9ff">Terms of Service</a>.</p>
+</div>
+
+<div class="agree-section" style="text-align:left">
+<label><input type="checkbox" id="agreeCheck1"><span>I understand this is a convenience tool and I'm responsible for my own compliance.</span></label>
+<label><input type="checkbox" id="agreeCheck2"><span>I agree to the <a href="/terms.html" target="_blank" style="color:#00d9ff">Terms of Service</a> and <a href="/privacy.html" target="_blank" style="color:#00d9ff">Privacy Policy</a>.</span></label>
+<button class="agree-btn" id="agreeBtn" disabled onclick="acceptTerms()" style="background:#22c55e;margin-top:10px">Continue Setup →</button>
+<p style="color:#666;font-size:0.75rem;text-align:center;margin-top:10px">✔ Most people finish setup in under 30 seconds</p>
 </div>
 </div>
 </div>
@@ -672,9 +662,9 @@ var termsAccepted = false;
 var affiliateData = null;
 
 // Disclaimer checkboxes
-document.querySelectorAll('#agreeCheck1, #agreeCheck2, #agreeCheck3').forEach(function(cb) {
+document.querySelectorAll('#agreeCheck1, #agreeCheck2').forEach(function(cb) {
   cb.addEventListener('change', function() {
-    var allChecked = document.getElementById('agreeCheck1').checked && document.getElementById('agreeCheck2').checked && document.getElementById('agreeCheck3').checked;
+    var allChecked = document.getElementById('agreeCheck1').checked && document.getElementById('agreeCheck2').checked;
     document.getElementById('agreeBtn').disabled = !allChecked;
   });
 });
