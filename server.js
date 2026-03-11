@@ -2448,7 +2448,7 @@ async function notifyFtbendOfficeUsers(officeId, config) {
           ftbend_office: oid
         });
       }, delay);
-    })(sched, delayMs, message, officeId, config);
+    })(sched, delayMs, null, officeId, config);
   }
 }
 
