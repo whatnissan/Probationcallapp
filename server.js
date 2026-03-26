@@ -1292,6 +1292,39 @@ app.post('/webhook/recording', async function(req, res) {
     
     if (!transcript) {
       console.log('[TRANSCRIBE] Empty transcript for', callId);
+      // Retry if we haven't retried too many times
+      var retryCount = config.transcribeRetry || 0;
+      if (retryCount < 2 && config.userId && !config.isFtbendDaily) {
+        console.log('[TRANSCRIBE] Retrying call for', callId, '(attempt ' + (retryCount + 1) + ')');
+        try {
+          await initiateCall(config.targetNumber, config.pin, config.notifyNumber, config.notifyEmail, config.notifyMethod, config.userId, false, 0);
+          // Mark the new call's retry count
+          var lastKey = Array.from(pendingCalls.keys()).pop();
+          if (lastKey && pendingCalls.get(lastKey)) {
+            pendingCalls.get(lastKey).transcribeRetry = retryCount + 1;
+          }
+        } catch (e) {
+          console.error('[TRANSCRIBE] Retry failed:', e.message);
+        }
+      } else {
+        // Max retries hit or Fort Bend - alert admin and user
+        console.log('[TRANSCRIBE] Max retries reached or skipped for', callId);
+        if (config.notifyNumber && !config.isFtbendDaily) {
+          await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod,
+            '⚠️ Call Issue\n\nThe hotline may be experiencing issues today. We could not get a clear result after multiple attempts.\n\nPlease call the hotline manually to verify:\n+1 (936) 283-4848\n\n- ProbationCall.com', callId);
+        }
+        // Alert admins
+        var adminResult = await supabase.from('profiles').select('id').eq('is_admin', true);
+        if (adminResult.data) {
+          for (var a = 0; a < adminResult.data.length; a++) {
+            var adminSched = await supabase.from('user_schedules').select('notify_number, notify_email, notify_method').eq('user_id', adminResult.data[a].id).single();
+            if (adminSched.data && adminSched.data.notify_number) {
+              await sendSMS(adminSched.data.notify_number,
+                '🚨 ADMIN ALERT: Empty transcripts detected!\n\nCall ' + callId + ' returned empty after retries. The hotline may be down.\n\nCheck probationcall.com/admin', 'admin_alert');
+            }
+          }
+        }
+      }
       return;
     }
     
