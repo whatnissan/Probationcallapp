@@ -255,6 +255,31 @@ const KEYWORDS = {
   MUST_TEST: ['required to test', 'must test', 'you are required', 'report for', 'required today']
 };
 
+// Phrases the Montgomery hotline uses when an ID/PIN is expired. Includes
+// common Deepgram misrecognitions of "ID" (I.D., I D, idea).
+// Checked BEFORE the NO_TEST / MUST_TEST keyword pass — an expired-PIN
+// result is distinct from "no test today".
+const PIN_EXPIRED_PHRASES = [
+  'id number has expired',
+  'i.d. number has expired',
+  'i.d number has expired',
+  'i d number has expired',
+  'idea number has expired',
+  'id has expired',
+  'i.d. has expired',
+  'i.d has expired',
+  'pin has expired',
+  'pin number has expired',
+  'number has expired'
+];
+function detectPinExpired(transcript) {
+  var lower = String(transcript || '').toLowerCase();
+  for (var i = 0; i < PIN_EXPIRED_PHRASES.length; i++) {
+    if (lower.indexOf(PIN_EXPIRED_PHRASES[i]) >= 0) return true;
+  }
+  return false;
+}
+
 // Atomic credit-add via the add_credits_with_ledger RPC. Updates
 // profiles.credits AND inserts a credit_transactions row in one transaction
 // so they can never drift. Returns the new balance, or null on failure
@@ -339,7 +364,9 @@ async function deductCreditOnce(userId, idempotencyKey, options) {
         return false;
       }
       console.log('[CREDITS] Deducted 1 from ' + userId.slice(0, 8) + ' (' + pr.data.credits + ' -> ' + newCredits + ') key=' + idempotencyKey);
-      await supabase.from('user_schedules').update({ no_credit_skip_count: 0 }).eq('user_id', userId);
+      // A successful billable result resets both skip counters: the user is
+      // back in good standing on credits AND the hotline accepted their PIN.
+      await supabase.from('user_schedules').update({ no_credit_skip_count: 0, consecutive_pin_expired: 0 }).eq('user_id', userId);
       if (newCredits <= 2 && options.notifyNumber !== undefined) {
         sendLowCreditAlert(userId, newCredits, options.notifyNumber, options.notifyEmail, options.notifyMethod);
       }
@@ -396,6 +423,58 @@ async function checkConsecutiveUnknown(userId, lastTranscript, notifyNumber, not
         await sendSMS(adminSched.data.notify_number,
           '⚠️ ADMIN: User ' + userId.slice(0, 8) + ' paused after ' + UNKNOWN_STREAK_THRESHOLD + ' UNKNOWNs.\n\nLast heard: "' + String(lastTranscript || '').slice(0, 100) + '"',
           'unknown_streak').catch(function() {});
+      }
+    }
+  }
+}
+
+// Track consecutive PIN_EXPIRED results. Auto-disables the schedule after
+// PIN_EXPIRED_STREAK_THRESHOLD in a row (default 2) — a single occurrence
+// could be a transient mishear; two in a row is a confident signal that
+// the user's ID/PIN is no longer valid at the hotline.
+//
+// Notification policy: silent on the first PIN_EXPIRED; one SMS+email at
+// auto-disable. Counter is reset by deductCreditOnce on any billable
+// MUST_TEST/NO_TEST and by /api/schedule on PIN re-save.
+var PIN_EXPIRED_STREAK_THRESHOLD = 2;
+async function handlePinExpiredResult(userId, lastTranscript, notifyNumber, notifyEmail, notifyMethod) {
+  var schedRes = await supabase.from('user_schedules')
+    .select('consecutive_pin_expired, enabled')
+    .eq('user_id', userId)
+    .single();
+  if (schedRes.error || !schedRes.data) return;
+  var newCount = (schedRes.data.consecutive_pin_expired || 0) + 1;
+  await supabase.from('user_schedules')
+    .update({ consecutive_pin_expired: newCount })
+    .eq('user_id', userId);
+  console.log('[PIN-EXPIRED] User ' + userId.slice(0, 8) + ' consecutive count: ' + newCount + '/' + PIN_EXPIRED_STREAK_THRESHOLD);
+
+  if (newCount < PIN_EXPIRED_STREAK_THRESHOLD) return;
+  if (schedRes.data.enabled === false) {
+    // Already disabled (e.g. via the UNKNOWN-streak path or manually). Don't re-notify.
+    console.log('[PIN-EXPIRED] Schedule already disabled for ' + userId.slice(0, 8) + ' — skipping re-notify');
+    return;
+  }
+
+  await supabase.from('user_schedules').update({ enabled: false }).eq('user_id', userId);
+  if (scheduledJobs.has(userId)) {
+    scheduledJobs.get(userId).stop();
+    scheduledJobs.delete(userId);
+  }
+  console.log('[PIN-EXPIRED] Schedule auto-disabled for ' + userId.slice(0, 8));
+
+  var userMsg = '⏸ ProbationCall paused\n\nThe hotline says your ID/PIN has expired, so we paused your daily check-ins to stop wasting credits.\n\nWhat to do:\n1. Verify directly with your probation officer or by calling the hotline yourself.\n2. Update your PIN at probationcall.com to resume calls.\n3. If your PIN is still valid and this looks wrong, contact us.\n\n- ProbationCall.com';
+  await notify(notifyNumber, notifyEmail, notifyMethod, userMsg, 'pin_expired').catch(function() {});
+
+  // Admin alert (one-shot at auto-disable).
+  var adminResult = await supabase.from('profiles').select('id').eq('is_admin', true);
+  if (adminResult.data) {
+    for (var a = 0; a < adminResult.data.length; a++) {
+      var adminSched = await supabase.from('user_schedules').select('notify_number').eq('user_id', adminResult.data[a].id).single();
+      if (adminSched.data && adminSched.data.notify_number) {
+        await sendSMS(adminSched.data.notify_number,
+          '⚠️ ADMIN: User ' + userId.slice(0, 8) + ' auto-paused after ' + PIN_EXPIRED_STREAK_THRESHOLD + ' PIN_EXPIRED.\n\nLast heard: "' + String(lastTranscript || '').slice(0, 100) + '"',
+          'pin_expired_admin').catch(function() {});
       }
     }
   }
@@ -1030,7 +1109,9 @@ app.post('/api/schedule', auth, async function(req, res) {
     quiet_mode: req.body.quietMode || false,
     ftbend_office: req.body.ftbend_office || 'missouri',
     enabled: true,
-    
+    // Re-saving the schedule (typically to update a fresh PIN) clears the
+    // PIN_EXPIRED streak so the auto-disable logic starts over.
+    consecutive_pin_expired: 0
   };
   
   var existingResult = await supabase.from('user_schedules').select('id').eq('user_id', req.user.id).single();
@@ -1750,10 +1831,25 @@ app.post('/webhook/recording', async function(req, res) {
       // Notify Fort Bend users for this office
       await notifyFtbendOfficeUsers(officeId, config);
     } else {
-      // Montgomery - detect test/no-test
+      // Montgomery - detect test/no-test. PIN_EXPIRED check runs FIRST so an
+      // expired-PIN announcement isn't accidentally classified as UNKNOWN
+      // (or, in pathological mixed-audio transcripts, NO_TEST/MUST_TEST).
       var result = 'UNKNOWN';
       var isFtbend = config.county === 'ftbend';
-      if (KEYWORDS.MUST_TEST.some(function(k) { return lower.includes(k); })) {
+      if (detectPinExpired(transcript)) {
+        result = 'PIN_EXPIRED';
+        console.log('[TRANSCRIBE] 🪪 PIN_EXPIRED detected for', callId);
+        // Notification is sent ONLY at auto-disable, not on every occurrence —
+        // a single mishear shouldn't spam the user. handlePinExpiredResult
+        // increments the counter and decides whether to disable + notify.
+        if (config.userId) {
+          handlePinExpiredResult(config.userId, transcript, config.notifyNumber, config.notifyEmail, config.notifyMethod)
+            .catch(function(e) { console.error('[PIN-EXPIRED] handler failed:', e.message); });
+        } else {
+          // Manual call with no userId (rare). Notify directly.
+          await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, '⚠️ The hotline says your ID/PIN has expired. Please verify with your probation officer.\n\n- ProbationCall.com', callId);
+        }
+      } else if (KEYWORDS.MUST_TEST.some(function(k) { return lower.includes(k); })) {
         result = 'MUST_TEST';
         console.log('[TRANSCRIBE] 🚨 MUST TEST detected for', callId);
         var mustMsg = isFtbend
@@ -1771,7 +1867,8 @@ app.post('/webhook/recording', async function(req, res) {
         console.log('[TRANSCRIBE] ⚠️ Unknown result for', callId, ':', transcript);
         await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, '⚠️ Could not determine result.\n\nHeard: "' + transcript.substring(0, 100) + '"\n\nPlease call the hotline to verify.\n\n- ProbationCall.com', callId);
         // If this user has now had several UNKNOWNs in a row, pause their
-        // schedule and alert them + admins. Catches expired-PIN scenarios.
+        // schedule and alert them + admins. Catches non-PIN-expired
+        // unparseable results (e.g. hotline wording changes).
         if (config.userId) {
           checkConsecutiveUnknown(config.userId, transcript, config.notifyNumber, config.notifyEmail, config.notifyMethod)
             .catch(function(e) { console.error('[UNKNOWN-STREAK] check failed:', e.message); });
