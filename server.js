@@ -1359,8 +1359,16 @@ function rescheduleUser(userId, sched) {
         // or NO_TEST) is known. UNKNOWN does not bill. See deductCreditOnce.
         await initiateCall(sched.target_number, sched.pin, sched.notify_number, sched.notify_email, sched.notify_method, userId, sched.retry_on_unknown, 0);
       } catch (e) {
+        // This catches a pre-flight throw from initiateCall (e.g. Twilio
+        // SDK rejected the request before a call_sid was assigned). No
+        // call_history row was written, so the :45 missed-call recovery
+        // cron WILL retry automatically at the next :45 mark this morning.
+        // Message reflects that — don't promise "shortly" since the retry
+        // is at most ~60 min away and is not guaranteed (recovery itself
+        // can also fail). Tells the user to verify manually if they don't
+        // hear back, which is the right action.
         console.error('[SCHED] Error for ' + userId.slice(0,8) + '...:', e.message);
-        await notify(sched.notify_number, sched.notify_email, sched.notify_method, '⚠️ Call Failed\n\nYour scheduled check-in could not be completed. We\'ll try again shortly.\n\nIf this persists, please call the hotline manually.\n\n- ProbationCall.com', 'sched');
+        await notify(sched.notify_number, sched.notify_email, sched.notify_method, '⚠️ Call Issue\n\nYour scheduled check-in couldn\'t be completed this morning. Our system will automatically attempt a recovery call within the next hour.\n\nIf you don\'t hear back from us by mid-morning, please call the hotline yourself to verify your status.\n\n- ProbationCall.com', 'sched');
       }
     }, staggerDelay);
   }, { timezone: sched.timezone });
