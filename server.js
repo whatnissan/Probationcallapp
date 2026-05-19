@@ -244,6 +244,24 @@ function formatPhone(phone) {
 const MIN_PAYOUT_CENTS = 2000; // $20 minimum payout
 const REFERRED_BONUS_CREDITS = 5; // Bonus credits for new users who use referral
 
+// Affiliate program — global on/off switch.
+// When false: bundle and subscription purchases still grant the buyer's
+// credits as normal, but the entire commission/transfer/payout machinery
+// is skipped, every /api/affiliate/* and /api/admin/*referral endpoint
+// returns 403, and the affiliate dashboard UI is hidden. Flipping to true
+// (set env AFFILIATE_ENABLED=true) cleanly re-enables everything — no
+// affiliate code was deleted, only gated.
+var AFFILIATE_ENABLED = process.env.AFFILIATE_ENABLED === 'true';
+
+// Middleware: 403 if the affiliate program is off. Used on every endpoint
+// that mutates affiliate state or reveals affiliate-only data.
+function requireAffiliateEnabled(req, res, next) {
+  if (!AFFILIATE_ENABLED) {
+    return res.status(403).json({ error: 'Affiliate program is not currently active.' });
+  }
+  next();
+}
+
 const PACKAGES = {
   starter: { name: 'Starter', credits: 30, price: 1499 },
   standard: { name: 'Standard', credits: 90, price: 3999 },
@@ -633,9 +651,13 @@ app.get('/api/user', auth, async function(req, res) {
   // Get payout history
   var payoutsResult = await supabase.from('payout_requests').select('*').eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(10);
   
-  res.json({ 
-    user: req.user, 
+  res.json({
+    user: req.user,
     profile: req.profile,
+    // Top-level flag the dashboard checks to gate the affiliate tab + UI.
+    // When false, the client hides the Earn Cash tab and skips any
+    // auto-apply of a saved referral code from localStorage.
+    affiliateEnabled: AFFILIATE_ENABLED,
     probationEndDate: req.profile.probation_end_date,
     userColor: req.profile.user_color,
     onboardingComplete: req.profile.onboarding_complete,
@@ -855,7 +877,7 @@ app.get("/api/ftbend/analytics", auth, async function(req, res) {
 });
 
 // Apply referral code (called during signup or first visit)
-app.post('/api/apply-referral', auth, async function(req, res) {
+app.post('/api/apply-referral', auth, requireAffiliateEnabled, async function(req, res) {
   var code = req.body.code;
   if (!code) return res.status(400).json({ error: 'No code provided' });
   
@@ -903,7 +925,7 @@ app.post('/api/apply-referral', auth, async function(req, res) {
 });
 
 // Set payout email
-app.post('/api/affiliate/payout-email', auth, async function(req, res) {
+app.post('/api/affiliate/payout-email', auth, requireAffiliateEnabled, async function(req, res) {
   var email = req.body.email;
   if (!email) return res.status(400).json({ error: 'Email required' });
   
@@ -912,7 +934,7 @@ app.post('/api/affiliate/payout-email', auth, async function(req, res) {
 });
 
 // Request payout
-app.post('/api/affiliate/request-payout', auth, async function(req, res) {
+app.post('/api/affiliate/request-payout', auth, requireAffiliateEnabled, async function(req, res) {
   var balance = req.profile.affiliate_balance_cents || 0;
   var payoutEmail = req.profile.payout_email;
   var method = req.body.method || 'paypal';
@@ -1011,7 +1033,7 @@ app.post('/api/redeem', auth, async function(req, res) {
 });
 
 // Check if affiliate code is valid
-app.post('/api/check-affiliate-code', auth, async function(req, res) {
+app.post('/api/check-affiliate-code', auth, requireAffiliateEnabled, async function(req, res) {
   var code = req.body.code ? req.body.code.toUpperCase() : '';
   
   var result = await supabase.from('profiles')
@@ -1027,7 +1049,7 @@ app.post('/api/check-affiliate-code', auth, async function(req, res) {
 });
 
 // Stripe Connect - Create onboarding link for affiliates
-app.post('/api/affiliate/connect', auth, async function(req, res) {
+app.post('/api/affiliate/connect', auth, requireAffiliateEnabled, async function(req, res) {
   try {
     // Check if user already has a connected account
     if (req.profile.stripe_connect_id) {
@@ -1065,7 +1087,7 @@ app.post('/api/affiliate/connect', auth, async function(req, res) {
 });
 
 // Check Stripe Connect status
-app.get('/api/affiliate/connect-status', auth, async function(req, res) {
+app.get('/api/affiliate/connect-status', auth, requireAffiliateEnabled, async function(req, res) {
   if (!req.profile.stripe_connect_id) {
     return res.json({ connected: false });
   }
@@ -1218,21 +1240,24 @@ app.post('/api/checkout', auth, rateLimit('checkout', 10, 5 * 60 * 1000), async 
   var pkg = PACKAGES[req.body.packageId];
   if (!pkg) return res.status(400).json({ error: 'Invalid package' });
   
-  // Check for affiliate/promo code
-  var affiliateCode = req.body.affiliateCode ? req.body.affiliateCode.toUpperCase() : null;
+  // Check for affiliate/promo code — only when the affiliate program is on.
+  // When disabled, any affiliateCode in the request is silently ignored so a
+  // bundle purchase still succeeds and credits are still granted; just no
+  // affiliate lock is written and no metadata is passed to Stripe.
+  var affiliateCode = null;
   var affiliateId = null;
-  
-  if (affiliateCode) {
-    // Look up affiliate by their referral code
+
+  if (AFFILIATE_ENABLED && req.body.affiliateCode) {
+    affiliateCode = req.body.affiliateCode.toUpperCase();
     var affiliateResult = await supabase.from('profiles')
       .select('id')
       .eq('referral_code', affiliateCode)
       .single();
-    
+
     if (affiliateResult.data) {
       affiliateId = affiliateResult.data.id;
       console.log('[CHECKOUT] Affiliate code ' + affiliateCode + ' found: ' + affiliateId.slice(0,8));
-      
+
       // Lock this user to the affiliate if not already locked
       if (!req.profile.referred_by) {
         await supabase.from('profiles')
@@ -1243,6 +1268,8 @@ app.post('/api/checkout', auth, rateLimit('checkout', 10, 5 * 60 * 1000), async 
     } else {
       console.log('[CHECKOUT] Affiliate code ' + affiliateCode + ' not found');
     }
+  } else if (req.body.affiliateCode && !AFFILIATE_ENABLED) {
+    console.log('[CHECKOUT] Affiliate program disabled — ignoring submitted affiliateCode');
   }
   
   var session = await stripe.checkout.sessions.create({
@@ -1693,7 +1720,14 @@ app.post('/webhook/stripe', async function(req, res) {
 
     // AFFILIATE COMMISSION — accept either a code passed at checkout or a
     // prior referral lock on the profile. Failures here log but never undo
-    // the credit grant above.
+    // the credit grant above. Gated by AFFILIATE_ENABLED so a bundle
+    // purchase still succeeds and credits are still granted when the
+    // program is off — only the commission/transfer path is skipped.
+    if (!AFFILIATE_ENABLED) {
+      console.log('[STRIPE WEBHOOK] Affiliate program disabled — skipping commission for session ' + s.id);
+      return res.json({ received: true });
+    }
+
     var affiliateId = s.metadata.affiliate_id || null;
     var affiliateCode = s.metadata.affiliate_code || null;
 
@@ -2746,7 +2780,7 @@ app.post('/api/admin/toggle-ftbend', adminAuth, async function(req, res) {
 });
 
 // Set custom referral code for affiliates
-app.post('/api/admin/set-referral-code', adminAuth, async function(req, res) {
+app.post('/api/admin/set-referral-code', adminAuth, requireAffiliateEnabled, async function(req, res) {
   var userId = req.body.userId;
   var code = req.body.code.toUpperCase().replace(/[^A-Z0-9]/g, '');
   
@@ -2778,7 +2812,7 @@ app.post('/api/admin/set-referral-code', adminAuth, async function(req, res) {
 });
 
 // Unlock user from affiliate
-app.post('/api/admin/set-lock', adminAuth, async function(req, res) {
+app.post('/api/admin/set-lock', adminAuth, requireAffiliateEnabled, async function(req, res) {
   var { userId, code } = req.body;
   if (!userId || !code) return res.status(400).json({ error: 'Missing userId or code' });
   var { error } = await supabase.from('profiles').update({ referred_by: code.toUpperCase() }).eq('id', userId);
@@ -2786,7 +2820,7 @@ app.post('/api/admin/set-lock', adminAuth, async function(req, res) {
   res.json({ success: true });
 });
 
-app.post('/api/admin/unlock-user', adminAuth, async function(req, res) {
+app.post('/api/admin/unlock-user', adminAuth, requireAffiliateEnabled, async function(req, res) {
   var userId = req.body.userId;
   
   var result = await supabase.from('profiles')

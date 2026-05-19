@@ -353,7 +353,7 @@ select option { background: #1a1a2e; color: #fff; }
     <div class="tab active" onclick="showTab('call')">📞 Call</div>
     <div class="tab" onclick="showTab('schedule')">⏰ Schedule</div>
     <div class="tab" onclick="showTab('history')">📜 History</div>
-    <div class="tab" onclick="showTab('affiliate')">💰 Earn Cash</div>
+    <div class="tab" id="affiliateTabBtn" style="display:none" onclick="showTab('affiliate')">💰 Earn Cash</div>
     <div class="tab" id="ftbendTabBtn" style="display:none" onclick="showTab('ftbend')">🎨 Ft Bend</div>
     <div class="tab" onclick="showTab('test')">🧪 Test</div>
   </div>
@@ -1022,13 +1022,29 @@ function loadUser() {
       renderSubscriptionStatus(d.profile);
       
       if (d.is_admin || d.ftbend_access) document.getElementById('ftbendTabBtn').style.display = 'block';
-      
+
+      // Show the affiliate ("Earn Cash") tab only when the program is enabled
+      // server-side. When off, the tab stays hidden and the dashboard skips
+      // any affiliate-section rendering; the underlying tab-content DOM stays
+      // in place so flipping the flag back on lights it up cleanly.
+      if (d.affiliateEnabled) {
+        var aff = document.getElementById('affiliateTabBtn');
+        if (aff) aff.style.display = 'block';
+      } else {
+        // Drop any locally stored referral code — there's nothing to apply
+        // it to while the program is off, and we want a clean slate if/when
+        // it's re-enabled.
+        try { localStorage.removeItem('referralCode'); } catch (e) {}
+      }
+
       document.getElementById('notifyEmail').value = d.user.email;
       document.getElementById('schedEmail').value = d.user.email;
       document.getElementById('testEmail').value = d.user.email;
       
-      // Load affiliate data
-      if (d.affiliate) {
+      // Load affiliate data — only when the program is on. d.affiliate may
+      // still come back from the server with stale data; we ignore it when
+      // the gate is off so the UI doesn't render anything actionable.
+      if (d.affiliateEnabled && d.affiliate) {
         affiliateData = d.affiliate;
         document.getElementById('referralLink').value = 'https://www.probationcall.com/r/' + d.affiliate.referralCode; document.getElementById('qrCode').src = 'https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=' + encodeURIComponent('https://www.probationcall.com/r/' + d.affiliate.referralCode); document.getElementById('refCodeDisplay').textContent = d.affiliate.referralCode;
         document.getElementById('affiliateBalance').textContent = '$' + (d.affiliate.balance / 100).toFixed(2);
