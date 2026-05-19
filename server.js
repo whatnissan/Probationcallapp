@@ -262,6 +262,41 @@ function requireAffiliateEnabled(req, res, next) {
   next();
 }
 
+// §4 — Safe affiliate-code resolver. Single source of truth for "who owns
+// this referral code?" — used by every money-touching path so a code
+// collision can never silently attribute commission to a random profile.
+//
+// Behavior:
+//   - Normalizes input to uppercase (every writer also uppercases, but
+//     code coming back from old profile.referred_by rows might not be —
+//     normalize on read too).
+//   - Returns the matching profile row, or null if 0 matches.
+//   - If MORE THAN ONE row matches (duplicate codes, possible if the
+//     migration 008 UNIQUE constraint hasn't been applied yet or has
+//     been dropped), logs a loud error and returns null — refusing to
+//     pay commission rather than guess. Once the constraint is in place
+//     this branch is unreachable.
+async function resolveAffiliateByCode(rawCode) {
+  if (!rawCode) return null;
+  var code = String(rawCode).toUpperCase().trim();
+  if (!code) return null;
+  // limit(2) — we only care whether there are 0, 1, or "more than 1" matches.
+  var r = await supabase.from('profiles')
+    .select('id, email, referral_code')
+    .eq('referral_code', code)
+    .limit(2);
+  if (r.error) {
+    console.error('[AFFILIATE] resolveAffiliateByCode lookup error for "' + code + '":', r.error);
+    return null;
+  }
+  if (!r.data || r.data.length === 0) return null;
+  if (r.data.length > 1) {
+    console.error('[AFFILIATE] DUPLICATE referral_code "' + code + '" matches multiple profiles (' + r.data.map(function(p) { return p.id.slice(0, 8); }).join(', ') + ') — refusing to attribute commission. Apply migration 008 (UNIQUE constraint) and dedupe before this can recur.');
+    return null;
+  }
+  return r.data[0];
+}
+
 // §6.B — Cached Stripe Connect account status. Pre-transfer code calls
 // getConnectAccountStatus(acctId) to verify the destination is actually
 // payouts_enabled before firing stripe.transfers.create. Sending money to
@@ -949,14 +984,14 @@ app.post('/api/apply-referral', auth, requireAffiliateEnabled, async function(re
     return res.status(400).json({ error: 'You already used a referral code' });
   }
   
-  // Find referrer
-  var referrerResult = await supabase.from('profiles').select('id, email').eq('referral_code', code.toUpperCase()).single();
-  if (!referrerResult.data) {
+  // Find referrer — shared safe resolver handles uppercasing + dup detection.
+  var referrer = await resolveAffiliateByCode(code);
+  if (!referrer) {
     return res.status(404).json({ error: 'Invalid referral code' });
   }
-  
+
   // Can't refer yourself
-  if (referrerResult.data.id === req.user.id) {
+  if (referrer.id === req.user.id) {
     return res.status(400).json({ error: 'Cannot use your own referral code' });
   }
   
@@ -976,7 +1011,7 @@ app.post('/api/apply-referral', auth, requireAffiliateEnabled, async function(re
   
   // Create referral record
   await supabase.from('referrals').insert({
-    referrer_id: referrerResult.data.id,
+    referrer_id: referrer.id,
     referred_id: req.user.id,
     referral_code: code.toUpperCase(),
     status: 'signed_up'
@@ -1112,13 +1147,11 @@ app.post('/api/redeem', auth, async function(req, res) {
 // Check if affiliate code is valid
 app.post('/api/check-affiliate-code', auth, requireAffiliateEnabled, async function(req, res) {
   var code = req.body.code ? req.body.code.toUpperCase() : '';
-  
-  var result = await supabase.from('profiles')
-    .select('id, referral_code')
-    .eq('referral_code', code)
-    .single();
-  
-  if (result.data) {
+  // Shared resolver — also handles the duplicate-code defense even though
+  // this endpoint isn't itself a money path. Consistent behavior across
+  // every resolver call site.
+  var match = await resolveAffiliateByCode(code);
+  if (match) {
     res.json({ valid: true, code: code });
   } else {
     res.json({ valid: false });
@@ -1326,13 +1359,12 @@ app.post('/api/checkout', auth, rateLimit('checkout', 10, 5 * 60 * 1000), async 
 
   if (AFFILIATE_ENABLED && req.body.affiliateCode) {
     affiliateCode = req.body.affiliateCode.toUpperCase();
-    var affiliateResult = await supabase.from('profiles')
-      .select('id')
-      .eq('referral_code', affiliateCode)
-      .single();
-
-    if (affiliateResult.data) {
-      affiliateId = affiliateResult.data.id;
+    // Shared safe resolver — handles uppercasing internally + refuses to
+    // attribute commission to a duplicate-code match (returns null with a
+    // loud log if the UNIQUE constraint is somehow not in place).
+    var affiliateMatch = await resolveAffiliateByCode(affiliateCode);
+    if (affiliateMatch) {
+      affiliateId = affiliateMatch.id;
       console.log('[CHECKOUT] Affiliate code ' + affiliateCode + ' found: ' + affiliateId.slice(0,8));
 
       // Lock this user to the affiliate if not already locked
@@ -1343,7 +1375,7 @@ app.post('/api/checkout', auth, rateLimit('checkout', 10, 5 * 60 * 1000), async 
         console.log('[CHECKOUT] Locked user ' + req.user.id.slice(0,8) + ' to affiliate ' + affiliateCode);
       }
     } else {
-      console.log('[CHECKOUT] Affiliate code ' + affiliateCode + ' not found');
+      console.log('[CHECKOUT] Affiliate code ' + affiliateCode + ' not found (or duplicate — see [AFFILIATE] log line above for diagnostic)');
     }
   } else if (req.body.affiliateCode && !AFFILIATE_ENABLED) {
     console.log('[CHECKOUT] Affiliate program disabled — ignoring submitted affiliateCode');
@@ -2058,11 +2090,17 @@ app.post('/webhook/stripe', async function(req, res) {
 
     if (!affiliateId && profile.referred_by) {
       affiliateCode = profile.referred_by;
-      var refResult = await supabase.from('profiles')
-        .select('id')
-        .eq('referral_code', profile.referred_by)
-        .single();
-      if (refResult.data) affiliateId = refResult.data.id;
+      // Shared safe resolver — normalizes case (profile.referred_by SHOULD
+      // already be uppercase since every writer uppercases, but be
+      // defensive) and refuses to attribute commission on a duplicate-code
+      // match (returns null, commission processing is skipped below since
+      // affiliateId stays null).
+      var refMatch = await resolveAffiliateByCode(profile.referred_by);
+      if (refMatch) {
+        affiliateId = refMatch.id;
+      } else {
+        console.error('[AFFILIATE] Webhook resolver could not safely resolve referred_by="' + profile.referred_by + '" for user ' + userId.slice(0, 8) + ' (session ' + s.id + ') — commission NOT paid. See preceding [AFFILIATE] log for reason (not found OR duplicate).');
+      }
     }
 
     if (affiliateId) {
