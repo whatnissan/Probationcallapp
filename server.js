@@ -1134,6 +1134,170 @@ app.post('/api/checkout', auth, rateLimit('checkout', 10, 5 * 60 * 1000), async 
   res.json({ url: session.url });
 });
 
+// === SUBSCRIPTION SUPPORT ===
+// All subscription handlers below intentionally DO NOT touch affiliate /
+// commission code. Affiliate program is off for subscriptions per policy.
+const SUBSCRIPTION_CREDITS_PER_PAYMENT = 30;
+
+// Locate the profile that owns a subscription. Prefer subscription metadata
+// (set at Checkout creation time so it's stable across renewals); fall back
+// to a stripe_customer_id lookup if metadata is missing.
+async function findUserForSubscription(subscriptionId, customerId) {
+  if (subscriptionId) {
+    try {
+      var sub = await stripe.subscriptions.retrieve(subscriptionId);
+      if (sub && sub.metadata && sub.metadata.user_id) {
+        var pr = await supabase.from('profiles').select('*').eq('id', sub.metadata.user_id).single();
+        if (pr.data) return pr.data;
+      }
+    } catch (e) {
+      console.error('[STRIPE WEBHOOK] Failed to retrieve subscription', subscriptionId, ':', e.message);
+    }
+  }
+  if (customerId) {
+    var cr = await supabase.from('profiles').select('*').eq('stripe_customer_id', customerId).single();
+    if (cr.data) return cr.data;
+  }
+  return null;
+}
+
+// Subscription Checkout completed: capture customer + sub IDs on the profile.
+// Credits are NOT granted here — they come via invoice.paid (which fires for
+// the first payment too, so the credit grant is one consistent path).
+async function handleSubscriptionCheckoutCompleted(s, res) {
+  try {
+    var userId = s.metadata && s.metadata.user_id;
+    if (!userId) {
+      console.error('[STRIPE WEBHOOK] Subscription session missing user_id metadata, session:', s.id);
+      return res.json({ received: true, error: 'missing_user_id' });
+    }
+    var upd = await supabase.from('profiles').update({
+      stripe_customer_id: s.customer,
+      stripe_subscription_id: s.subscription,
+      subscription_status: 'active'
+    }).eq('id', userId);
+    if (upd.error) {
+      console.error('[STRIPE WEBHOOK] Could not save sub IDs on profile', userId, ':', upd.error);
+      return res.status(500).json({ error: 'profile_update_failed' });
+    }
+    console.log('[STRIPE WEBHOOK] Subscription started: user=' + userId.slice(0, 8) + ' customer=' + s.customer + ' sub=' + s.subscription);
+    return res.json({ received: true });
+  } catch (e) {
+    console.error('[STRIPE WEBHOOK] handleSubscriptionCheckoutCompleted error:', e.message);
+    return res.status(500).json({ error: 'subscription_checkout_handler_error' });
+  }
+}
+
+// Recurring billing success: grant the monthly credits. Idempotent keyed on
+// invoice.id via purchases.stripe_invoice_id (DB UNIQUE — see migration).
+async function handleSubscriptionInvoicePaid(invoice, res) {
+  try {
+    if (!invoice.subscription) {
+      console.log('[STRIPE WEBHOOK] invoice.paid without subscription, ignoring:', invoice.id);
+      return res.json({ received: true });
+    }
+
+    var existing = await supabase.from('purchases')
+      .select('id')
+      .eq('stripe_invoice_id', invoice.id)
+      .maybeSingle();
+    if (existing.error) {
+      console.error('[STRIPE WEBHOOK] Idempotency lookup failed for invoice', invoice.id, ':', existing.error);
+      return res.status(500).json({ error: 'idempotency_check_failed' });
+    }
+    if (existing.data) {
+      console.log('[STRIPE WEBHOOK] Already processed invoice', invoice.id, '— skipping');
+      return res.json({ received: true, duplicate: true });
+    }
+
+    var profile = await findUserForSubscription(invoice.subscription, invoice.customer);
+    if (!profile) {
+      console.error('[STRIPE WEBHOOK] No profile for invoice', invoice.id, 'sub=' + invoice.subscription, 'customer=' + invoice.customer);
+      return res.status(500).json({ error: 'profile_not_found' });
+    }
+
+    var currentCredits = profile.credits || 0;
+    var newCredits = currentCredits + SUBSCRIPTION_CREDITS_PER_PAYMENT;
+    var creditUpdate = await supabase.from('profiles')
+      .update({
+        credits: newCredits,
+        subscription_status: 'active',
+        stripe_customer_id: profile.stripe_customer_id || invoice.customer,
+        stripe_subscription_id: profile.stripe_subscription_id || invoice.subscription
+      })
+      .eq('id', profile.id);
+    if (creditUpdate.error) {
+      console.error('[STRIPE WEBHOOK] Credit update failed for', profile.id, ':', creditUpdate.error);
+      return res.status(500).json({ error: 'credit_update_failed' });
+    }
+    console.log('[STRIPE WEBHOOK] Credits granted (sub): ' + profile.id.slice(0, 8) + ' ' + currentCredits + ' -> ' + newCredits + ' (+' + SUBSCRIPTION_CREDITS_PER_PAYMENT + ', invoice ' + invoice.id + ')');
+
+    var purchaseInsert = await supabase.from('purchases').insert({
+      user_id: profile.id,
+      stripe_session_id: null,
+      stripe_invoice_id: invoice.id,
+      package_name: 'subscription',
+      credits_purchased: SUBSCRIPTION_CREDITS_PER_PAYMENT,
+      amount_cents: invoice.amount_paid
+    });
+    if (purchaseInsert.error) {
+      // Credits already granted; log loudly. A retry would hit the idempotency check above.
+      console.error('[STRIPE WEBHOOK] Purchases insert failed for invoice', invoice.id, '(credits granted):', purchaseInsert.error);
+    }
+    return res.json({ received: true });
+  } catch (e) {
+    console.error('[STRIPE WEBHOOK] handleSubscriptionInvoicePaid error:', e.message);
+    return res.status(500).json({ error: 'invoice_paid_handler_error' });
+  }
+}
+
+async function handleSubscriptionInvoicePaymentFailed(invoice, res) {
+  try {
+    if (!invoice.subscription) return res.json({ received: true });
+    var profile = await findUserForSubscription(invoice.subscription, invoice.customer);
+    if (!profile) {
+      console.error('[STRIPE WEBHOOK] No profile for failed invoice', invoice.id);
+      return res.json({ received: true });
+    }
+    await supabase.from('profiles')
+      .update({ subscription_status: 'past_due' })
+      .eq('id', profile.id);
+    console.log('[STRIPE WEBHOOK] Subscription payment FAILED: user=' + profile.id.slice(0, 8) + ' invoice=' + invoice.id);
+    return res.json({ received: true });
+  } catch (e) {
+    console.error('[STRIPE WEBHOOK] handleSubscriptionInvoicePaymentFailed error:', e.message);
+    return res.status(500).json({ error: 'invoice_failed_handler_error' });
+  }
+}
+
+async function handleSubscriptionDeleted(subscription, res) {
+  try {
+    var r = await supabase.from('profiles')
+      .update({ subscription_status: 'canceled' })
+      .eq('stripe_subscription_id', subscription.id);
+    if (r.error) console.error('[STRIPE WEBHOOK] Subscription cancel update failed:', r.error);
+    console.log('[STRIPE WEBHOOK] Subscription canceled: sub=' + subscription.id);
+    return res.json({ received: true });
+  } catch (e) {
+    console.error('[STRIPE WEBHOOK] handleSubscriptionDeleted error:', e.message);
+    return res.status(500).json({ error: 'sub_deleted_handler_error' });
+  }
+}
+
+async function handleSubscriptionUpdated(subscription, res) {
+  try {
+    var r = await supabase.from('profiles')
+      .update({ subscription_status: subscription.status })
+      .eq('stripe_subscription_id', subscription.id);
+    if (r.error) console.error('[STRIPE WEBHOOK] Subscription updated update failed:', r.error);
+    console.log('[STRIPE WEBHOOK] Subscription updated: sub=' + subscription.id + ' status=' + subscription.status);
+    return res.json({ received: true });
+  } catch (e) {
+    console.error('[STRIPE WEBHOOK] handleSubscriptionUpdated error:', e.message);
+    return res.status(500).json({ error: 'sub_updated_handler_error' });
+  }
+}
+
 app.post('/webhook/stripe', async function(req, res) {
   var event;
   try {
@@ -1145,6 +1309,20 @@ app.post('/webhook/stripe', async function(req, res) {
 
   console.log('[STRIPE WEBHOOK] Received event:', event.type, event.id);
 
+  // Subscription event branches — no affiliate logic in any of these.
+  if (event.type === 'invoice.paid' || event.type === 'invoice.payment_succeeded') {
+    return handleSubscriptionInvoicePaid(event.data.object, res);
+  }
+  if (event.type === 'invoice.payment_failed') {
+    return handleSubscriptionInvoicePaymentFailed(event.data.object, res);
+  }
+  if (event.type === 'customer.subscription.deleted') {
+    return handleSubscriptionDeleted(event.data.object, res);
+  }
+  if (event.type === 'customer.subscription.updated') {
+    return handleSubscriptionUpdated(event.data.object, res);
+  }
+
   if (event.type !== 'checkout.session.completed') {
     // Acknowledge but ignore — other event types aren't handled yet.
     console.log('[STRIPE WEBHOOK] Ignoring event type:', event.type);
@@ -1152,6 +1330,16 @@ app.post('/webhook/stripe', async function(req, res) {
   }
 
   var s = event.data.object;
+
+  // Subscription Checkout completion — capture customer/sub IDs. Credits will
+  // be granted by invoice.paid (which also fires on the first payment).
+  // AFFILIATE LOGIC IS INTENTIONALLY SKIPPED FOR SUBSCRIPTIONS.
+  if (s.mode === 'subscription') {
+    return handleSubscriptionCheckoutCompleted(s, res);
+  }
+
+  // One-time payment path below — UNCHANGED from previous behavior, including
+  // the existing affiliate / Stripe Connect commission logic.
   var userId = s.metadata && s.metadata.user_id;
   var creditsToAdd = parseInt(s.metadata && s.metadata.credits);
 
@@ -2816,6 +3004,62 @@ app.get('/api/calculate-credits', auth, async function(req, res) {
     priceCents: totalCents,
     priceDisplay: '$' + (totalCents / 100).toFixed(2)
   });
+});
+
+// === SUBSCRIPTION CHECKOUT ===
+// Recurring $14.99/mo. Price ID lives in env so it's environment-specific.
+// No affiliate code accepted on this path; affiliate commission is not
+// calculated for subscription payments per current policy.
+app.post('/api/subscription/checkout', auth, rateLimit('checkout', 10, 5 * 60 * 1000), async function(req, res) {
+  try {
+    var priceId = process.env.STRIPE_SUBSCRIPTION_PRICE_ID;
+    if (!priceId) {
+      console.error('[SUBSCRIPTION] STRIPE_SUBSCRIPTION_PRICE_ID env var not set');
+      return res.status(500).json({ error: 'Subscription is not configured' });
+    }
+    if (req.profile.subscription_status === 'active' && req.profile.stripe_customer_id) {
+      return res.status(400).json({ error: 'You already have an active subscription. Use Manage Subscription to make changes.' });
+    }
+    var params = {
+      mode: 'subscription',
+      line_items: [{ price: priceId, quantity: 1 }],
+      success_url: process.env.BASE_URL + '/dashboard?subscribed=true',
+      cancel_url: process.env.BASE_URL + '/dashboard?canceled=true',
+      // user_id on the SUBSCRIPTION metadata so renewal invoices can resolve back to this user.
+      subscription_data: { metadata: { user_id: req.user.id } },
+      // user_id on the SESSION metadata so checkout.session.completed can write profile fields.
+      metadata: { user_id: req.user.id, type: 'subscription' }
+    };
+    if (req.profile.stripe_customer_id) {
+      params.customer = req.profile.stripe_customer_id;
+    } else {
+      params.customer_email = req.user.email;
+    }
+    var session = await stripe.checkout.sessions.create(params);
+    res.json({ url: session.url });
+  } catch (e) {
+    console.error('[SUBSCRIPTION] Checkout error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// === SUBSCRIPTION CUSTOMER PORTAL (cancel / update payment method / view invoices) ===
+// Requires the Customer Portal to be configured once in Stripe Dashboard:
+// https://dashboard.stripe.com/settings/billing/portal
+app.post('/api/subscription/portal', auth, async function(req, res) {
+  try {
+    if (!req.profile.stripe_customer_id) {
+      return res.status(400).json({ error: 'No subscription on file' });
+    }
+    var portal = await stripe.billingPortal.sessions.create({
+      customer: req.profile.stripe_customer_id,
+      return_url: process.env.BASE_URL + '/dashboard'
+    });
+    res.json({ url: portal.url });
+  } catch (e) {
+    console.error('[SUBSCRIPTION] Portal error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // Custom credits purchase for exact probation length
