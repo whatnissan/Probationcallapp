@@ -1318,11 +1318,41 @@ async function handleSubscriptionCheckoutCompleted(s, res) {
 
 // Recurring billing success: grant the monthly credits. Idempotent keyed on
 // invoice.id via purchases.stripe_invoice_id (DB UNIQUE — see migration).
+//
+// Schema note: in Stripe API 2025-11-17 (and the Invoice consolidation that
+// preceded it), the legacy `invoice.subscription` and per-line `subscription`
+// fields were removed. The subscription ID is now at
+// `invoice.parent.subscription_details.subscription`, with the same metadata
+// we set via `subscription_data.metadata` at Checkout living at
+// `invoice.parent.subscription_details.metadata`. Read both legacy and new
+// paths defensively so a Stripe-side API-version change doesn't silently
+// stop crediting renewals (which is exactly what happened on the first
+// real customer, invoice in_1TYpTKBkZn5hOJIgLqSCOsv1).
 async function handleSubscriptionInvoicePaid(invoice, res) {
   try {
-    if (!invoice.subscription) {
-      console.log('[STRIPE WEBHOOK] invoice.paid without subscription, ignoring:', invoice.id);
-      return res.json({ received: true });
+    var subDetails = (invoice.parent && invoice.parent.subscription_details) || null;
+    var firstLineParent =
+      (invoice.lines && invoice.lines.data && invoice.lines.data[0] && invoice.lines.data[0].parent) || null;
+    var subId =
+      invoice.subscription
+      || (subDetails && subDetails.subscription)
+      || (firstLineParent && firstLineParent.subscription_item_details && firstLineParent.subscription_item_details.subscription)
+      || null;
+    var metaUserId =
+      (subDetails && subDetails.metadata && subDetails.metadata.user_id)
+      || null;
+
+    if (!subId && !metaUserId) {
+      // Genuine "we cannot route this invoice anywhere" case. Fail loud so
+      // Stripe retries — silent 200 is what hid the original bug.
+      console.error('[STRIPE WEBHOOK] invoice.paid cannot resolve subscription or user_id:',
+        'invoice=' + invoice.id,
+        'billing_reason=' + invoice.billing_reason,
+        'customer=' + invoice.customer,
+        'has_parent=' + !!invoice.parent,
+        'has_subscription_details=' + !!subDetails,
+        'has_first_line=' + !!firstLineParent);
+      return res.status(500).json({ error: 'subscription_link_missing' });
     }
 
     var existing = await supabase.from('purchases')
@@ -1338,9 +1368,20 @@ async function handleSubscriptionInvoicePaid(invoice, res) {
       return res.json({ received: true, duplicate: true });
     }
 
-    var profile = await findUserForSubscription(invoice.subscription, invoice.customer);
+    // Prefer the user_id carried on the invoice payload (no Stripe round-trip).
+    // Fall back to the existing helper, which uses stripe.subscriptions.retrieve
+    // and finally stripe_customer_id.
+    var profile = null;
+    if (metaUserId) {
+      var pr = await supabase.from('profiles').select('*').eq('id', metaUserId).single();
+      if (pr.data) profile = pr.data;
+      else console.error('[STRIPE WEBHOOK] metadata.user_id present but profile not found:', metaUserId, 'invoice', invoice.id);
+    }
     if (!profile) {
-      console.error('[STRIPE WEBHOOK] No profile for invoice', invoice.id, 'sub=' + invoice.subscription, 'customer=' + invoice.customer);
+      profile = await findUserForSubscription(subId, invoice.customer);
+    }
+    if (!profile) {
+      console.error('[STRIPE WEBHOOK] No profile for invoice', invoice.id, 'sub=' + subId, 'customer=' + invoice.customer, 'metaUserId=' + metaUserId);
       return res.status(500).json({ error: 'profile_not_found' });
     }
 
@@ -1367,7 +1408,7 @@ async function handleSubscriptionInvoicePaid(invoice, res) {
     var subFieldsUpd = await supabase.from('profiles').update({
       subscription_status: 'active',
       stripe_customer_id: profile.stripe_customer_id || invoice.customer,
-      stripe_subscription_id: profile.stripe_subscription_id || invoice.subscription
+      stripe_subscription_id: profile.stripe_subscription_id || subId
     }).eq('id', profile.id);
     if (subFieldsUpd.error) {
       console.error('[STRIPE WEBHOOK] Subscription field update failed (credits already granted) for', profile.id, ':', subFieldsUpd.error);
@@ -1440,6 +1481,91 @@ async function handleSubscriptionUpdated(subscription, res) {
   }
 }
 
+// When a charge is FULLY refunded for a customer with an active subscription,
+// cancel that subscription so they aren't billed again. Partial refunds are
+// ignored (intent: pay back this one period, keep the subscription).
+// Credits are intentionally NOT touched here — refunding money and clawing
+// back credits are separate decisions; this handler only manages the sub.
+//
+// Idempotency: the customer-subscription cancel call is checked-then-called,
+// so a duplicate charge.refunded event finds the sub already 'canceled' and
+// no-ops cleanly. The profile update is also idempotent (writing 'canceled'
+// over 'canceled' is a no-op write).
+async function handleChargeRefunded(charge, res) {
+  try {
+    // FULL refund only. Stripe sets charge.refunded=true once amount_refunded
+    // covers the full amount; for partial refunds the event still fires but
+    // .refunded stays false.
+    if (charge.refunded !== true) {
+      console.log('[STRIPE WEBHOOK] charge.refunded: partial refund, leaving subscription alone. charge=' + charge.id + ' refunded=' + charge.amount_refunded + '/' + charge.amount);
+      return res.json({ received: true, partial: true });
+    }
+
+    var customerId = charge.customer;
+    if (!customerId) {
+      console.log('[STRIPE WEBHOOK] charge.refunded: no customer on charge, nothing to do. charge=' + charge.id);
+      return res.json({ received: true });
+    }
+
+    var pr = await supabase.from('profiles')
+      .select('id, email, stripe_subscription_id, subscription_status')
+      .eq('stripe_customer_id', customerId)
+      .single();
+    if (pr.error || !pr.data) {
+      console.log('[STRIPE WEBHOOK] charge.refunded: no profile matches customer ' + customerId + ' (charge=' + charge.id + ')');
+      return res.json({ received: true });
+    }
+    var profile = pr.data;
+
+    if (!profile.stripe_subscription_id) {
+      console.log('[STRIPE WEBHOOK] charge.refunded: profile ' + profile.id.slice(0, 8) + ' has no subscription, nothing to cancel. charge=' + charge.id);
+      return res.json({ received: true });
+    }
+
+    // Check current status before calling cancel — Stripe returns 400 if you
+    // try to cancel an already-canceled subscription. Also lets us no-op on
+    // a duplicate event delivery without doing anything destructive.
+    var sub;
+    try {
+      sub = await stripe.subscriptions.retrieve(profile.stripe_subscription_id);
+    } catch (e) {
+      console.error('[STRIPE WEBHOOK] charge.refunded: could not retrieve sub ' + profile.stripe_subscription_id + ' for charge ' + charge.id + ':', e.message);
+      // Sync the profile anyway — if the sub is unretrievable it's not usable.
+      await supabase.from('profiles').update({ subscription_status: 'canceled' }).eq('id', profile.id);
+      return res.json({ received: true });
+    }
+
+    if (sub.status === 'canceled' || sub.status === 'incomplete_expired') {
+      console.log('[STRIPE WEBHOOK] charge.refunded: sub ' + profile.stripe_subscription_id + ' already terminal (' + sub.status + ') — syncing DB only. charge=' + charge.id);
+      await supabase.from('profiles').update({ subscription_status: 'canceled' }).eq('id', profile.id);
+      return res.json({ received: true, already_canceled: true });
+    }
+
+    // Immediate cancel — refund just happened, no point keeping the period alive.
+    var canceled;
+    try {
+      canceled = await stripe.subscriptions.cancel(profile.stripe_subscription_id);
+    } catch (e) {
+      console.error('[STRIPE WEBHOOK] charge.refunded: cancel failed for sub ' + profile.stripe_subscription_id + ' (charge ' + charge.id + '):', e.message);
+      return res.status(500).json({ error: 'subscription_cancel_failed' });
+    }
+
+    console.log('[STRIPE WEBHOOK] Subscription auto-canceled after full refund: user=' + profile.id.slice(0, 8) + ' sub=' + profile.stripe_subscription_id + ' charge=' + charge.id + ' new_status=' + canceled.status);
+
+    var upd = await supabase.from('profiles').update({ subscription_status: 'canceled' }).eq('id', profile.id);
+    if (upd.error) {
+      // Sub IS canceled on Stripe's side; the customer.subscription.deleted
+      // event will fire next and our handler there will sync the field.
+      console.error('[STRIPE WEBHOOK] charge.refunded: profile update failed for ' + profile.id + ':', upd.error);
+    }
+
+    return res.json({ received: true });
+  } catch (e) {
+    console.error('[STRIPE WEBHOOK] handleChargeRefunded error:', e.message, e.stack);
+    return res.status(500).json({ error: 'charge_refunded_handler_error' });
+  }
+}
+
 app.post('/webhook/stripe', async function(req, res) {
   var event;
   try {
@@ -1463,6 +1589,9 @@ app.post('/webhook/stripe', async function(req, res) {
   }
   if (event.type === 'customer.subscription.updated') {
     return handleSubscriptionUpdated(event.data.object, res);
+  }
+  if (event.type === 'charge.refunded') {
+    return handleChargeRefunded(event.data.object, res);
   }
 
   if (event.type !== 'checkout.session.completed') {
