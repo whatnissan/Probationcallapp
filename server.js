@@ -2924,6 +2924,7 @@ server.listen(PORT, function() {
   console.log('Call Hours: ' + MIN_HOUR + ':00 AM - ' + MAX_HOUR + ':59 PM');
   console.log('Stagger Window: ' + STAGGER_MINUTES + ' minutes');
   console.log('Affiliate Commission: ' + AFFILIATE_COMMISSION_PERCENT + '%');
+  console.log('Affiliate program: ' + (AFFILIATE_ENABLED ? 'ENABLED' : 'disabled (set AFFILIATE_ENABLED=true to enable)'));
   console.log('Min Payout: $' + (MIN_PAYOUT_CENTS / 100));
   console.log('========================================');
   loadAllSchedules();
