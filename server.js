@@ -503,32 +503,62 @@ async function deductCreditOnce(userId, idempotencyKey, options) {
   }
 }
 
-// If the user has had several consecutive UNKNOWN results, their PIN is
-// probably expired or the hotline wording changed. Pause their schedule
-// and tell them — beats charging them daily for no actionable result.
+// If the user has had several consecutive no-result calls, something
+// structural is wrong (hotline unreachable, carrier route broken, PIN
+// changed, etc.). Pause their schedule and tell them — beats trying the
+// same call daily.
+//
+// "No usable result" outcomes that count toward the streak:
+//   UNKNOWN       — transcript present but no keyword matched
+//   CALL_FAILED   — Twilio terminal failure, no audio captured (Gap 1)
+//   HOTLINE_DOWN  — Deepgram returned empty on all 3 retries (Gap 3)
+//
+// PIN_EXPIRED is INVISIBLE to this streak — filtered out of the lookback
+// query entirely. PIN expirations have their own dedicated counter
+// (consecutive_pin_expired, handled by handlePinExpiredResult) that
+// auto-disables after 2 in a row. Excluding PIN_EXPIRED from this query
+// honors "neither increment nor reset": a PIN_EXPIRED row neither counts
+// toward the no-result streak nor occupies a slot that could push older
+// no-result rows out of the window.
+//
+// MUST_TEST, NO_TEST, NO_CREDITS, and FtBend COLOR:* / P1:* results
+// all break the streak (they fill a row slot without matching the
+// no-result filter), as before.
+//
+// Function name kept as "checkConsecutiveUnknown" for log continuity
+// and minimal churn — its scope is broader than UNKNOWN now.
 var UNKNOWN_STREAK_THRESHOLD = 3;
-async function checkConsecutiveUnknown(userId, lastTranscript, notifyNumber, notifyEmail, notifyMethod) {
+var NO_RESULT_STATUSES = ['UNKNOWN', 'CALL_FAILED', 'HOTLINE_DOWN'];
+async function checkConsecutiveUnknown(userId, lastReason, notifyNumber, notifyEmail, notifyMethod) {
+  // PIN_EXPIRED is filtered OUT here so it neither contributes to nor
+  // occupies a slot in the no-result streak. Its own counter handles it.
   var recent = await supabase.from('call_history')
     .select('result, created_at')
     .eq('user_id', userId)
+    .neq('result', 'PIN_EXPIRED')
     .order('created_at', { ascending: false })
     .limit(UNKNOWN_STREAK_THRESHOLD);
   if (recent.error || !recent.data) return;
-  // We're about to insert this UNKNOWN row; include it as the streak's head.
-  // The current call hasn't been inserted yet at this point, so we count
-  // (THRESHOLD - 1) prior UNKNOWNs plus the one we just produced.
-  var priorUnknown = recent.data.filter(function(r) { return r.result === 'UNKNOWN'; }).length;
-  if (priorUnknown < UNKNOWN_STREAK_THRESHOLD - 1) return;
-  // Don't re-fire on every subsequent UNKNOWN. Check if schedule is still enabled.
+  // The current call's row hasn't been inserted yet when we run, so we
+  // count (THRESHOLD - 1) prior no-result rows plus the one we just produced.
+  var priorNoResult = recent.data.filter(function(r) {
+    return NO_RESULT_STATUSES.indexOf(r.result) >= 0;
+  }).length;
+  if (priorNoResult < UNKNOWN_STREAK_THRESHOLD - 1) return;
+  // Don't re-fire on every subsequent no-result call. Check schedule is still enabled.
   var sched = await supabase.from('user_schedules').select('enabled').eq('user_id', userId).single();
   if (!sched.data || sched.data.enabled === false) return;
-  console.log('[UNKNOWN-STREAK] Pausing schedule for ' + userId.slice(0, 8) + ' after ' + UNKNOWN_STREAK_THRESHOLD + ' UNKNOWNs');
+  console.log('[UNKNOWN-STREAK] Pausing schedule for ' + userId.slice(0, 8) + ' after ' + UNKNOWN_STREAK_THRESHOLD + ' no-result calls (UNKNOWN/CALL_FAILED/HOTLINE_DOWN; PIN_EXPIRED excluded)');
   await supabase.from('user_schedules').update({ enabled: false }).eq('user_id', userId);
   if (scheduledJobs.has(userId)) {
     scheduledJobs.get(userId).stop();
     scheduledJobs.delete(userId);
   }
-  var userMsg = '⏸ ProbationCall paused\n\nYour last ' + UNKNOWN_STREAK_THRESHOLD + ' check-ins came back unclear. The most common cause is an expired or changed PIN.\n\nPlease call the hotline yourself to verify, then update your PIN at probationcall.com and re-enable your schedule.\n\nWe paused calling so we don\'t keep using your credits on unclear results.\n\n- ProbationCall.com';
+  // Message must read sensibly whether the streak was caused by
+  // transcripts we couldn't parse (UNKNOWN/HOTLINE_DOWN) OR calls that
+  // never connected (CALL_FAILED). "Didn't complete successfully" covers
+  // both. Credit-savings line removed — none of these outcomes bill.
+  var userMsg = '⏸ ProbationCall paused\n\nYour last ' + UNKNOWN_STREAK_THRESHOLD + ' daily check-ins didn\'t complete successfully — we couldn\'t confirm your testing status. Common causes include the hotline being unreachable, a phone-routing issue, or an expired or changed PIN.\n\nWhat to do:\n1. Call the hotline yourself to verify your status.\n2. If your PIN changed, update it at probationcall.com.\n3. Re-enable your schedule from the dashboard once things look right.\n\n- ProbationCall.com';
   await notify(notifyNumber, notifyEmail, notifyMethod, userMsg, 'unknown_streak').catch(function() {});
   // Admin alert
   var adminResult = await supabase.from('profiles').select('id').eq('is_admin', true);
@@ -537,7 +567,7 @@ async function checkConsecutiveUnknown(userId, lastTranscript, notifyNumber, not
       var adminSched = await supabase.from('user_schedules').select('notify_number').eq('user_id', adminResult.data[a].id).single();
       if (adminSched.data && adminSched.data.notify_number) {
         await sendSMS(adminSched.data.notify_number,
-          '⚠️ ADMIN: User ' + userId.slice(0, 8) + ' paused after ' + UNKNOWN_STREAK_THRESHOLD + ' UNKNOWNs.\n\nLast heard: "' + String(lastTranscript || '').slice(0, 100) + '"',
+          '⚠️ ADMIN: User ' + userId.slice(0, 8) + ' paused after ' + UNKNOWN_STREAK_THRESHOLD + ' no-result calls.\n\nLast: "' + String(lastReason || '').slice(0, 100) + '"',
           'unknown_streak').catch(function() {});
       }
     }
@@ -2388,6 +2418,38 @@ app.post('/webhook/recording', async function(req, res) {
             }
           }
         }
+        // Gap 3: write a call_history row so the :45 recovery cron sees the
+        // user was handled today and doesn't fire a duplicate 4th call.
+        // billed_at NULL — no credit charged for this outcome (billing is
+        // gated on MUST_TEST/NO_TEST only). HOTLINE_DOWN counts toward the
+        // no-result auto-pause streak alongside UNKNOWN and CALL_FAILED.
+        // PIN_EXPIRED counter is untouched. Fort Bend system calls have no
+        // per-user userId — skip both the streak check and the insert.
+        if (config.userId && !config.isFtbendDaily) {
+          // Await the streak check BEFORE the insert so the lookback SELECT
+          // provably completes before this row hits the table — without await
+          // the two queries race and the SELECT can see today's row, firing
+          // the auto-pause one call early. .catch swallows errors so a check
+          // failure can't block the insert.
+          await checkConsecutiveUnknown(config.userId, '(empty transcript x3 — hotline likely down)', config.notifyNumber, config.notifyEmail, config.notifyMethod)
+            .catch(function(e) { console.error('[UNKNOWN-STREAK] check failed:', e.message); });
+
+          var downRow = {
+            user_id: config.userId,
+            call_sid: config.callSid || 'unknown',
+            target_number: config.targetNumber || '+19362834848',
+            pin_used: config.pin,
+            result: 'HOTLINE_DOWN',
+            recording_url: recordingUrl + '.mp3',
+            created_at: new Date().toISOString()
+          };
+          var downInsert = await supabase.from('call_history').insert(downRow);
+          if (downInsert.error) {
+            console.error('[TRANSCRIBE] HOTLINE_DOWN insert error for', callId, ':', downInsert.error);
+          } else {
+            console.log('[TRANSCRIBE] Saved HOTLINE_DOWN to call_history for', callId);
+          }
+        }
       }
       return;
     }
@@ -2460,7 +2522,10 @@ app.post('/webhook/recording', async function(req, res) {
         // schedule and alert them + admins. Catches non-PIN-expired
         // unparseable results (e.g. hotline wording changes).
         if (config.userId) {
-          checkConsecutiveUnknown(config.userId, transcript, config.notifyNumber, config.notifyEmail, config.notifyMethod)
+          // Await BEFORE the call_history insert below so the streak SELECT
+          // can't race with the INSERT and see today's row in the lookback.
+          // .catch swallows errors so a check failure can't block the insert.
+          await checkConsecutiveUnknown(config.userId, transcript, config.notifyNumber, config.notifyEmail, config.notifyMethod)
             .catch(function(e) { console.error('[UNKNOWN-STREAK] check failed:', e.message); });
         }
       }
@@ -2573,15 +2638,88 @@ cron.schedule('0 3 * * *', async function() {
   console.log('[CLEANUP] Done. Deleted: ' + deletedIds.length + ', already-gone: ' + alreadyGoneIds.length + ', retried: ' + (old.data.length - toNull.length));
 }, { timezone: 'America/Chicago' });
 
-app.post('/webhook/status', function(req, res) {
+// Gap 1: on a terminal Twilio failure, notify the user AND write a
+// call_history row so the :45 recovery cron sees the user was handled
+// today and doesn't fire a duplicate attempt. The recording webhook
+// never fires for these statuses (no audio captured), so without this
+// branch the user gets no SMS/email and the failure is invisible.
+//
+// 'completed' is NOT in this list — successful calls reach completed
+// and the recording webhook handles them. failed/no-answer/busy/canceled
+// are distinct Twilio terminal statuses that mean the call didn't
+// connect or produce audio.
+var TWILIO_TERMINAL_FAILURES = ['failed', 'no-answer', 'busy', 'canceled'];
+
+app.post('/webhook/status', async function(req, res) {
   var callId = req.query.callId;
-  log(callId, 'Status: ' + req.body.CallStatus, 'info');
+  var callStatus = req.body.CallStatus;
+  log(callId, 'Status: ' + callStatus, 'info');
   var config = pendingCalls.get(callId);
   if (config) {
-    config.status = req.body.CallStatus;
-    broadcastToClients({ type: 'status', callId: callId, status: req.body.CallStatus });
+    config.status = callStatus;
+    broadcastToClients({ type: 'status', callId: callId, status: callStatus });
   }
+  // Always 200 quickly so Twilio doesn't retry on slow downstream work.
   res.sendStatus(200);
+
+  // Only act on terminal failures; everything else (initiated, ringing,
+  // answered, completed) is informational.
+  if (!callStatus || TWILIO_TERMINAL_FAILURES.indexOf(callStatus) < 0) return;
+  if (!config) return; // pendingCall expired or container restarted; nothing to act on
+  if (config.failureHandled) return; // idempotency: one notify+insert per call
+  config.failureHandled = true;
+
+  // Ft Bend system calls and manual calls without a userId don't get
+  // per-user handling. (Ft Bend failure handling is system-level and
+  // outside the scope of this gap fix.)
+  if (config.isFtbendDaily || !config.userId) {
+    console.log('[STATUS] Terminal failure ' + callStatus + ' on Ft Bend / no-user call ' + callId + ' — skipping per-user notify/insert');
+    return;
+  }
+
+  var reason = callStatus === 'no-answer' ? 'the hotline did not answer'
+             : callStatus === 'busy' ? 'the hotline line was busy'
+             : callStatus === 'canceled' ? 'the call was canceled'
+             : 'the call could not be completed';
+
+  var msg = '⚠️ Call Issue\n\nYour scheduled check-in could not be completed — ' + reason + '. Please call the hotline manually to verify your status.' + (config.pin ? '\n\nPIN: ' + config.pin : '') + '\n\n- ProbationCall.com';
+  try {
+    await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, msg, callId);
+  } catch (e) {
+    console.error('[STATUS] notify failed for ' + callId + ':', e.message);
+  }
+
+  // call_history row with result='CALL_FAILED', billed_at NULL.
+  // Billing is gated on result IN ('MUST_TEST','NO_TEST') only, so this
+  // does NOT charge a credit. It DOES make the :45 recovery cron skip
+  // the user (it looks for any row today, regardless of result).
+  // It counts toward the no-result auto-pause streak alongside UNKNOWN
+  // and HOTLINE_DOWN — see checkConsecutiveUnknown. PIN_EXPIRED counter
+  // is untouched.
+  //
+  // Await the streak check BEFORE the insert so the lookback SELECT
+  // provably completes before this row hits the table — without await the
+  // two queries race and the SELECT can see today's row, firing the
+  // auto-pause one call early. .catch swallows errors so a check failure
+  // can't block the insert. Safe: res.sendStatus(200) already fired at the
+  // top of this handler, so Twilio's response is not delayed.
+  await checkConsecutiveUnknown(config.userId, '(no audio — Twilio status: ' + callStatus + ')', config.notifyNumber, config.notifyEmail, config.notifyMethod)
+    .catch(function(e) { console.error('[UNKNOWN-STREAK] check failed:', e.message); });
+
+  var row = {
+    user_id: config.userId,
+    call_sid: config.callSid || 'unknown',
+    target_number: config.targetNumber || '+19362834848',
+    pin_used: config.pin,
+    result: 'CALL_FAILED',
+    created_at: new Date().toISOString()
+  };
+  var insertResult = await supabase.from('call_history').insert(row);
+  if (insertResult.error) {
+    console.error('[STATUS] CALL_FAILED insert error for ' + callId + ':', insertResult.error);
+  } else {
+    console.log('[STATUS] Recorded CALL_FAILED for ' + callId + ' user=' + config.userId.slice(0, 8) + ' status=' + callStatus);
+  }
 });
 
 async function notify(phone, email, method, message, callId) {
