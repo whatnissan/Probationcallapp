@@ -255,6 +255,32 @@ const KEYWORDS = {
   MUST_TEST: ['required to test', 'must test', 'you are required', 'report for', 'required today']
 };
 
+// Atomic credit-add via the add_credits_with_ledger RPC. Updates
+// profiles.credits AND inserts a credit_transactions row in one transaction
+// so they can never drift. Returns the new balance, or null on failure
+// (always logs the error). Callers MUST use this for every credit ADD —
+// directly updating profiles.credits would skip the ledger entry.
+async function recordCreditAdd(opts) {
+  if (!opts || !opts.userId || !opts.amount || opts.amount <= 0 || !opts.source) {
+    console.error('[CREDITS] recordCreditAdd: invalid args', JSON.stringify(opts));
+    return null;
+  }
+  var rpc = await supabase.rpc('add_credits_with_ledger', {
+    p_user_id: opts.userId,
+    p_amount: opts.amount,
+    p_source: opts.source,
+    p_note: opts.note || null,
+    p_performed_by: opts.performedBy || null,
+    p_stripe_session_id: opts.stripeSessionId || null,
+    p_stripe_invoice_id: opts.stripeInvoiceId || null
+  });
+  if (rpc.error) {
+    console.error('[CREDITS] add_credits_with_ledger RPC failed for ' + opts.userId.slice(0, 8) + ' source=' + opts.source + ':', rpc.error.message || rpc.error);
+    return null;
+  }
+  return rpc.data;
+}
+
 // Idempotency-keyed credit deduction. Returns true if a credit was deducted
 // (or would have been, for a dev user) — caller MUST then write billed_at on
 // the matching call_history row in the same insert. Returns false if we
@@ -460,13 +486,21 @@ async function auth(req, res, next) {
     if (!profile) {
       var referralCode = generateReferralCode();
       var startCredits = isDev(user.email) ? 9999 : 5;
-      await supabase.from('profiles').insert({ 
-        id: user.id, 
-        email: user.email, 
-        credits: startCredits,
+      // Insert with 0 credits, then grant via the ledger RPC so the signup
+      // bonus shows up in the audit trail.
+      await supabase.from('profiles').insert({
+        id: user.id,
+        email: user.email,
+        credits: 0,
         referral_code: referralCode,
         affiliate_balance_cents: 0,
         affiliate_total_earned_cents: 0
+      });
+      await recordCreditAdd({
+        userId: user.id,
+        amount: startCredits,
+        source: 'signup_bonus',
+        note: isDev(user.email) ? 'Dev account starting credits' : 'New user starter credits'
       });
       profile = { id: user.id, email: user.email, credits: startCredits, referral_code: referralCode };
       // Send welcome email to new user
@@ -762,11 +796,19 @@ app.post('/api/apply-referral', auth, async function(req, res) {
     return res.status(400).json({ error: 'Cannot use your own referral code' });
   }
   
-  // Update referred user with bonus credits
-  await supabase.from('profiles').update({ 
-    referred_by: code.toUpperCase(),
-    credits: req.profile.credits + REFERRED_BONUS_CREDITS
+  // Set the referral lock first, then grant the bonus via the ledger so it
+  // shows up in credit history. Two writes, but the lock is an attribute
+  // unrelated to credits — splitting is cleaner than smuggling both through
+  // the RPC.
+  await supabase.from('profiles').update({
+    referred_by: code.toUpperCase()
   }).eq('id', req.user.id);
+  await recordCreditAdd({
+    userId: req.user.id,
+    amount: REFERRED_BONUS_CREDITS,
+    source: 'referral_bonus',
+    note: 'Referral signup bonus (code ' + code.toUpperCase() + ')'
+  });
   
   // Create referral record
   await supabase.from('referrals').insert({
@@ -879,7 +921,12 @@ app.post('/api/redeem', auth, async function(req, res) {
   
   await supabase.from('promo_redemptions').insert({ user_id: req.user.id, promo_code_id: promo.id });
   await supabase.from('promo_codes').update({ times_used: promo.times_used + 1 }).eq('id', promo.id);
-  await supabase.from('profiles').update({ credits: req.profile.credits + promo.credits }).eq('id', req.user.id);
+  await recordCreditAdd({
+    userId: req.user.id,
+    amount: promo.credits,
+    source: 'promo',
+    note: 'Promo code: ' + code.toUpperCase()
+  });
   
   res.json({ success: true, credits: promo.credits });
 });
@@ -1217,20 +1264,34 @@ async function handleSubscriptionInvoicePaid(invoice, res) {
     }
 
     var currentCredits = profile.credits || 0;
-    var newCredits = currentCredits + SUBSCRIPTION_CREDITS_PER_PAYMENT;
-    var creditUpdate = await supabase.from('profiles')
-      .update({
-        credits: newCredits,
-        subscription_status: 'active',
-        stripe_customer_id: profile.stripe_customer_id || invoice.customer,
-        stripe_subscription_id: profile.stripe_subscription_id || invoice.subscription
-      })
-      .eq('id', profile.id);
-    if (creditUpdate.error) {
-      console.error('[STRIPE WEBHOOK] Credit update failed for', profile.id, ':', creditUpdate.error);
+    var billingReason = invoice.billing_reason || '';
+    var subSource = billingReason === 'subscription_create' ? 'subscription_initial' : 'subscription_renewal';
+    var subNote = subSource === 'subscription_initial' ? 'First subscription payment' : 'Monthly subscription renewal';
+
+    // Atomic balance-update + ledger entry via RPC.
+    var newCredits = await recordCreditAdd({
+      userId: profile.id,
+      amount: SUBSCRIPTION_CREDITS_PER_PAYMENT,
+      source: subSource,
+      note: subNote,
+      stripeInvoiceId: invoice.id
+    });
+    if (newCredits === null) {
+      console.error('[STRIPE WEBHOOK] Subscription credit grant failed for', profile.id, 'invoice', invoice.id);
       return res.status(500).json({ error: 'credit_update_failed' });
     }
-    console.log('[STRIPE WEBHOOK] Credits granted (sub): ' + profile.id.slice(0, 8) + ' ' + currentCredits + ' -> ' + newCredits + ' (+' + SUBSCRIPTION_CREDITS_PER_PAYMENT + ', invoice ' + invoice.id + ')');
+
+    // Non-credit subscription fields (status, customer/sub IDs) updated separately.
+    // Credits already granted via RPC; failures here are non-critical.
+    var subFieldsUpd = await supabase.from('profiles').update({
+      subscription_status: 'active',
+      stripe_customer_id: profile.stripe_customer_id || invoice.customer,
+      stripe_subscription_id: profile.stripe_subscription_id || invoice.subscription
+    }).eq('id', profile.id);
+    if (subFieldsUpd.error) {
+      console.error('[STRIPE WEBHOOK] Subscription field update failed (credits already granted) for', profile.id, ':', subFieldsUpd.error);
+    }
+    console.log('[STRIPE WEBHOOK] Credits granted (sub): ' + profile.id.slice(0, 8) + ' ' + currentCredits + ' -> ' + newCredits + ' (+' + SUBSCRIPTION_CREDITS_PER_PAYMENT + ', ' + subSource + ', invoice ' + invoice.id + ')');
 
     var purchaseInsert = await supabase.from('purchases').insert({
       user_id: profile.id,
@@ -1375,13 +1436,17 @@ app.post('/webhook/stripe', async function(req, res) {
     }
     var profile = profileResult.data;
     var currentCredits = profile.credits || 0;
-    var newCredits = currentCredits + creditsToAdd;
 
-    var creditUpdate = await supabase.from('profiles')
-      .update({ credits: newCredits })
-      .eq('id', userId);
-    if (creditUpdate.error) {
-      console.error('[STRIPE WEBHOOK] Credit update failed for', userId, ':', creditUpdate.error);
+    // Atomic balance-update + ledger entry via RPC.
+    var newCredits = await recordCreditAdd({
+      userId: userId,
+      amount: creditsToAdd,
+      source: 'bundle_purchase',
+      note: 'Bundle: ' + (s.metadata.package_id || 'unknown'),
+      stripeSessionId: s.id
+    });
+    if (newCredits === null) {
+      console.error('[STRIPE WEBHOOK] Credit grant failed for', userId, 'session', s.id);
       return res.status(500).json({ error: 'credit_update_failed' });
     }
     console.log('[STRIPE WEBHOOK] Credits granted: ' + userId.slice(0, 8) + ' ' + currentCredits + ' -> ' + newCredits + ' (+' + creditsToAdd + ', session ' + s.id + ')');
@@ -2300,8 +2365,9 @@ app.post('/api/admin/user/:id/credits', adminAuth, async function(req, res) {
     var userId = req.params.id;
     var action = req.body.action;
     var amount = parseInt(req.body.amount) || 0;
-    var ur = await supabase.from('profiles').select('credits').eq('id', userId).single();
-    var curr = ur.data ? ur.data.credits : 0;
+    var ur = await supabase.from('profiles').select('credits, email').eq('id', userId).single();
+    var curr = ur.data ? (ur.data.credits || 0) : 0;
+    var targetEmail = ur.data ? ur.data.email : null;
     var newC;
     if (action === 'add') {
       newC = curr + amount;
@@ -2312,8 +2378,26 @@ app.post('/api/admin/user/:id/credits', adminAuth, async function(req, res) {
     } else {
       newC = curr;
     }
-    await supabase.from('profiles').update({ credits: newC }).eq('id', userId);
-    console.log('[ADMIN] Credits updated: ' + userId.slice(0,8) + ' ' + curr + ' -> ' + newC);
+    var delta = newC - curr;
+    if (delta > 0) {
+      // Atomic balance-update + ledger entry via RPC. Records who did it.
+      var resultBalance = await recordCreditAdd({
+        userId: userId,
+        amount: delta,
+        source: 'admin_grant',
+        note: 'Admin ' + action + ' (' + curr + ' -> ' + newC + ')',
+        performedBy: req.profile && req.profile.email ? req.profile.email : null
+      });
+      if (resultBalance === null) {
+        return res.status(500).json({ error: 'Credit grant failed — ledger not updated' });
+      }
+    } else if (delta < 0) {
+      // Deduction (admin lowered balance). Not tracked in the credit ledger
+      // per current scope — the ledger records adds only.
+      var dedUpd = await supabase.from('profiles').update({ credits: newC }).eq('id', userId);
+      if (dedUpd.error) return res.status(500).json({ error: dedUpd.error.message });
+    }
+    console.log('[ADMIN] Credits updated by ' + (req.profile && req.profile.email ? req.profile.email : 'unknown') + ': ' + userId.slice(0,8) + ' (' + (targetEmail || '?') + ') ' + curr + ' -> ' + newC);
     res.json({ success: true });
   } catch(e) {
     res.status(500).json({ error: e.message });
@@ -2533,6 +2617,16 @@ app.delete('/api/admin/promo/:id', adminAuth, async function(req, res) {
 app.get("/api/admin/user/:id/calls", adminAuth, async function(req, res) {
   var result = await supabase.from("call_history").select("*").eq("user_id", req.params.id).order("created_at", { ascending: false }).limit(500);
   res.json({ calls: result.data || [] });
+});
+
+app.get("/api/admin/user/:id/credit-history", adminAuth, async function(req, res) {
+  var result = await supabase.from("credit_transactions")
+    .select("*")
+    .eq("user_id", req.params.id)
+    .order("created_at", { ascending: false })
+    .limit(500);
+  if (result.error) return res.status(500).json({ error: result.error.message });
+  res.json({ history: result.data || [] });
 });
 app.delete('/api/admin/user/:id', adminAuth, async function(req, res) {
   var userId = req.params.id;
