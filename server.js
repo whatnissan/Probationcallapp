@@ -1302,7 +1302,11 @@ async function handleSubscriptionCheckoutCompleted(s, res) {
     var upd = await supabase.from('profiles').update({
       stripe_customer_id: s.customer,
       stripe_subscription_id: s.subscription,
-      subscription_status: 'active'
+      subscription_status: 'active',
+      // A brand-new subscription is never in "canceling" state — clear any
+      // residual cancel fields left over from a previous, terminated sub.
+      subscription_cancel_at_period_end: false,
+      subscription_cancel_at: null
     }).eq('id', userId);
     if (upd.error) {
       console.error('[STRIPE WEBHOOK] Could not save sub IDs on profile', userId, ':', upd.error);
@@ -1455,8 +1459,15 @@ async function handleSubscriptionInvoicePaymentFailed(invoice, res) {
 
 async function handleSubscriptionDeleted(subscription, res) {
   try {
+    // Sub is fully canceled now — the "canceling at period end" state is over,
+    // so clear those flags. UI keys off subscription_status='canceled' for
+    // the terminal "Subscription ended" message.
     var r = await supabase.from('profiles')
-      .update({ subscription_status: 'canceled' })
+      .update({
+        subscription_status: 'canceled',
+        subscription_cancel_at_period_end: false,
+        subscription_cancel_at: null
+      })
       .eq('stripe_subscription_id', subscription.id);
     if (r.error) console.error('[STRIPE WEBHOOK] Subscription cancel update failed:', r.error);
     console.log('[STRIPE WEBHOOK] Subscription canceled: sub=' + subscription.id);
@@ -1469,11 +1480,17 @@ async function handleSubscriptionDeleted(subscription, res) {
 
 async function handleSubscriptionUpdated(subscription, res) {
   try {
+    var cancelAtEnd = !!subscription.cancel_at_period_end;
+    var cancelAtIso = subscription.cancel_at ? new Date(subscription.cancel_at * 1000).toISOString() : null;
     var r = await supabase.from('profiles')
-      .update({ subscription_status: subscription.status })
+      .update({
+        subscription_status: subscription.status,
+        subscription_cancel_at_period_end: cancelAtEnd,
+        subscription_cancel_at: cancelAtIso
+      })
       .eq('stripe_subscription_id', subscription.id);
     if (r.error) console.error('[STRIPE WEBHOOK] Subscription updated update failed:', r.error);
-    console.log('[STRIPE WEBHOOK] Subscription updated: sub=' + subscription.id + ' status=' + subscription.status);
+    console.log('[STRIPE WEBHOOK] Subscription updated: sub=' + subscription.id + ' status=' + subscription.status + ' cancel_at_period_end=' + cancelAtEnd + (cancelAtIso ? ' cancel_at=' + cancelAtIso : ''));
     return res.json({ received: true });
   } catch (e) {
     console.error('[STRIPE WEBHOOK] handleSubscriptionUpdated error:', e.message);

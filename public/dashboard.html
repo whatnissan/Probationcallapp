@@ -305,7 +305,11 @@ select option { background: #1a1a2e; color: #fff; }
     </div>
     <button class="buy-btn" onclick="showBuyModal()">Buy Credits</button>
   </div>
-  
+
+  <!-- Subscription strip — surfaces current sub state on the main dashboard
+       (active / canceling / canceled / past_due / none) with one action button. -->
+  <div id="dashSubCard" style="display:none;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;border-radius:10px;padding:10px 14px;margin:0 0 14px;font-size:0.9rem"></div>
+
 
   <div class="test-stats-card" id="testStatsCard" style="display:none">
     <h3>📊 Test Frequency Analysis</h3>
@@ -634,9 +638,9 @@ select option { background: #1a1a2e; color: #fff; }
           <button id="subscribeBtn" class="btn" onclick="subscribeMonthly()" style="background:#00d9ff;color:#000;margin-top:6px">Subscribe</button>
         </div>
       </div>
-      <div id="subStatusBox" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.1);font-size:0.85rem">
-        <span id="subStatusText" style="color:#22c55e"></span>
-        <button class="btn" onclick="manageSubscription()" style="background:rgba(255,255,255,0.1);color:#fff;float:right;padding:4px 12px;font-size:0.8rem">Manage Subscription</button>
+      <div id="subStatusBox" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.1);font-size:0.85rem;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+        <span id="subStatusText" style="color:#22c55e;flex:1;min-width:0"></span>
+        <button class="btn" onclick="manageSubscription()" style="background:rgba(255,255,255,0.1);color:#fff;padding:4px 12px;font-size:0.8rem;flex-shrink:0">Manage Subscription</button>
       </div>
     </div>
     <div style="color:#8892b0;font-size:0.85rem;text-align:center;margin:5px 0 12px">— or —</div>
@@ -1163,39 +1167,96 @@ function manageSubscription() {
   });
 }
 
-// Toggle the subscription card based on the user's current status.
-// Called from loadUser after profile data lands.
+// Shared subscription-state classifier — single source of truth for what
+// state the user is in. Called by renderSubscriptionStatus, which feeds
+// both the modal card AND the dashboard strip so they can't drift.
+function getSubscriptionState(profile) {
+  if (!profile) return { state: 'none' };
+  var status = profile.subscription_status;
+  var cancelAtEnd = !!profile.subscription_cancel_at_period_end;
+  var cancelAt = profile.subscription_cancel_at || null;
+  if ((status === 'active' || status === 'trialing') && cancelAtEnd) {
+    return { state: 'canceling', cancelAt: cancelAt };
+  }
+  if (status === 'active' || status === 'trialing') return { state: 'active' };
+  if (status === 'past_due' || status === 'unpaid') return { state: 'past_due' };
+  if (status === 'canceled' || status === 'incomplete_expired') return { state: 'canceled' };
+  return { state: 'none' };
+}
+
+function formatCancelDate(iso) {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  } catch (e) {
+    return iso;
+  }
+}
+
+// Render both surfaces from the shared state. Modal lives inside #buyModal;
+// dashboard strip lives on the main page next to the credits counter.
 function renderSubscriptionStatus(profile) {
   if (!profile) return;
+  var s = getSubscriptionState(profile);
+  renderModalSub(s);
+  renderDashSub(s);
+}
+
+function renderModalSub(s) {
   var box = document.getElementById('subStatusBox');
   var txt = document.getElementById('subStatusText');
   var btn = document.getElementById('subscribeBtn');
   if (!box || !txt || !btn) return;
-  var status = profile.subscription_status;
-  if (status === 'active' || status === 'trialing') {
-    box.style.display = 'block';
-    txt.textContent = '✅ Subscription active — 30 credits land each month';
-    btn.textContent = 'Subscribed';
-    btn.disabled = true;
-    btn.style.opacity = '0.6';
-  } else if (status === 'past_due') {
-    box.style.display = 'block';
+  if (s.state === 'active') {
+    box.style.display = 'flex';
+    txt.innerHTML = '<span style="color:#22c55e">✅ Subscription active — 30 credits each month</span>';
+    btn.textContent = 'Subscribed'; btn.disabled = true; btn.style.opacity = '0.6';
+  } else if (s.state === 'canceling') {
+    box.style.display = 'flex';
+    txt.innerHTML = '<span style="color:#f59e0b">⏳ Canceling on ' + formatCancelDate(s.cancelAt) + ' — credits stop after that</span>';
+    btn.textContent = 'Subscribed'; btn.disabled = true; btn.style.opacity = '0.6';
+  } else if (s.state === 'past_due') {
+    box.style.display = 'flex';
     txt.innerHTML = '<span style="color:#f59e0b">⚠️ Payment failed — update your card from Manage Subscription</span>';
-    btn.textContent = 'Subscribe';
-    btn.disabled = false;
-    btn.style.opacity = '1';
-  } else if (status === 'canceled') {
-    box.style.display = 'block';
-    txt.innerHTML = '<span style="color:#8892b0">Subscription canceled — you can resubscribe anytime</span>';
-    btn.textContent = 'Subscribe';
-    btn.disabled = false;
-    btn.style.opacity = '1';
+    btn.textContent = 'Subscribed'; btn.disabled = true; btn.style.opacity = '0.6';
+  } else if (s.state === 'canceled') {
+    box.style.display = 'none';
+    btn.textContent = 'Subscribe'; btn.disabled = false; btn.style.opacity = '1';
   } else {
     box.style.display = 'none';
-    btn.textContent = 'Subscribe';
-    btn.disabled = false;
-    btn.style.opacity = '1';
+    btn.textContent = 'Subscribe'; btn.disabled = false; btn.style.opacity = '1';
   }
+}
+
+function renderDashSub(s) {
+  var card = document.getElementById('dashSubCard');
+  if (!card) return;
+  var bg, border, html;
+  if (s.state === 'active') {
+    bg = 'rgba(34,197,94,0.08)'; border = 'rgba(34,197,94,0.3)';
+    html = '<span style="color:#22c55e;font-weight:600">✅ Subscription active</span>' +
+           '<button class="btn" onclick="manageSubscription()" style="background:rgba(255,255,255,0.1);color:#fff;padding:4px 12px;font-size:0.8rem">Manage Subscription</button>';
+  } else if (s.state === 'canceling') {
+    bg = 'rgba(245,158,11,0.08)'; border = 'rgba(245,158,11,0.3)';
+    html = '<span style="color:#f59e0b;font-weight:600">⏳ Canceling on ' + formatCancelDate(s.cancelAt) + '</span>' +
+           '<button class="btn" onclick="manageSubscription()" style="background:rgba(255,255,255,0.1);color:#fff;padding:4px 12px;font-size:0.8rem">Manage Subscription</button>';
+  } else if (s.state === 'past_due') {
+    bg = 'rgba(245,158,11,0.08)'; border = 'rgba(245,158,11,0.3)';
+    html = '<span style="color:#f59e0b;font-weight:600">⚠️ Payment failed</span>' +
+           '<button class="btn" onclick="manageSubscription()" style="background:#f59e0b;color:#000;padding:4px 12px;font-size:0.8rem">Update card</button>';
+  } else if (s.state === 'canceled') {
+    bg = 'rgba(136,146,176,0.08)'; border = 'rgba(136,146,176,0.3)';
+    html = '<span style="color:#8892b0">Subscription ended</span>' +
+           '<button class="btn" onclick="subscribeMonthly()" style="background:#00d9ff;color:#000;padding:4px 12px;font-size:0.8rem">Resubscribe — $14.99/mo</button>';
+  } else {
+    bg = 'rgba(0,217,255,0.06)'; border = 'rgba(0,217,255,0.25)';
+    html = '<span style="color:#8892b0">No subscription</span>' +
+           '<button class="btn" onclick="subscribeMonthly()" style="background:#00d9ff;color:#000;padding:4px 12px;font-size:0.8rem">Subscribe — $14.99/mo</button>';
+  }
+  card.style.background = bg;
+  card.style.border = '1px solid ' + border;
+  card.innerHTML = html;
+  card.style.display = 'flex';
 }
 
 function redeemPromo() {
@@ -2001,7 +2062,7 @@ function filterHistory(filter) {
           </div>
         </div>
       </div>
-      <button class="btn btn-green" onclick="buyExactCredits()" style="margin-top:10px">Buy Exact Credits</button>
+      <p style="color:#8892b0;font-size:0.8rem;margin-top:10px">To purchase, save the date here, then open <strong>Buy Credits</strong> from the dashboard.</p>
     </div>
     
     <button class="btn" onclick="saveProbationDate()">💾 Save Date</button>
