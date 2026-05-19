@@ -75,9 +75,11 @@ const wsClients = new Set();
 const scheduledJobs = new Map();
 
 const TWILIO_VOICE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
-const MESSAGING_SERVICE_SID = 'MG8adbb793f6b8c100da6770f6f0707258';
-const WHATSAPP_NUMBER = 'whatsapp:+15558965863';
-const FROM_EMAIL = 'alerts@probationcall.com';
+// These have fallbacks to the historical hardcoded values so the deploy
+// keeps working unchanged — set the env vars in Railway to override.
+const MESSAGING_SERVICE_SID = process.env.TWILIO_MESSAGING_SERVICE_SID || 'MG8adbb793f6b8c100da6770f6f0707258';
+const WHATSAPP_NUMBER = process.env.TWILIO_WHATSAPP_NUMBER || 'whatsapp:+15558965863';
+const FROM_EMAIL = process.env.FROM_EMAIL || 'alerts@probationcall.com';
 
 // Time restrictions: 6:00 AM to 2:59 PM
 const MIN_HOUR = 6;
@@ -124,77 +126,99 @@ const FTBEND_OFFICES = {
   }
 };
 
-// Fort Bend County colors for detection
+// Fort Bend County colors for detection.
+// Add new colors here as the hotline announces them. Validated against
+// transcripts before being stored — anything not on this list (or not
+// resolvable via a word-boundary misrecognition fix) is treated as UNKNOWN
+// rather than coerced to a wrong color.
 const FTBEND_COLORS = [
   'amber', 'apricot', 'aqua', 'auburn', 'beaver', 'black', 'blue', 'brown', 'burgundy',
-  'bronze', 'canary', 'tan', 'cherry', 'chestnut', 'coral', 'copper', 'cream', 'crimson', 'cyan',
+  'bronze', 'canary', 'cherry', 'chestnut', 'chrome', 'coral', 'copper', 'cream', 'crimson', 'cyan',
   'emerald', 'forest', 'fuchsia', 'gold', 'gray', 'grey', 'green',
-  'ivory', 'jade', 'lavender', 'lemon', 'lilac', 'lime', 'magenta', 'maroon',
+  'ivory', 'jade', 'khaki', 'lavender', 'lemon', 'lilac', 'lime', 'magenta', 'maroon', 'mint',
   'navy', 'olive', 'orange', 'orchid', 'peach', 'pearl', 'pink', 'plum', 'purple',
-  'red', 'rose', 'ruby', 'rust', 'salmon', 'sapphire', 'scarlet', 'silver',
-  'tan', 'teal', 'turquoise', 'violet', 'white', 'wine', 'yellow',
-  'gray', 'lemon', 'prep', 'phase 1', 'phase 1 a', 'phase 1 b', 'phase 2', 'phase 3', 'phase 4'
+  'red', 'rose', 'ruby', 'rust', 'salmon', 'sapphire', 'scarlet', 'silver', 'slate',
+  'tan', 'teal', 'turquoise', 'violet', 'white', 'wine', 'yellow'
 ];
 
+// Phase group strings (Rosenberg 2 announces these alongside colors)
+const FTBEND_PHASES = [
+  'prep', 'phase 1 a', 'phase 1 b', 'phase 1', 'phase 2', 'phase 3', 'phase 4'
+];
+
+// Misrecognition fixes — keyed on FULL words/phrases. We match with word
+// boundaries to avoid substring traps (the old bug: 'pan' triggering on
+// "Spanish", "expand", etc. and coercing "chrome" announcements to "Tan").
+const FTBEND_MISRECOGNITIONS = {
+  'can airy': 'canary', 'canaries': 'canary', 'canari': 'canary',
+  'all of': 'olive', 'all live': 'olive',
+  'i very': 'ivory', 'i vory': 'ivory',
+  'grey': 'gray',
+  'cyn': 'cyan', 'zion': 'cyan',
+  'sigh in': 'cyan', 'sigh an': 'cyan', 'sy an': 'cyan', 'psy an': 'cyan',
+  'tanned': 'tan'
+};
+
+// Validate any candidate string against the known-color list. Returns the
+// canonical lowercase color or null. Used by detectColor and detectPhaseColors
+// so nothing unrecognized makes it into a notification.
+function validateFtbendColor(candidate) {
+  if (!candidate) return null;
+  var c = String(candidate).toLowerCase().trim();
+  if (FTBEND_COLORS.indexOf(c) >= 0) return c;
+  if (FTBEND_PHASES.indexOf(c) >= 0) return c;
+  return null;
+}
+
 function detectColor(transcript) {
-  var lower = transcript.toLowerCase();
+  var lower = String(transcript || '').toLowerCase();
   console.log('[FTBEND] Analyzing: "' + lower + '"');
-  
-  // FIRST - check known colors (most reliable)
-  for (var i = 0; i < FTBEND_COLORS.length; i++) {
-    // Use word boundary check to avoid partial matches
-    var colorRegex = new RegExp('\\b' + FTBEND_COLORS[i] + '\\b', 'i');
+
+  // Pass 1 — known colors (longest first so "phase 1 a" beats "phase 1").
+  var all = FTBEND_COLORS.concat(FTBEND_PHASES).slice().sort(function(a, b) {
+    return b.length - a.length;
+  });
+  for (var i = 0; i < all.length; i++) {
+    var colorRegex = new RegExp('\\b' + all[i].replace(/\s+/g, '\\s+') + '\\b', 'i');
     if (colorRegex.test(lower)) {
-      console.log('[FTBEND] Known color found: ' + FTBEND_COLORS[i]);
-      return FTBEND_COLORS[i].charAt(0).toUpperCase() + FTBEND_COLORS[i].slice(1);
+      console.log('[FTBEND] Known color found: ' + all[i]);
+      return all[i].charAt(0).toUpperCase() + all[i].slice(1);
     }
   }
-  
-  // Try to extract color from patterns like "color is X"
+
+  // Pass 2 — pattern extraction ("today's color is X"). Only accept if the
+  // extracted word is a known color.
   var patterns = [
     /color\s+(?:is|for today is|today is|will be)\s+([a-z]+)/i,
     /today(?:'s)?\s+color\s+(?:is\s+)?([a-z]+)/i,
     /the\s+color\s+(?:is\s+)?([a-z]+)/i
   ];
-  
   for (var p = 0; p < patterns.length; p++) {
     var match = lower.match(patterns[p]);
     if (match && match[1]) {
-      var extracted = match[1].trim();
-      if (['the', 'a', 'is', 'for', 'to', 'and', 'hot', 'call'].indexOf(extracted) === -1) {
-        console.log('[FTBEND] Pattern found: ' + extracted);
-        return extracted.charAt(0).toUpperCase() + extracted.slice(1);
+      var validated = validateFtbendColor(match[1]);
+      if (validated) {
+        console.log('[FTBEND] Pattern matched known color: ' + validated);
+        return validated.charAt(0).toUpperCase() + validated.slice(1);
       }
+      console.log('[FTBEND] Pattern extracted "' + match[1] + '" but not a known color — ignoring');
     }
   }
-  
-  // Only very specific misrecognitions (avoid false positives)
-  var fixes = {
-    'can airy': 'canary', 'canaries': 'canary', 'canari': 'canary',
-    'all of ': 'olive', 'all live': 'olive', 
-    'i very': 'ivory', 'i vory': 'ivory',
-    'grey': 'gray',
-    'can': 'cyan', 'cyn': 'cyan', 'ten': 'tan', 'dan': 'tan', 'pan': 'tan', 'tin': 'tan', 'ton': 'tan', 'hand': 'tan', 'man': 'tan', 'fan': 'tan', 'tanned': 'tan', 'tent': 'tan', 'zion': 'cyan', 'sign': 'cyan',
-    'sigh in': 'cyan', 'sigh an': 'cyan', 'sy an': 'cyan', 'psy an': 'cyan', 'sign': 'cyan'
-  };
-  
-  for (var fix in fixes) {
-    if (lower.includes(fix)) {
-      console.log('[FTBEND] Misrecognition fix: ' + fix + ' -> ' + fixes[fix]);
-      return fixes[fix].charAt(0).toUpperCase() + fixes[fix].slice(1);
+
+  // Pass 3 — word-boundary misrecognition fixes. NEVER use substring match
+  // here: that was the 2026-05-16 chrome→Tan bug.
+  for (var fix in FTBEND_MISRECOGNITIONS) {
+    var fixRegex = new RegExp('\\b' + fix.replace(/\s+/g, '\\s+') + '\\b', 'i');
+    if (fixRegex.test(lower)) {
+      var to = FTBEND_MISRECOGNITIONS[fix];
+      console.log('[FTBEND] Misrecognition fix: ' + fix + ' -> ' + to);
+      return to.charAt(0).toUpperCase() + to.slice(1);
     }
   }
-  
-  // Last resort - find word after "is" or "color"
-  var afterIs = lower.match(/(?:is|color)\s+([a-z]{3,})/);
-  if (afterIs && afterIs[1]) {
-    var word = afterIs[1];
-    if (['the', 'for', 'today', 'your', 'you', 'hot', 'call'].indexOf(word) === -1) {
-      console.log('[FTBEND] Word after is/color: ' + word);
-      return word.charAt(0).toUpperCase() + word.slice(1);
-    }
-  }
-  
+
+  // No known color, no validated pattern, no misrecognition match — UNKNOWN.
+  // Do not guess. A wrong color tells someone the wrong thing about a test.
+  console.log('[FTBEND] No known color detected — returning null (UNKNOWN)');
   return null;
 }
 
@@ -231,6 +255,126 @@ const KEYWORDS = {
   MUST_TEST: ['required to test', 'must test', 'you are required', 'report for', 'required today']
 };
 
+// Idempotency-keyed credit deduction. Returns true if a credit was deducted
+// (or would have been, for a dev user) — caller MUST then write billed_at on
+// the matching call_history row in the same insert. Returns false if we
+// skipped (already billed, no credits, or DB error).
+//
+// Primary defense: a caller-supplied alreadyBilledCheck() that queries
+// call_history.billed_at — survives restart, redeploy, and pendingCalls being
+// in-memory. Fast-path: the in-memory _creditDeductionKeys Set saves a DB
+// roundtrip on the second-and-later webhook delivery for the same call.
+var _creditDeductionKeys = new Set();
+async function deductCreditOnce(userId, idempotencyKey, options) {
+  options = options || {};
+  if (!userId || !idempotencyKey) return false;
+
+  // Fast-path (in-memory, lost on restart).
+  if (_creditDeductionKeys.has(idempotencyKey)) {
+    console.log('[CREDITS] Skip (fast-path) for ' + userId.slice(0, 8) + ' key=' + idempotencyKey);
+    return false;
+  }
+
+  // Durable check — the source of truth. Survives Railway redeploys and
+  // process restarts, which the fast-path cannot.
+  if (typeof options.alreadyBilledCheck !== 'function') {
+    console.error('[CREDITS] Refusing to deduct without alreadyBilledCheck for key=' + idempotencyKey);
+    return false;
+  }
+  try {
+    var already = await options.alreadyBilledCheck();
+    if (already) {
+      console.log('[CREDITS] Skip (durable) for ' + userId.slice(0, 8) + ' key=' + idempotencyKey + ' — already billed');
+      _creditDeductionKeys.add(idempotencyKey);
+      return false;
+    }
+  } catch (e) {
+    console.error('[CREDITS] Durable check failed for ' + userId.slice(0, 8) + ' key=' + idempotencyKey + ':', e.message);
+    return false; // refuse to deduct when we can't verify
+  }
+
+  try {
+    var pr = await supabase.from('profiles').select('credits, email').eq('id', userId).single();
+    if (pr.error || !pr.data) {
+      console.error('[CREDITS] Profile lookup failed for ' + userId.slice(0, 8) + ':', pr.error);
+      return false;
+    }
+    var devUser = isDev(pr.data.email);
+    if (!devUser && (pr.data.credits || 0) < 1) {
+      console.log('[CREDITS] No credits to deduct for ' + userId.slice(0, 8));
+      return false;
+    }
+
+    if (!devUser) {
+      var newCredits = pr.data.credits - 1;
+      var upd = await supabase.from('profiles').update({ credits: newCredits }).eq('id', userId);
+      if (upd.error) {
+        console.error('[CREDITS] Deduction update failed for ' + userId.slice(0, 8) + ':', upd.error);
+        return false;
+      }
+      console.log('[CREDITS] Deducted 1 from ' + userId.slice(0, 8) + ' (' + pr.data.credits + ' -> ' + newCredits + ') key=' + idempotencyKey);
+      await supabase.from('user_schedules').update({ no_credit_skip_count: 0 }).eq('user_id', userId);
+      if (newCredits <= 2 && options.notifyNumber !== undefined) {
+        sendLowCreditAlert(userId, newCredits, options.notifyNumber, options.notifyEmail, options.notifyMethod);
+      }
+    } else {
+      console.log('[CREDITS] Dev user ' + userId.slice(0, 8) + ' — no deduction; will still mark billed_at key=' + idempotencyKey);
+    }
+
+    _creditDeductionKeys.add(idempotencyKey);
+    if (_creditDeductionKeys.size > 10000) {
+      var first = _creditDeductionKeys.values().next().value;
+      _creditDeductionKeys.delete(first);
+    }
+    // true = caller should write billed_at on the call_history insert
+    return true;
+  } catch (e) {
+    console.error('[CREDITS] Exception deducting for ' + userId.slice(0, 8) + ':', e.message);
+    return false;
+  }
+}
+
+// If the user has had several consecutive UNKNOWN results, their PIN is
+// probably expired or the hotline wording changed. Pause their schedule
+// and tell them — beats charging them daily for no actionable result.
+var UNKNOWN_STREAK_THRESHOLD = 3;
+async function checkConsecutiveUnknown(userId, lastTranscript, notifyNumber, notifyEmail, notifyMethod) {
+  var recent = await supabase.from('call_history')
+    .select('result, created_at')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
+    .limit(UNKNOWN_STREAK_THRESHOLD);
+  if (recent.error || !recent.data) return;
+  // We're about to insert this UNKNOWN row; include it as the streak's head.
+  // The current call hasn't been inserted yet at this point, so we count
+  // (THRESHOLD - 1) prior UNKNOWNs plus the one we just produced.
+  var priorUnknown = recent.data.filter(function(r) { return r.result === 'UNKNOWN'; }).length;
+  if (priorUnknown < UNKNOWN_STREAK_THRESHOLD - 1) return;
+  // Don't re-fire on every subsequent UNKNOWN. Check if schedule is still enabled.
+  var sched = await supabase.from('user_schedules').select('enabled').eq('user_id', userId).single();
+  if (!sched.data || sched.data.enabled === false) return;
+  console.log('[UNKNOWN-STREAK] Pausing schedule for ' + userId.slice(0, 8) + ' after ' + UNKNOWN_STREAK_THRESHOLD + ' UNKNOWNs');
+  await supabase.from('user_schedules').update({ enabled: false }).eq('user_id', userId);
+  if (scheduledJobs.has(userId)) {
+    scheduledJobs.get(userId).stop();
+    scheduledJobs.delete(userId);
+  }
+  var userMsg = '⏸ ProbationCall paused\n\nYour last ' + UNKNOWN_STREAK_THRESHOLD + ' check-ins came back unclear. The most common cause is an expired or changed PIN.\n\nPlease call the hotline yourself to verify, then update your PIN at probationcall.com and re-enable your schedule.\n\nWe paused calling so we don\'t keep using your credits on unclear results.\n\n- ProbationCall.com';
+  await notify(notifyNumber, notifyEmail, notifyMethod, userMsg, 'unknown_streak').catch(function() {});
+  // Admin alert
+  var adminResult = await supabase.from('profiles').select('id').eq('is_admin', true);
+  if (adminResult.data) {
+    for (var a = 0; a < adminResult.data.length; a++) {
+      var adminSched = await supabase.from('user_schedules').select('notify_number').eq('user_id', adminResult.data[a].id).single();
+      if (adminSched.data && adminSched.data.notify_number) {
+        await sendSMS(adminSched.data.notify_number,
+          '⚠️ ADMIN: User ' + userId.slice(0, 8) + ' paused after ' + UNKNOWN_STREAK_THRESHOLD + ' UNKNOWNs.\n\nLast heard: "' + String(lastTranscript || '').slice(0, 100) + '"',
+          'unknown_streak').catch(function() {});
+      }
+    }
+  }
+}
+
 function isDev(email) {
   return DEV_EMAILS.includes(email.toLowerCase());
 }
@@ -250,8 +394,19 @@ function log(callId, msg, type) {
 }
 
 function broadcastToClients(data) {
-  wsClients.forEach(function(c) { 
-    if (c.readyState === WebSocket.OPEN) c.send(JSON.stringify(data)); 
+  // If the event references a callId we know about, send only to the socket
+  // owned by that call's userId. Otherwise (no callId or unknown call) the
+  // event is dropped — we don't broadcast call data across users.
+  var targetUserId = null;
+  if (data && data.callId) {
+    var pc = pendingCalls.get(data.callId);
+    if (pc && pc.userId) targetUserId = pc.userId;
+  }
+  if (!targetUserId) return;
+  wsClients.forEach(function(c) {
+    if (c.readyState === WebSocket.OPEN && c.userId === targetUserId) {
+      c.send(JSON.stringify(data));
+    }
   });
 }
 
@@ -265,6 +420,28 @@ function getStaggerDelay(userId) {
   // Convert to 0 to STAGGER_MINUTES range (in milliseconds)
   var delayMs = Math.abs(hash % (STAGGER_MINUTES * 60 * 1000));
   return delayMs;
+}
+
+// Simple per-user in-memory rate limit. Keyed on userId + bucket name.
+// Used to stop a signed-in user from burning Twilio/Stripe quota.
+var _rateBuckets = new Map();
+function rateLimit(bucket, max, windowMs) {
+  return function(req, res, next) {
+    var key = bucket + ':' + (req.user ? req.user.id : (req.ip || 'anon'));
+    var now = Date.now();
+    var entry = _rateBuckets.get(key);
+    if (!entry || (now - entry.windowStart) > windowMs) {
+      _rateBuckets.set(key, { windowStart: now, count: 1 });
+      return next();
+    }
+    entry.count++;
+    if (entry.count > max) {
+      var retryAfter = Math.ceil((windowMs - (now - entry.windowStart)) / 1000);
+      res.set('Retry-After', String(retryAfter));
+      return res.status(429).json({ error: 'Too many requests. Try again in ' + retryAfter + 's.' });
+    }
+    next();
+  };
 }
 
 async function auth(req, res, next) {
@@ -632,18 +809,32 @@ app.post('/api/affiliate/request-payout', auth, async function(req, res) {
   if (pendingResult.data) {
     return res.status(400).json({ error: 'You already have a pending payout request' });
   }
-  
-  // Create payout request
-  await supabase.from('payout_requests').insert({
+
+  // Create payout request FIRST. Only zero the balance if the insert succeeded —
+  // otherwise the user has an empty balance and no pending payout to show for it.
+  var insertResult = await supabase.from('payout_requests').insert({
     user_id: req.user.id,
     amount_cents: balance,
     payout_email: payoutEmail,
     payout_method: method,
     status: 'pending'
   });
-  
-  // Reset balance to 0 (moved to pending)
-  await supabase.from('profiles').update({ affiliate_balance_cents: 0 }).eq('id', req.user.id);
+  if (insertResult.error) {
+    console.error('[PAYOUT] Insert failed for', req.user.id.slice(0, 8), ':', insertResult.error);
+    return res.status(500).json({ error: 'Could not create payout request' });
+  }
+
+  var zeroResult = await supabase.from('profiles').update({ affiliate_balance_cents: 0 }).eq('id', req.user.id);
+  if (zeroResult.error) {
+    // Roll back the payout request so user can retry — avoid double-paying.
+    console.error('[PAYOUT] Balance zero failed for', req.user.id.slice(0, 8), '— rolling back payout request:', zeroResult.error);
+    await supabase.from('payout_requests')
+      .delete()
+      .eq('user_id', req.user.id)
+      .eq('status', 'pending')
+      .eq('amount_cents', balance);
+    return res.status(500).json({ error: 'Could not finalize payout — please try again' });
+  }
   
   // Notify you (the owner) about payout request
   if (process.env.BREVO_KEY) {
@@ -874,11 +1065,9 @@ function rescheduleUser(userId, sched) {
           return;
         }
         
+        // Credit is deducted in /webhook/recording once a result (MUST_TEST
+        // or NO_TEST) is known. UNKNOWN does not bill. See deductCreditOnce.
         await initiateCall(sched.target_number, sched.pin, sched.notify_number, sched.notify_email, sched.notify_method, userId, sched.retry_on_unknown, 0);
-        
-        if (!isDevUser) {
-          var newCredits = profile.credits - 1; await supabase.from('profiles').update({ credits: newCredits }).eq('id', userId); await supabase.from('user_schedules').update({ no_credit_skip_count: 0 }).eq('user_id', userId); if (newCredits <= 2) { sendLowCreditAlert(userId, newCredits, sched.notify_number, sched.notify_email, sched.notify_method); }
-        }
       } catch (e) {
         console.error('[SCHED] Error for ' + userId.slice(0,8) + '...:', e.message);
         await notify(sched.notify_number, sched.notify_email, sched.notify_method, '⚠️ Call Failed\n\nYour scheduled check-in could not be completed. We\'ll try again shortly.\n\nIf this persists, please call the hotline manually.\n\n- ProbationCall.com', 'sched');
@@ -897,7 +1086,7 @@ async function loadAllSchedules() {
   }
 }
 
-app.post('/api/checkout', auth, async function(req, res) {
+app.post('/api/checkout', auth, rateLimit('checkout', 10, 5 * 60 * 1000), async function(req, res) {
   var pkg = PACKAGES[req.body.packageId];
   if (!pkg) return res.status(400).json({ error: 'Invalid package' });
   
@@ -950,31 +1139,85 @@ app.post('/webhook/stripe', async function(req, res) {
   try {
     event = stripe.webhooks.constructEvent(req.body, req.headers['stripe-signature'], process.env.STRIPE_WEBHOOK_SECRET);
   } catch (e) {
+    console.error('[STRIPE WEBHOOK] Signature verification failed:', e.message);
     return res.status(400).send('Webhook error');
   }
-  
-  if (event.type === 'checkout.session.completed') {
-    var s = event.data.object;
-    var profileResult = await supabase.from('profiles').select('*').eq('id', s.metadata.user_id).single();
+
+  console.log('[STRIPE WEBHOOK] Received event:', event.type, event.id);
+
+  if (event.type !== 'checkout.session.completed') {
+    // Acknowledge but ignore — other event types aren't handled yet.
+    console.log('[STRIPE WEBHOOK] Ignoring event type:', event.type);
+    return res.json({ received: true });
+  }
+
+  var s = event.data.object;
+  var userId = s.metadata && s.metadata.user_id;
+  var creditsToAdd = parseInt(s.metadata && s.metadata.credits);
+
+  if (!userId || isNaN(creditsToAdd)) {
+    console.error('[STRIPE WEBHOOK] Missing/invalid metadata on session', s.id, 'metadata:', JSON.stringify(s.metadata));
+    // Return 200 so Stripe doesn't retry forever — we logged the problem.
+    return res.json({ received: true, error: 'missing_metadata' });
+  }
+
+  try {
+    // IDEMPOTENCY: If we've already processed this session, do nothing.
+    // Relies on stripe_session_id existing in the purchases row written below.
+    var existing = await supabase.from('purchases')
+      .select('id')
+      .eq('stripe_session_id', s.id)
+      .maybeSingle();
+    if (existing.error) {
+      console.error('[STRIPE WEBHOOK] Idempotency lookup failed:', existing.error);
+      // Fail loud — Stripe will retry, and the next attempt may succeed.
+      return res.status(500).json({ error: 'idempotency_check_failed' });
+    }
+    if (existing.data) {
+      console.log('[STRIPE WEBHOOK] Already processed session', s.id, '— skipping');
+      return res.json({ received: true, duplicate: true });
+    }
+
+    // Read the profile up front. If it doesn't exist, fail loud so Stripe
+    // retries — better than silently never crediting.
+    var profileResult = await supabase.from('profiles').select('*').eq('id', userId).single();
+    if (profileResult.error || !profileResult.data) {
+      console.error('[STRIPE WEBHOOK] Profile not found for user', userId, 'session', s.id, profileResult.error);
+      return res.status(500).json({ error: 'profile_not_found' });
+    }
     var profile = profileResult.data;
-    var currentCredits = profile ? profile.credits : 0;
-    
-    await supabase.from('profiles').update({ credits: currentCredits + parseInt(s.metadata.credits) }).eq('id', s.metadata.user_id);
-    
-    var purchaseResult = await supabase.from('purchases').insert({ 
-      user_id: s.metadata.user_id, 
-      stripe_session_id: s.id, 
-      package_name: s.metadata.package_id, 
-      credits_purchased: parseInt(s.metadata.credits), 
-      amount_cents: s.amount_total 
+    var currentCredits = profile.credits || 0;
+    var newCredits = currentCredits + creditsToAdd;
+
+    var creditUpdate = await supabase.from('profiles')
+      .update({ credits: newCredits })
+      .eq('id', userId);
+    if (creditUpdate.error) {
+      console.error('[STRIPE WEBHOOK] Credit update failed for', userId, ':', creditUpdate.error);
+      return res.status(500).json({ error: 'credit_update_failed' });
+    }
+    console.log('[STRIPE WEBHOOK] Credits granted: ' + userId.slice(0, 8) + ' ' + currentCredits + ' -> ' + newCredits + ' (+' + creditsToAdd + ', session ' + s.id + ')');
+
+    var purchaseResult = await supabase.from('purchases').insert({
+      user_id: userId,
+      stripe_session_id: s.id,
+      package_name: s.metadata.package_id,
+      credits_purchased: creditsToAdd,
+      amount_cents: s.amount_total
     }).select().single();
-    
-    // AFFILIATE COMMISSION - check for checkout promo code OR previous referral
+    if (purchaseResult.error) {
+      // Credit grant already succeeded; log loudly but don't 500 (would cause
+      // Stripe to retry and our idempotency check above would then catch it).
+      console.error('[STRIPE WEBHOOK] Purchases insert failed for session', s.id, '(credits were granted):', purchaseResult.error);
+    }
+
+    // AFFILIATE COMMISSION — accept either a code passed at checkout or a
+    // prior referral lock on the profile. Failures here log but never undo
+    // the credit grant above.
     var affiliateId = s.metadata.affiliate_id || null;
     var affiliateCode = s.metadata.affiliate_code || null;
-    
-    // If no checkout code, check if user was previously referred
-    if (!affiliateId && profile && profile.referred_by) {
+
+    if (!affiliateId && profile.referred_by) {
       affiliateCode = profile.referred_by;
       var refResult = await supabase.from('profiles')
         .select('id')
@@ -982,62 +1225,64 @@ app.post('/webhook/stripe', async function(req, res) {
         .single();
       if (refResult.data) affiliateId = refResult.data.id;
     }
-    
+
     if (affiliateId) {
-      var referrerResult = await supabase.from('profiles')
-        .select('id, affiliate_balance_cents, affiliate_total_earned_cents, stripe_connect_id')
-        .eq('id', affiliateId)
-        .single();
-      
-      if (referrerResult.data) {
-        // Calculate commission (30% of sale)
-        var commission = Math.floor(s.amount_total * AFFILIATE_COMMISSION_PERCENT / 100);
-        
-        // Update referrer's balance
-        var newBalance = (referrerResult.data.affiliate_balance_cents || 0) + commission;
-        var newTotal = (referrerResult.data.affiliate_total_earned_cents || 0) + commission;
-        
-        await supabase.from('profiles').update({ 
-          affiliate_balance_cents: newBalance,
-          affiliate_total_earned_cents: newTotal
-        }).eq('id', referrerResult.data.id);
-        
-        // Record the earning
-        await supabase.from('affiliate_earnings').insert({
-          affiliate_id: referrerResult.data.id,
-          referred_id: s.metadata.user_id,
-          purchase_id: purchaseResult.data ? purchaseResult.data.id : null,
-          amount_cents: commission,
-          purchase_amount_cents: s.amount_total,
-          status: referrerResult.data.stripe_connect_id ? 'transferred' : 'credited'
-        });
-        
-        // If affiliate has Stripe Connect, transfer immediately
-        if (referrerResult.data.stripe_connect_id) {
-          try {
-            var transfer = await stripe.transfers.create({
-              amount: commission,
-              currency: 'usd',
-              destination: referrerResult.data.stripe_connect_id,
-              description: 'Affiliate commission for referral'
-            });
-            console.log('[CONNECT] Transferred $' + (commission / 100).toFixed(2) + ' to ' + referrerResult.data.stripe_connect_id);
-          } catch (te) {
-            console.error('[CONNECT] Transfer failed:', te.message);
+      try {
+        var referrerResult = await supabase.from('profiles')
+          .select('id, affiliate_balance_cents, affiliate_total_earned_cents, stripe_connect_id')
+          .eq('id', affiliateId)
+          .single();
+
+        if (referrerResult.data) {
+          var commission = Math.floor(s.amount_total * AFFILIATE_COMMISSION_PERCENT / 100);
+          var newBalance = (referrerResult.data.affiliate_balance_cents || 0) + commission;
+          var newTotal = (referrerResult.data.affiliate_total_earned_cents || 0) + commission;
+
+          await supabase.from('profiles').update({
+            affiliate_balance_cents: newBalance,
+            affiliate_total_earned_cents: newTotal
+          }).eq('id', referrerResult.data.id);
+
+          await supabase.from('affiliate_earnings').insert({
+            affiliate_id: referrerResult.data.id,
+            referred_id: userId,
+            purchase_id: purchaseResult.data ? purchaseResult.data.id : null,
+            amount_cents: commission,
+            purchase_amount_cents: s.amount_total,
+            status: referrerResult.data.stripe_connect_id ? 'transferred' : 'credited'
+          });
+
+          if (referrerResult.data.stripe_connect_id) {
+            try {
+              await stripe.transfers.create({
+                amount: commission,
+                currency: 'usd',
+                destination: referrerResult.data.stripe_connect_id,
+                description: 'Affiliate commission for referral'
+              });
+              console.log('[CONNECT] Transferred $' + (commission / 100).toFixed(2) + ' to ' + referrerResult.data.stripe_connect_id);
+            } catch (te) {
+              console.error('[CONNECT] Transfer failed:', te.message);
+            }
           }
+
+          await supabase.from('referrals')
+            .update({ status: 'converted' })
+            .eq('referred_id', userId)
+            .eq('status', 'signed_up');
+
+          console.log('[AFFILIATE] Commission: $' + (commission / 100).toFixed(2) + ' for referrer of ' + profile.email);
         }
-        
-        // Update referral status to converted
-        await supabase.from('referrals')
-          .update({ status: 'converted' })
-          .eq('referred_id', s.metadata.user_id)
-          .eq('status', 'signed_up');
-        
-        console.log('[AFFILIATE] Commission: $' + (commission / 100).toFixed(2) + ' for referrer of ' + profile.email);
+      } catch (ae) {
+        console.error('[AFFILIATE] Commission processing failed (credit grant unaffected):', ae.message);
       }
     }
+
+    res.json({ received: true });
+  } catch (e) {
+    console.error('[STRIPE WEBHOOK] Unhandled error processing session', s.id, ':', e.message, e.stack);
+    res.status(500).json({ error: 'webhook_handler_error' });
   }
-  res.json({ received: true });
 });
 
 app.post('/api/call', auth, async function(req, res) {
@@ -1058,10 +1303,8 @@ app.post('/api/call', auth, async function(req, res) {
   if (pin && (pin.length !== 6 || !/^\d+$/.test(pin))) return res.status(400).json({ error: 'PIN must be 6 digits' });
   
   try {
+    // Credit is deducted in /webhook/recording once a result is known.
     var result = await initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notifyMethod, req.user.id, retryOnUnknown, 0, county);
-    if (!req.profile.isDev) {
-      await supabase.from('profiles').update({ credits: req.profile.credits - 1 }).eq('id', req.user.id);
-    }
     res.json(result);
   } catch(e) {
     res.status(500).json({ error: e.message });
@@ -1107,26 +1350,9 @@ async function initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notify
   return { success: true, callId: callId, callSid: call.sid };
 }
 
-async function scheduleRetry(config) {
-  var retryCount = (config.retryCount || 0) + 1;
-  if (retryCount > 2) {
-    log('retry', 'Max retries reached for user ' + config.userId.slice(0,8) + '...', 'warning');
-    await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, 
-      '⚠️ Could not determine result.\n\nWe tried multiple times but couldn\'t get a clear result. Please call the hotline manually to check.\n\nPIN: ' + config.pin + '\n\n- ProbationCall.com', 'retry');
-    return;
-  }
-  
-  log('retry', 'Scheduling retry #' + retryCount + ' in 5 minutes for user ' + config.userId.slice(0,8) + '...', 'info');
-  
-  setTimeout(async function() {
-    log('retry', 'Executing retry #' + retryCount, 'info');
-    try {
-      await initiateCall(config.targetNumber, config.pin, config.notifyNumber, config.notifyEmail, config.notifyMethod, config.userId, config.retryOnUnknown, retryCount);
-    } catch (e) {
-      log('retry', 'Retry failed: ' + e.message, 'error');
-    }
-  }, 5 * 60 * 1000);
-}
+// scheduleRetry() was only invoked from the removed <Gather> handlers
+// (/twiml/result and /twiml/fallback). Empty-transcript retries now happen
+// inline in /webhook/recording when Deepgram returns an empty transcript.
 
 app.post('/twiml/answer', function(req, res) {
   var callId = req.query.callId;
@@ -1143,95 +1369,9 @@ app.post('/twiml/answer', function(req, res) {
   res.type('text/xml').send(twiml.toString());
 });
 
-app.post('/twiml/result', async function(req, res) {
-  var callId = req.query.callId;
-  var speech = req.body.SpeechResult || '';
-  var config = pendingCalls.get(callId);
-  var twiml = new twilio.twiml.VoiceResponse();
-  
-  log(callId, 'Speech: "' + speech + '"', 'info');
-  
-  if (config && !config.result) {
-    var lower = speech.toLowerCase();
-    var result = 'UNKNOWN';
-    
-    if (KEYWORDS.MUST_TEST.some(function(k) { return lower.indexOf(k) >= 0; })) {
-      result = 'MUST_TEST';
-      log(callId, 'RESULT: TEST REQUIRED!', 'warning');
-    } else if (KEYWORDS.NO_TEST.some(function(k) { return lower.indexOf(k) >= 0; })) {
-      result = 'NO_TEST';
-      log(callId, 'RESULT: No test', 'success');
-    }
-    
-    config.result = result;
-    
-    if (result === 'UNKNOWN' && config.retryOnUnknown && config.retryCount < 2) {
-      log(callId, 'Result unknown, will retry in 5 minutes', 'info');
-      await scheduleRetry(config);
-      if (config.userId) {
-        await supabase.from('call_history').insert({ user_id: config.userId, call_sid: config.callSid, target_number: config.targetNumber, pin_used: config.pin, result: 'RETRY_PENDING' });
-      }
-      broadcastToClients({ type: 'result', callId: callId, result: 'RETRY_PENDING', speech: speech });
-    } else {
-      var message;
-      var isFtbend = config.county === "ftbend";
-      if (result === "MUST_TEST") {
-        if (isFtbend) {
-          message = "🚨 TEST REQUIRED! 🚨\n\nYour color was called. Report for testing today.\n\n- ProbationCall.com";
-        } else {
-          message = "🚨 TEST REQUIRED! 🚨\n\nYour PIN was called. You MUST test today.\n\nPIN: " + config.pin + "\n\n- ProbationCall.com";
-        }
-      } else if (result === "NO_TEST") {
-        if (isFtbend) {
-          message = "✅ No test today!\n\nYour color was NOT called. Enjoy your day!\n\n- ProbationCall.com";
-        } else {
-          message = "✅ No test today!\n\nYour PIN was NOT called. Enjoy your day!\n\nPIN: " + config.pin + "\n\n- ProbationCall.com";
-        }
-      } else {
-        message = "⚠️ Could not determine result.\n\nHeard: \"" + speech.slice(0, 100) + "\"\n\nPlease call the hotline to verify.\n\n- ProbationCall.com";
-      }
-      
-      await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, message, callId);
-      
-      if (config.userId) {
-        await supabase.from('call_history').insert({ user_id: config.userId, call_sid: config.callSid, target_number: config.targetNumber, pin_used: config.pin, result: result });
-      }
-      
-      broadcastToClients({ type: 'result', callId: callId, result: result, speech: speech });
-    }
-  }
-  
-  twiml.hangup();
-  res.type('text/xml').send(twiml.toString());
-});
-
-app.post('/twiml/fallback', async function(req, res) {
-  var callId = req.query.callId;
-  var config = pendingCalls.get(callId);
-  
-  if (config && !config.result) {
-    config.result = 'UNKNOWN';
-    
-    if (config.retryOnUnknown && config.retryCount < 2) {
-      log(callId, 'Fallback - Result unknown, will retry in 5 minutes', 'info');
-      await scheduleRetry(config);
-      if (config.userId) {
-        await supabase.from('call_history').insert({ user_id: config.userId, call_sid: config.callSid, target_number: config.targetNumber, pin_used: config.pin, result: 'RETRY_PENDING' });
-      }
-      broadcastToClients({ type: 'result', callId: callId, result: 'RETRY_PENDING', speech: '' });
-    } else {
-      await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, '⚠️ Call completed but no result detected.\n\nPlease verify manually.\nPIN: ' + config.pin, callId);
-      if (config.userId) {
-        await supabase.from('call_history').insert({ user_id: config.userId, call_sid: config.callSid, target_number: config.targetNumber, pin_used: config.pin, result: 'UNKNOWN' });
-      }
-      broadcastToClients({ type: 'result', callId: callId, result: 'UNKNOWN', speech: '' });
-    }
-  }
-  
-  var twiml = new twilio.twiml.VoiceResponse();
-  twiml.hangup();
-  res.type('text/xml').send(twiml.toString());
-});
+// /twiml/result and /twiml/fallback (used to be Twilio <Gather> action URLs)
+// were removed — the current call flow uses post-call Deepgram transcription
+// in /webhook/recording instead. Re-add them only if <Gather> is reintroduced.
 
 app.post('/webhook/recording', async function(req, res) {
   var callId = req.query.callId;
@@ -1297,11 +1437,11 @@ app.post('/webhook/recording', async function(req, res) {
       if (retryCount < 2 && config.userId && !config.isFtbendDaily) {
         console.log('[TRANSCRIBE] Retrying call for', callId, '(attempt ' + (retryCount + 1) + ')');
         try {
-          await initiateCall(config.targetNumber, config.pin, config.notifyNumber, config.notifyEmail, config.notifyMethod, config.userId, false, 0);
-          // Mark the new call's retry count
-          var lastKey = Array.from(pendingCalls.keys()).pop();
-          if (lastKey && pendingCalls.get(lastKey)) {
-            pendingCalls.get(lastKey).transcribeRetry = retryCount + 1;
+          var retryResult = await initiateCall(config.targetNumber, config.pin, config.notifyNumber, config.notifyEmail, config.notifyMethod, config.userId, false, 0);
+          // Mark the specific new pendingCall (not "the last key in the Map",
+          // which races with any other concurrent call that just started).
+          if (retryResult && retryResult.callId && pendingCalls.get(retryResult.callId)) {
+            pendingCalls.get(retryResult.callId).transcribeRetry = retryCount + 1;
           }
         } catch (e) {
           console.error('[TRANSCRIBE] Retry failed:', e.message);
@@ -1359,10 +1499,10 @@ app.post('/webhook/recording', async function(req, res) {
     } else {
       // Montgomery - detect test/no-test
       var result = 'UNKNOWN';
+      var isFtbend = config.county === 'ftbend';
       if (KEYWORDS.MUST_TEST.some(function(k) { return lower.includes(k); })) {
         result = 'MUST_TEST';
         console.log('[TRANSCRIBE] 🚨 MUST TEST detected for', callId);
-        var isFtbend = config.county === 'ftbend';
         var mustMsg = isFtbend
           ? '🚨 TEST REQUIRED! 🚨\n\nYour color was called. Report for testing today.\n\n- ProbationCall.com'
           : '🚨 TEST REQUIRED! 🚨\n\nYour PIN was called. You MUST test today.\n\nPIN: ' + config.pin + '\n\n- ProbationCall.com';
@@ -1377,25 +1517,54 @@ app.post('/webhook/recording', async function(req, res) {
       } else {
         console.log('[TRANSCRIBE] ⚠️ Unknown result for', callId, ':', transcript);
         await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, '⚠️ Could not determine result.\n\nHeard: "' + transcript.substring(0, 100) + '"\n\nPlease call the hotline to verify.\n\n- ProbationCall.com', callId);
+        // If this user has now had several UNKNOWNs in a row, pause their
+        // schedule and alert them + admins. Catches expired-PIN scenarios.
+        if (config.userId) {
+          checkConsecutiveUnknown(config.userId, transcript, config.notifyNumber, config.notifyEmail, config.notifyMethod)
+            .catch(function(e) { console.error('[UNKNOWN-STREAK] check failed:', e.message); });
+        }
       }
-      
+
+      // Deduct credit only on an actionable result. UNKNOWN does not bill.
+      // Idempotency is durable: check whether any prior call_history row for
+      // this call_sid already has billed_at set. If yes, we've billed this
+      // call before (across restarts/redeploys too) and skip.
+      var shouldMarkBilled = false;
+      if ((result === 'MUST_TEST' || result === 'NO_TEST') && config.userId) {
+        shouldMarkBilled = await deductCreditOnce(config.userId, 'call:' + (config.callSid || callId), {
+          notifyNumber: config.notifyNumber,
+          notifyEmail: config.notifyEmail,
+          notifyMethod: config.notifyMethod,
+          alreadyBilledCheck: async function() {
+            if (!config.callSid) return false;
+            var r = await supabase.from('call_history')
+              .select('id')
+              .eq('call_sid', config.callSid)
+              .not('billed_at', 'is', null)
+              .limit(1);
+            if (r.error) throw r.error;
+            return !!(r.data && r.data.length > 0);
+          }
+        });
+      }
+
       config.result = result;
       if (config.userId) {
-        var insertResult = await supabase.from('call_history')
-          .insert({
-            user_id: config.userId,
-            call_sid: config.callSid || 'unknown',
-            target_number: config.targetNumber || '+19362834848',
-            pin_used: config.pin,
-            result: result,
-            
-            recording_url: recordingUrl + '.mp3',
-            created_at: new Date().toISOString()
-          });
+        var row = {
+          user_id: config.userId,
+          call_sid: config.callSid || 'unknown',
+          target_number: config.targetNumber || '+19362834848',
+          pin_used: config.pin,
+          result: result,
+          recording_url: recordingUrl + '.mp3',
+          created_at: new Date().toISOString()
+        };
+        if (shouldMarkBilled) row.billed_at = new Date().toISOString();
+        var insertResult = await supabase.from('call_history').insert(row);
         if (insertResult.error) {
           console.error('[TRANSCRIBE] INSERT ERROR:', JSON.stringify(insertResult.error));
         } else {
-          console.log('[TRANSCRIBE] Saved result to call_history:', result);
+          console.log('[TRANSCRIBE] Saved result to call_history:', result, shouldMarkBilled ? '(billed)' : '');
         }
       }
       broadcastToClients({ type: 'result', callId: callId, result: result, speech: transcript });
@@ -1408,40 +1577,60 @@ app.post('/webhook/recording', async function(req, res) {
   }
 });
 
-// Cron job to delete old recordings (runs daily at 3am)
+// Cron job to delete old recordings (runs daily at 3am).
+// Only nulls recording_url for rows whose Twilio delete actually succeeded
+// — otherwise the DB and Twilio drift apart and stale URLs are unrecoverable.
 cron.schedule('0 3 * * *', async function() {
   console.log('[CLEANUP] Deleting recordings older than 30 days...');
   var cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - 30);
-  
-  // Get old recordings
+
   var old = await supabase.from('call_history')
-    .select('recording_url')
+    .select('id, recording_url')
     .lt('created_at', cutoff.toISOString())
     .not('recording_url', 'is', null);
-  
-  if (old.data) {
-    for (var i = 0; i < old.data.length; i++) {
-      var url = old.data[i].recording_url;
-      if (url) {
-        // Extract recording SID and delete from Twilio
-        var match = url.match(/RE[a-f0-9]{32}/);
-        if (match) {
-          try {
-            await twilioClient.recordings(match[0]).remove();
-            console.log('[CLEANUP] Deleted recording', match[0]);
-          } catch (e) {
-            console.log('[CLEANUP] Could not delete', match[0], e.message);
-          }
-        }
+
+  if (old.error) {
+    console.error('[CLEANUP] Could not list old recordings:', old.error);
+    return;
+  }
+  if (!old.data || old.data.length === 0) {
+    console.log('[CLEANUP] Nothing to delete');
+    return;
+  }
+
+  var deletedIds = [];
+  var alreadyGoneIds = [];
+  for (var i = 0; i < old.data.length; i++) {
+    var row = old.data[i];
+    var url = row.recording_url;
+    var match = url ? url.match(/RE[a-f0-9]{32}/) : null;
+    if (!match) {
+      // Malformed/foreign URL — null it so it stops being retried.
+      alreadyGoneIds.push(row.id);
+      continue;
+    }
+    try {
+      await twilioClient.recordings(match[0]).remove();
+      console.log('[CLEANUP] Deleted recording', match[0]);
+      deletedIds.push(row.id);
+    } catch (e) {
+      // Twilio returns 404 if the recording is already gone — also safe to null.
+      if (e && (e.status === 404 || e.code === 20404)) {
+        alreadyGoneIds.push(row.id);
+      } else {
+        console.log('[CLEANUP] Could not delete', match[0], e.message);
+        // Leave the DB URL in place so we'll retry next day.
       }
     }
-    // Clear URLs from database
-    await supabase.from('call_history')
-      .update({ recording_url: null })
-      .lt('created_at', cutoff.toISOString());
   }
-  console.log('[CLEANUP] Done');
+
+  var toNull = deletedIds.concat(alreadyGoneIds);
+  if (toNull.length > 0) {
+    var upd = await supabase.from('call_history').update({ recording_url: null }).in('id', toNull);
+    if (upd.error) console.error('[CLEANUP] Null update failed:', upd.error);
+  }
+  console.log('[CLEANUP] Done. Deleted: ' + deletedIds.length + ', already-gone: ' + alreadyGoneIds.length + ', retried: ' + (old.data.length - toNull.length));
 }, { timezone: 'America/Chicago' });
 
 app.post('/webhook/status', function(req, res) {
@@ -1618,25 +1807,50 @@ async function sendLowCreditAlert(userId, remainingCredits, notifyNumber, notify
   }
 }
 
-app.post('/api/test-email', auth, async function(req, res) {
+app.post('/api/test-email', auth, rateLimit('test-email', 3, 5 * 60 * 1000), async function(req, res) {
   var result = await sendEmail(req.body.email, '✅ Test email from ProbationCall!\n\nIf you see this, email notifications are working.', 'test');
   res.json(result);
 });
 
-app.post('/api/test-sms', auth, async function(req, res) {
+app.post('/api/test-sms', auth, rateLimit('test-sms', 3, 5 * 60 * 1000), async function(req, res) {
   var result = await sendSMS(req.body.notifyNumber, 'Test SMS from ProbationCall!', 'test');
   res.json(result);
 });
 
-app.post('/api/test-whatsapp', auth, async function(req, res) {
+app.post('/api/test-whatsapp', auth, rateLimit('test-whatsapp', 3, 5 * 60 * 1000), async function(req, res) {
   var result = await sendWhatsApp(req.body.notifyNumber, '✅ Test WhatsApp from ProbationCall!\n\nIf you see this, WhatsApp notifications are working.', 'test');
   res.json(result);
 });
 
-wss.on('connection', function(ws, req) {
-  if (req.url === '/ws') {
+wss.on('connection', async function(ws, req) {
+  // Only accept /ws connections with a valid Supabase access token in the
+  // query string. We tag the socket with userId so broadcastToClients can
+  // route per-call events to only that user.
+  try {
+    var url = req.url || '';
+    if (url.indexOf('/ws') !== 0) {
+      ws.close(1008, 'bad path');
+      return;
+    }
+    var qIndex = url.indexOf('?');
+    var query = qIndex >= 0 ? url.slice(qIndex + 1) : '';
+    var params = new URLSearchParams(query);
+    var token = params.get('token');
+    if (!token) {
+      ws.close(1008, 'auth required');
+      return;
+    }
+    var authRes = await supabase.auth.getUser(token);
+    if (authRes.error || !authRes.data || !authRes.data.user) {
+      ws.close(1008, 'invalid token');
+      return;
+    }
+    ws.userId = authRes.data.user.id;
     wsClients.add(ws);
     ws.on('close', function() { wsClients.delete(ws); });
+  } catch (e) {
+    console.error('[WS] connection auth error:', e.message);
+    try { ws.close(1011, 'server error'); } catch (_) {}
   }
 });
 
@@ -1676,60 +1890,82 @@ app.post('/api/admin/mass-text', adminAuth, async function(req, res) {
   }
 });
 
-// Admin alert - check if calls are failing
+// Admin alert — fires when Montgomery users whose scheduled time has already
+// passed (plus stagger + grace) haven't produced a call_history row today.
+// Excludes Fort Bend (handled separately by the 5:05 system call) and counts
+// NO_CREDITS / UNKNOWN as "ran" — they did, just without an actionable result.
 var adminAlertSent = false;
 var adminAlertDate = null;
+var HEALTH_GRACE_MINUTES = STAGGER_MINUTES + 20; // stagger window + 20 min buffer
 async function checkCallHealth() {
-  var now = new Date();
-  var cst = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
-  var today = cst.getFullYear() + '-' + String(cst.getMonth() + 1).padStart(2, '0') + '-' + String(cst.getDate()).padStart(2, '0');
-  
-  // Reset alert flag each day
-  if (adminAlertDate !== today) {
-    adminAlertSent = false;
-    adminAlertDate = today;
-  }
-  
-  if (adminAlertSent) return;
-  
-  // Only check between 7am-10am CST (after calls should have gone out)
-  var hour = cst.getHours();
-  if (hour < 7 || hour > 10) return;
-  
-  // Get today's scheduled users
-  var schedResult = await supabase.from('user_schedules').select('user_id').eq('enabled', true);
-  var scheduled = schedResult.data || [];
-  if (scheduled.length === 0) return;
-  
-  // Get today's call results
-  var callResult = await supabase.from('call_history')
-    .select('result')
-    .gte('created_at', today + 'T00:00:00')
-    .lte('created_at', today + 'T23:59:59');
-  var calls = callResult.data || [];
-  
-  var successCalls = calls.filter(function(c) { return c.result === 'NO_TEST' || c.result === 'MUST_TEST'; });
-  
-  // Alert if less than half of scheduled users got results
-  if (calls.length > 0 && successCalls.length < scheduled.length / 2) {
-    // Get admin users
+  try {
+    var now = new Date();
+    var cst = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
+    var today = cst.getFullYear() + '-' + String(cst.getMonth() + 1).padStart(2, '0') + '-' + String(cst.getDate()).padStart(2, '0');
+
+    if (adminAlertDate !== today) {
+      adminAlertSent = false;
+      adminAlertDate = today;
+    }
+    if (adminAlertSent) return;
+
+    var hour = cst.getHours();
+    if (hour < 7 || hour > 11) return;
+    var nowMinutes = hour * 60 + cst.getMinutes();
+
+    var schedResult = await supabase.from('user_schedules')
+      .select('user_id, hour, minute, county')
+      .eq('enabled', true)
+      .neq('county', 'ftbend'); // Fort Bend doesn't generate per-user calls
+    var enabled = schedResult.data || [];
+    if (enabled.length === 0) return;
+
+    // Only consider schedules whose target time has passed by ≥ grace.
+    var due = enabled.filter(function(s) {
+      var schedMinutes = (s.hour || 6) * 60 + (s.minute || 0);
+      return (nowMinutes - schedMinutes) >= HEALTH_GRACE_MINUTES;
+    });
+    if (due.length === 0) return;
+    var dueUserIds = due.map(function(s) { return s.user_id; });
+
+    // "Ran" = any call_history row for this user today, regardless of result.
+    // NO_CREDITS users were intentionally skipped and were notified — those
+    // count as handled. Only RETRY_PENDING means "still in flight".
+    var callResult = await supabase.from('call_history')
+      .select('user_id, result')
+      .gte('created_at', today + 'T00:00:00')
+      .lte('created_at', today + 'T23:59:59')
+      .in('user_id', dueUserIds);
+    var calls = callResult.data || [];
+    var ranUserIds = {};
+    calls.forEach(function(c) {
+      if (c.result !== 'RETRY_PENDING') ranUserIds[c.user_id] = true;
+    });
+
+    var missed = due.filter(function(s) { return !ranUserIds[s.user_id]; });
+
+    // Only alert if a meaningful fraction is missing AND it's at least 3 users.
+    if (missed.length < 3) return;
+    if (missed.length / due.length < 0.25) return;
+
     var adminResult = await supabase.from('profiles').select('id').eq('is_admin', true);
     var admins = adminResult.data || [];
-    
     for (var i = 0; i < admins.length; i++) {
       var adminSched = await supabase.from('user_schedules').select('notify_number').eq('user_id', admins[i].id).single();
       if (adminSched.data && adminSched.data.notify_number) {
-        await sendSMS(adminSched.data.notify_number, 
-          '⚠️ ADMIN ALERT: Call issues detected!\n\n' +
-          'Scheduled: ' + scheduled.length + '\n' +
-          'Completed: ' + calls.length + '\n' +
-          'Successful: ' + successCalls.length + '\n\n' +
-          'Check admin panel immediately.\n\n- ProbationCall.com', 
-          'admin_alert');
+        await sendSMS(adminSched.data.notify_number,
+          '⚠️ ADMIN ALERT: Possible call issues!\n\n' +
+          'Due (Montgomery, past scheduled time): ' + due.length + '\n' +
+          'Ran: ' + Object.keys(ranUserIds).length + '\n' +
+          'Missed: ' + missed.length + '\n\n' +
+          'Check admin panel.\n\n- ProbationCall.com',
+          'admin_alert').catch(function(e) { console.error('[ADMIN ALERT] SMS failed:', e.message); });
       }
     }
     adminAlertSent = true;
-    console.log('[ADMIN ALERT] Call health warning sent to admins');
+    console.log('[ADMIN ALERT] Call health warning sent — due=' + due.length + ' ran=' + Object.keys(ranUserIds).length + ' missed=' + missed.length);
+  } catch (e) {
+    console.error('[ADMIN ALERT] checkCallHealth error:', e.message);
   }
 }
 
@@ -2111,59 +2347,59 @@ app.get("/api/admin/user/:id/calls", adminAuth, async function(req, res) {
   res.json({ calls: result.data || [] });
 });
 app.delete('/api/admin/user/:id', adminAuth, async function(req, res) {
-  try {
-    var userId = req.params.id;
-    console.log('[ADMIN] Deleting user: ' + userId);
-    
-    // Delete from all related tables
-    await supabase.from('user_schedules').delete().eq('user_id', userId);
-    console.log('[ADMIN] Deleted user_schedules');
-    
-    await supabase.from('call_history').delete().eq('user_id', userId);
-    console.log('[ADMIN] Deleted call_history');
-    
-    await supabase.from('purchases').delete().eq('user_id', userId);
-    console.log('[ADMIN] Deleted purchases');
-    
-    await supabase.from('payout_requests').delete().eq('user_id', userId);
-    console.log('[ADMIN] Deleted payout_requests');
-    
-    await supabase.from('referrals').delete().eq('referrer_id', userId);
-    await supabase.from('referrals').delete().eq('referred_id', userId);
-    console.log('[ADMIN] Deleted referrals');
-    
-    await supabase.from('affiliate_earnings').delete().eq('affiliate_id', userId);
-    await supabase.from('affiliate_earnings').delete().eq('referred_id', userId);
-    console.log('[ADMIN] Deleted affiliate_earnings');
-    
-    await supabase.from('promo_redemptions').delete().eq('user_id', userId);
-    console.log('[ADMIN] Deleted promo_redemptions');
-    
-    // Delete from profiles
-    await supabase.from('profiles').delete().eq('id', userId);
-    console.log('[ADMIN] Deleted profiles');
-    
-    // Delete from Supabase auth
-    var authResult = await supabase.auth.admin.deleteUser(userId);
-    if (authResult.error) {
-      console.error('[ADMIN] Auth delete error:', authResult.error);
-    } else {
-      console.log('[ADMIN] Deleted from auth');
+  var userId = req.params.id;
+  console.log('[ADMIN] Deleting user: ' + userId);
+
+  // Run each delete and collect any failures. We continue past a failure so
+  // the rest still tries — but we report all failures back so admin knows
+  // the user is in a partial state and can investigate.
+  var failures = [];
+  async function step(label, promise) {
+    try {
+      var result = await promise;
+      if (result && result.error) {
+        failures.push(label + ': ' + result.error.message);
+        console.error('[ADMIN] Delete step failed: ' + label, result.error);
+      } else {
+        console.log('[ADMIN] Deleted ' + label);
+      }
+    } catch (e) {
+      failures.push(label + ': ' + e.message);
+      console.error('[ADMIN] Delete step threw: ' + label, e);
     }
-    
-    // Remove from scheduled jobs if exists
-    if (scheduledJobs.has(userId)) {
-      scheduledJobs.get(userId).stop();
-      scheduledJobs.delete(userId);
-      console.log('[ADMIN] Stopped scheduled job');
-    }
-    
-    console.log('[ADMIN] Successfully deleted user: ' + userId.slice(0,8));
-    res.json({ success: true });
-  } catch(e) {
-    console.error('[ADMIN] Delete user error:', e);
-    res.status(500).json({ error: e.message });
   }
+
+  await step('user_schedules', supabase.from('user_schedules').delete().eq('user_id', userId));
+  await step('call_history', supabase.from('call_history').delete().eq('user_id', userId));
+  await step('purchases', supabase.from('purchases').delete().eq('user_id', userId));
+  await step('payout_requests', supabase.from('payout_requests').delete().eq('user_id', userId));
+  await step('referrals(referrer)', supabase.from('referrals').delete().eq('referrer_id', userId));
+  await step('referrals(referred)', supabase.from('referrals').delete().eq('referred_id', userId));
+  await step('affiliate_earnings(affiliate)', supabase.from('affiliate_earnings').delete().eq('affiliate_id', userId));
+  await step('affiliate_earnings(referred)', supabase.from('affiliate_earnings').delete().eq('referred_id', userId));
+  await step('promo_redemptions', supabase.from('promo_redemptions').delete().eq('user_id', userId));
+  await step('profiles', supabase.from('profiles').delete().eq('id', userId));
+
+  var authResult = await supabase.auth.admin.deleteUser(userId);
+  if (authResult.error) {
+    failures.push('auth: ' + authResult.error.message);
+    console.error('[ADMIN] Auth delete error:', authResult.error);
+  } else {
+    console.log('[ADMIN] Deleted from auth');
+  }
+
+  if (scheduledJobs.has(userId)) {
+    scheduledJobs.get(userId).stop();
+    scheduledJobs.delete(userId);
+    console.log('[ADMIN] Stopped scheduled job');
+  }
+
+  if (failures.length > 0) {
+    console.error('[ADMIN] User ' + userId.slice(0,8) + ' deleted with ' + failures.length + ' failures:', failures);
+    return res.status(500).json({ success: false, error: 'Partial delete', failures: failures });
+  }
+  console.log('[ADMIN] Successfully deleted user: ' + userId.slice(0,8));
+  res.json({ success: true });
 });
 
 app.get('/admin', function(req, res) {
@@ -2244,99 +2480,45 @@ app.post('/twiml/ftbend-answer', function(req, res) {
   res.type('text/xml').send(twiml.toString());
 });
 
-app.post('/twiml/ftbend-result', async function(req, res) {
-  var callId = req.query.callId;
-  var officeId = req.query.officeId;
-  var speech = req.body.SpeechResult || '';
-  var config = pendingCalls.get(callId);
-  var twiml = new twilio.twiml.VoiceResponse();
-  
-  console.log('[FTBEND] ' + officeId + ' speech: "' + speech + '"');
-  
-  if (config && !config.result) {
-    // Check for phase 1 / phase 2 in the speech (for rosenberg2)
-    if (config.hasPhases) {
-      var phases = detectPhaseColors(speech);
-      config.phase1 = phases.phase1;
-      config.phase2 = phases.phase2;
-      config.result = phases.phase1 || phases.phase2 ? 'PHASES' : 'UNKNOWN';
-      await storeFtbendColor(config.result, speech, officeId, phases.phase1, phases.phase2);
-    } else {
-      var detectedColor = detectColor(speech);
-      if (detectedColor) {
-        console.log('[FTBEND] ' + officeId + ' color: ' + detectedColor);
-        config.result = detectedColor;
-        await storeFtbendColor(detectedColor, speech, officeId, null, null);
-      } else {
-        config.result = 'UNKNOWN';
-        await storeFtbendColor('UNKNOWN', speech, officeId, null, null);
-      }
-    }
-    
-    // Notify users subscribed to this office (don't await - let webhook return fast)
-    notifyFtbendOfficeUsers(officeId, config).catch(function(e) {
-      console.error('[FTBEND] Notification error:', e.message);
-    });
-  }
-  
-  twiml.hangup();
-  res.type('text/xml').send(twiml.toString());
-});
+// /twiml/ftbend-result and /twiml/ftbend-fallback (Twilio <Gather> action URLs)
+// were removed — Fort Bend office detection runs in /webhook/recording via
+// the Deepgram path. Re-add them only if <Gather> is reintroduced.
 
-app.post('/twiml/ftbend-fallback', async function(req, res) {
-  var callId = req.query.callId;
-  var officeId = req.query.officeId;
-  var config = pendingCalls.get(callId);
-  
-  console.log('[FTBEND] ' + officeId + ' fallback - no speech detected');
-  
-  if (config && !config.result) {
-    config.result = 'UNKNOWN';
-    await storeFtbendColor('UNKNOWN', '', officeId, null, null);
-    notifyFtbendOfficeUsers(officeId, config).catch(function(e) {
-      console.error('[FTBEND] Fallback notification error:', e.message);
-    });
-  }
-  
-  var twiml = new twilio.twiml.VoiceResponse();
-  twiml.hangup();
-  res.type('text/xml').send(twiml.toString());
-});
-
-// Detect phase 1 and phase 2 colors from speech
+// Detect phase 1 and phase 2 announcements from speech (Rosenberg 2).
+// Validates each extracted part against the known color/phase list so an
+// unparseable announcement reports null (UNKNOWN) rather than storing
+// arbitrary text as a "color".
 function detectPhaseColors(transcript) {
-  var lower = transcript.toLowerCase();
+  var lower = String(transcript || '').toLowerCase();
   console.log("[FTBEND] Analyzing phases in: " + lower);
-  
-  // Extract whatever comes after "today is" until "remember" or end
+
   var todayIsMatch = lower.match(/today\s+is[,:]?\s*(.+?)(?:remember|you\s+will|\.|$)/i);
   if (!todayIsMatch || !todayIsMatch[1]) {
     console.log("[FTBEND] Could not find today is pattern");
     return { phase1: null, phase2: null };
   }
-  
+
   var announcement = todayIsMatch[1].trim();
   console.log("[FTBEND] Raw announcement: " + announcement);
-  
-  // Split by "and" or commas
+
+  // Split on "and" or commas, then for each part scan for any known color
+  // or phase string. Anything unrecognized is dropped.
   var parts = announcement.split(/\s+and\s+|,\s*/).map(function(p) {
     return p.trim();
   }).filter(function(p) {
     return p.length > 0;
   });
-  
-  // Clean up each part - capitalize first letter of each word
-  var cleaned = parts.map(function(p) {
-    return p.split(" ").map(function(word) {
-      return word.charAt(0).toUpperCase() + word.slice(1);
-    }).join(" ");
+
+  var matched = [];
+  parts.forEach(function(part) {
+    var detected = detectColor(part);
+    if (detected) matched.push(detected);
   });
-  
-  console.log("[FTBEND] Detected groups: " + cleaned.join(", "));
-  
-  var phase1 = cleaned.length > 0 ? cleaned[0] : null;
-  var phase2 = cleaned.length > 1 ? cleaned.slice(1).join(", ") : null;
-  
+
+  console.log("[FTBEND] Validated phase groups: " + (matched.join(", ") || "none"));
+
+  var phase1 = matched.length > 0 ? matched[0] : null;
+  var phase2 = matched.length > 1 ? matched.slice(1).join(", ") : null;
   return { phase1: phase1, phase2: phase2 };
 }
 
@@ -2468,18 +2650,39 @@ async function notifyFtbendOfficeUsers(officeId, config) {
         
         console.log('[FTBEND] Sending ' + oid + ' notification to ' + s.user_id.slice(0,8) + ' (user color: ' + (userColor || 'none') + ', today: ' + todayDisplay + ')');
         await notify(s.notify_number, s.notify_email, s.notify_method, personalMsg, 'ftbend_daily');
-        if (!isDevUser) {
-          var newCredits = profile.credits - 1; await supabase.from('profiles').update({ credits: newCredits }).eq('id', s.user_id);
-          console.log('[FTBEND] Deducted 1 credit from ' + s.user_id.slice(0,8));
-          if (newCredits <= 2) { sendLowCreditAlert(s.user_id, newCredits, s.notify_number, s.notify_email, s.notify_method); }
+        // Don't bill when we couldn't detect today's color (UNKNOWN).
+        // Key includes user_id so per-user billing is independent.
+        var todayDate = (new Date()).toISOString().slice(0, 10);
+        var shouldMarkFtBilled = false;
+        if (!isUnknown) {
+          shouldMarkFtBilled = await deductCreditOnce(s.user_id, 'ftbend:' + s.user_id + ':' + oid + ':' + todayDate, {
+            notifyNumber: s.notify_number,
+            notifyEmail: s.notify_email,
+            notifyMethod: s.notify_method,
+            alreadyBilledCheck: async function() {
+              var r = await supabase.from('call_history')
+                .select('id')
+                .eq('user_id', s.user_id)
+                .eq('county', 'ftbend')
+                .eq('ftbend_office', oid)
+                .gte('created_at', todayDate + 'T00:00:00')
+                .lte('created_at', todayDate + 'T23:59:59')
+                .not('billed_at', 'is', null)
+                .limit(1);
+              if (r.error) throw r.error;
+              return !!(r.data && r.data.length > 0);
+            }
+          });
         }
-        await supabase.from('call_history').insert({
+        var ftRow = {
           user_id: s.user_id,
           target_number: FTBEND_OFFICES[oid] ? FTBEND_OFFICES[oid].number : COUNTIES.ftbend.number,
           result: cfg.hasPhases ? 'P1:' + (cfg.phase1 || '?') + ' P2:' + (cfg.phase2 || '?') : 'COLOR:' + cfg.result,
           county: 'ftbend',
           ftbend_office: oid
-        });
+        };
+        if (shouldMarkFtBilled) ftRow.billed_at = new Date().toISOString();
+        await supabase.from('call_history').insert(ftRow);
       }, delay);
     })(sched, delayMs, null, officeId, config);
   }
@@ -2616,7 +2819,7 @@ app.get('/api/calculate-credits', auth, async function(req, res) {
 });
 
 // Custom credits purchase for exact probation length
-app.post('/api/checkout/custom', auth, async function(req, res) {
+app.post('/api/checkout/custom', auth, rateLimit('checkout', 10, 5 * 60 * 1000), async function(req, res) {
   var credits = parseInt(req.body.credits);
   var priceCents = parseInt(req.body.priceCents);
   
@@ -2710,14 +2913,10 @@ cron.schedule('45 * * * *', async function() {
       continue;
     }
     
-    // Make the recovery call
+    // Make the recovery call. Credit is deducted in /webhook/recording.
     console.log('[RECOVERY] Initiating recovery call for ' + sched.user_id.slice(0,8) + '...');
     try {
       await initiateCall(sched.target_number, sched.pin, sched.notify_number, sched.notify_email, sched.notify_method, sched.user_id, sched.retry_on_unknown, 0);
-      
-      if (!isDevUser) {
-        await supabase.from('profiles').update({ credits: profile.credits - 1 }).eq('id', sched.user_id);
-      }
     } catch (e) {
       console.error('[RECOVERY] Call failed for ' + sched.user_id.slice(0,8) + '...:', e.message);
       await notify(sched.notify_number, sched.notify_email, sched.notify_method, '⚠️ Call Issue\n\nWe had trouble completing your check-in today. Please call the hotline manually to verify.\n\n- ProbationCall.com', 'recovery');

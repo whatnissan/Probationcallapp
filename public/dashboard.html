@@ -1265,7 +1265,8 @@ function requestPayout() {
 
 var ws;
 function connectWS() {
-  ws = new WebSocket((location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws');
+  if (!token) { setTimeout(connectWS, 2000); return; }
+  ws = new WebSocket((location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws?token=' + encodeURIComponent(token));
   ws.onmessage = function(e) {
     var d = JSON.parse(e.data);
     if (d.type === 'log') addLog(d.log.message, d.log.type);
