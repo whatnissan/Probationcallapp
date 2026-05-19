@@ -262,6 +262,69 @@ function requireAffiliateEnabled(req, res, next) {
   next();
 }
 
+// §6.B — Cached Stripe Connect account status. Pre-transfer code calls
+// getConnectAccountStatus(acctId) to verify the destination is actually
+// payouts_enabled before firing stripe.transfers.create. Sending money to
+// an account that isn't payouts_enabled either fails outright or lands
+// the funds in a frozen holding balance the affiliate can't withdraw.
+//
+// In-memory cache with 60s TTL so a burst of commissions for the same
+// affiliate doesn't hammer the Stripe API. The §1 account.updated handler
+// also writes into this cache so a recent webhook reflects immediately
+// without waiting for the TTL to expire.
+//
+// The cached profile.stripe_connect_* columns (from migration 007) are
+// for admin display and reporting — they are NOT used as the source of
+// truth for transfer decisions, because webhooks can lag.
+var _connectAccountCache = new Map();
+var CONNECT_ACCOUNT_CACHE_TTL_MS = 60 * 1000;
+
+async function getConnectAccountStatus(accountId) {
+  if (!accountId) return null;
+  var cached = _connectAccountCache.get(accountId);
+  if (cached && (Date.now() - cached.fetchedAt) < CONNECT_ACCOUNT_CACHE_TTL_MS) {
+    return cached.data;
+  }
+  try {
+    var account = await stripe.accounts.retrieve(accountId);
+    var status = {
+      id: account.id,
+      charges_enabled: !!account.charges_enabled,
+      payouts_enabled: !!account.payouts_enabled,
+      details_submitted: !!account.details_submitted
+    };
+    _connectAccountCache.set(accountId, { data: status, fetchedAt: Date.now() });
+    // Bound the cache so it can't grow unbounded across many affiliates.
+    if (_connectAccountCache.size > 1000) {
+      var first = _connectAccountCache.keys().next().value;
+      _connectAccountCache.delete(first);
+    }
+    return status;
+  } catch (e) {
+    console.error('[CONNECT] Failed to retrieve account ' + accountId + ':', e.message);
+    return null;
+  }
+}
+
+// Sync the cached status onto the profile row. Called from both the
+// pre-transfer check (when it just fetched fresh data) and the
+// account.updated webhook handler. Failures here are non-critical;
+// the cache columns are display-only.
+async function syncConnectStatusToProfile(accountId, status) {
+  if (!accountId || !status) return;
+  try {
+    var r = await supabase.from('profiles').update({
+      stripe_connect_charges_enabled: status.charges_enabled,
+      stripe_connect_payouts_enabled: status.payouts_enabled,
+      stripe_connect_details_submitted: status.details_submitted,
+      stripe_connect_updated_at: new Date().toISOString()
+    }).eq('stripe_connect_id', accountId);
+    if (r.error) console.error('[CONNECT] Profile cache sync failed for ' + accountId + ':', r.error);
+  } catch (e) {
+    console.error('[CONNECT] Profile cache sync exception for ' + accountId + ':', e.message);
+  }
+}
+
 const PACKAGES = {
   starter: { name: 'Starter', credits: 30, price: 1499 },
   standard: { name: 'Standard', credits: 90, price: 3999 },
@@ -1526,6 +1589,49 @@ async function handleSubscriptionDeleted(subscription, res) {
   }
 }
 
+// §1 — account.updated webhook for affiliates' Stripe Connect accounts.
+// When a connected account's capabilities change (e.g. affiliate finishes
+// onboarding and payouts_enabled flips to true), Stripe fires this event.
+// We sync the relevant flags onto the profile so the admin UI can show
+// onboarding progress and the §6.B pre-transfer cache stays warm.
+//
+// Note: account.updated is a CONNECT event, not a platform event. The
+// webhook endpoint in Stripe Dashboard must be configured to listen to
+// events on connected accounts AND have account.updated in its event
+// list. Without that, this handler never fires.
+async function handleAccountUpdated(account, res) {
+  try {
+    if (!account || !account.id) {
+      console.log('[STRIPE WEBHOOK] account.updated: no account id, ignoring');
+      return res.json({ received: true });
+    }
+    var status = {
+      id: account.id,
+      charges_enabled: !!account.charges_enabled,
+      payouts_enabled: !!account.payouts_enabled,
+      details_submitted: !!account.details_submitted
+    };
+    // Refresh the in-memory cache so the next pre-transfer check sees
+    // the new state without an API call.
+    _connectAccountCache.set(account.id, { data: status, fetchedAt: Date.now() });
+    // Mirror to the profile (cached display fields).
+    var r = await supabase.from('profiles').update({
+      stripe_connect_charges_enabled: status.charges_enabled,
+      stripe_connect_payouts_enabled: status.payouts_enabled,
+      stripe_connect_details_submitted: status.details_submitted,
+      stripe_connect_updated_at: new Date().toISOString()
+    }).eq('stripe_connect_id', account.id);
+    if (r.error) {
+      console.error('[STRIPE WEBHOOK] account.updated profile sync failed for ' + account.id + ':', r.error);
+    }
+    console.log('[STRIPE WEBHOOK] Account updated: ' + account.id + ' charges=' + status.charges_enabled + ' payouts=' + status.payouts_enabled + ' details=' + status.details_submitted);
+    return res.json({ received: true });
+  } catch (e) {
+    console.error('[STRIPE WEBHOOK] handleAccountUpdated error:', e.message);
+    return res.status(500).json({ error: 'account_updated_handler_error' });
+  }
+}
+
 async function handleSubscriptionUpdated(subscription, res) {
   try {
     var cancelAtEnd = !!subscription.cancel_at_period_end;
@@ -1852,6 +1958,9 @@ app.post('/webhook/stripe', async function(req, res) {
   if (event.type === 'charge.dispute.created') {
     return handleChargeDisputeCreated(event.data.object, res);
   }
+  if (event.type === 'account.updated') {
+    return handleAccountUpdated(event.data.object, res);
+  }
 
   if (event.type !== 'checkout.session.completed') {
     // Acknowledge but ignore — other event types aren't handled yet.
@@ -1989,26 +2098,46 @@ app.post('/webhook/stripe', async function(req, res) {
           var stripeTransferId = null;
           var transferErrorMessage = null;
           if (isConnect) {
-            try {
-              var transfer = await stripe.transfers.create({
-                amount: commission,
-                currency: 'usd',
-                destination: referrerResult.data.stripe_connect_id,
-                description: 'Affiliate commission for referral'
-              }, {
-                // Idempotency: a webhook replay must not create a second transfer.
-                // Outer purchases.stripe_session_id idempotency guard normally
-                // catches this earlier, but this is belt-and-suspenders in case
-                // the purchases insert ever fails between the two checks.
-                idempotencyKey: 'aff-commission-' + s.id
-              });
-              earningStatus = 'transferred';
-              stripeTransferId = transfer.id;
-              console.log('[CONNECT] Transferred $' + (commission / 100).toFixed(2) + ' to ' + referrerResult.data.stripe_connect_id + ' tr=' + transfer.id);
-            } catch (te) {
+            // §6.B — pre-flight check: never transfer to an account that
+            // can't receive payouts. Without this guard, funds either fail
+            // outright or land in a frozen holding balance the affiliate
+            // can't withdraw. The row gets marked 'failed' (reusing §3's
+            // failed-retry queue) with a clear error_message; admin clicks
+            // retry once the affiliate finishes Stripe onboarding.
+            var connectStatus = await getConnectAccountStatus(referrerResult.data.stripe_connect_id);
+            if (connectStatus) {
+              // Opportunistically sync the cache columns on the profile
+              // since we just paid for a fresh API call.
+              await syncConnectStatusToProfile(referrerResult.data.stripe_connect_id, connectStatus);
+            }
+            if (!connectStatus) {
               earningStatus = 'failed';
-              transferErrorMessage = te && te.message ? te.message : String(te);
-              console.error('[CONNECT] Transfer FAILED for ' + referrerResult.data.stripe_connect_id + ' (earnings row marked failed; retry via /api/admin/affiliate-earnings/:id/retry):', transferErrorMessage);
+              transferErrorMessage = 'Could not verify Connect account status (Stripe API error). Admin can retry via /api/admin/affiliate-earnings/:id/retry.';
+              console.error('[CONNECT] SKIPPING transfer for ' + referrerResult.data.stripe_connect_id + ' — Stripe API unreachable; earning marked failed');
+            } else if (!connectStatus.payouts_enabled) {
+              earningStatus = 'failed';
+              transferErrorMessage = 'Connect account not payouts_enabled (charges_enabled=' + connectStatus.charges_enabled + ', details_submitted=' + connectStatus.details_submitted + '). Affiliate needs to complete Stripe onboarding; admin can retry via /api/admin/affiliate-earnings/:id/retry once ready.';
+              console.error('[CONNECT] SKIPPING transfer for ' + referrerResult.data.stripe_connect_id + ' — payouts_enabled=false (charges=' + connectStatus.charges_enabled + ' details=' + connectStatus.details_submitted + ')');
+            } else {
+              // Account is ready — proceed with the transfer.
+              try {
+                var transfer = await stripe.transfers.create({
+                  amount: commission,
+                  currency: 'usd',
+                  destination: referrerResult.data.stripe_connect_id,
+                  description: 'Affiliate commission for referral'
+                }, {
+                  // Idempotency: a webhook replay must not create a second transfer.
+                  idempotencyKey: 'aff-commission-' + s.id
+                });
+                earningStatus = 'transferred';
+                stripeTransferId = transfer.id;
+                console.log('[CONNECT] Transferred $' + (commission / 100).toFixed(2) + ' to ' + referrerResult.data.stripe_connect_id + ' tr=' + transfer.id);
+              } catch (te) {
+                earningStatus = 'failed';
+                transferErrorMessage = te && te.message ? te.message : String(te);
+                console.error('[CONNECT] Transfer FAILED for ' + referrerResult.data.stripe_connect_id + ' (earnings row marked failed; retry via /api/admin/affiliate-earnings/:id/retry):', transferErrorMessage);
+              }
             }
           }
 
@@ -3058,6 +3187,25 @@ app.post('/api/admin/affiliate-earnings/:id/retry', adminAuth, requireAffiliateE
   var destAcct = earning.profiles && earning.profiles.stripe_connect_id;
   if (!destAcct) {
     return res.status(400).json({ error: 'Affiliate no longer has a Stripe Connect account on file' });
+  }
+
+  // §6.B — same pre-flight as the commission block. Don't waste a Stripe
+  // call (and produce a misleading error message) if the account still
+  // isn't ready. Returns 400 with a clear message so admin knows the
+  // affiliate's onboarding is the blocker, not a transient Stripe issue.
+  var connectStatus = await getConnectAccountStatus(destAcct);
+  if (connectStatus) {
+    await syncConnectStatusToProfile(destAcct, connectStatus);
+  }
+  if (!connectStatus) {
+    var apiErr = 'Could not verify Connect account status (Stripe API error). Try again in a moment.';
+    await supabase.from('affiliate_earnings').update({ error_message: apiErr }).eq('id', id);
+    return res.status(503).json({ error: apiErr });
+  }
+  if (!connectStatus.payouts_enabled) {
+    var notReadyMsg = 'Connect account still not payouts_enabled (charges_enabled=' + connectStatus.charges_enabled + ', details_submitted=' + connectStatus.details_submitted + '). Affiliate needs to complete Stripe onboarding before retry will succeed.';
+    await supabase.from('affiliate_earnings').update({ error_message: notReadyMsg }).eq('id', id);
+    return res.status(400).json({ error: notReadyMsg });
   }
 
   try {
