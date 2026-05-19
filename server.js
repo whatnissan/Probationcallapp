@@ -3189,19 +3189,29 @@ app.post('/api/admin/toggle-ftbend', adminAuth, async function(req, res) {
   res.json({ success: true, ftbend_access: enable });
 });
 
-// §3: list affiliate_earnings rows in 'failed' state. Joined with the
-// affiliate's profile for context (email, current connect_id). Newest first.
+// §3 + §6.D: list affiliate_earnings rows that need admin attention.
+// Returns two arrays:
+//   failed          — Stripe transfer never succeeded; retryable via the
+//                     /retry endpoint once the affiliate's account is ready.
+//   reversal_failed — Refund/dispute clawback couldn't recover the money
+//                     (affiliate already withdrew). NOT retryable from this
+//                     endpoint; admin handles out-of-band.
+// Joined with the affiliate's profile (email, current connect_id). Newest first.
 app.get('/api/admin/affiliate-earnings/failed', adminAuth, requireAffiliateEnabled, async function(req, res) {
   var r = await supabase.from('affiliate_earnings')
-    .select('id, affiliate_id, referred_id, amount_cents, purchase_amount_cents, error_message, created_at, profiles!affiliate_id(email, stripe_connect_id)')
-    .eq('status', 'failed')
+    .select('id, affiliate_id, referred_id, amount_cents, purchase_amount_cents, status, error_message, created_at, profiles!affiliate_id(email, stripe_connect_id)')
+    .in('status', ['failed', 'reversal_failed'])
     .order('created_at', { ascending: false })
     .limit(500);
   if (r.error) {
     console.error('[ADMIN] List failed earnings error:', r.error);
     return res.status(500).json({ error: r.error.message });
   }
-  res.json({ earnings: r.data || [] });
+  var rows = r.data || [];
+  res.json({
+    failed: rows.filter(function(x) { return x.status === 'failed'; }),
+    reversal_failed: rows.filter(function(x) { return x.status === 'reversal_failed'; })
+  });
 });
 
 // §3: retry a single failed transfer. Reads the affiliate's CURRENT
