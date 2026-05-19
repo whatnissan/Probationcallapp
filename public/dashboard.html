@@ -639,13 +639,8 @@ select option { background: #1a1a2e; color: #fff; }
         <button class="btn" onclick="manageSubscription()" style="background:rgba(255,255,255,0.1);color:#fff;float:right;padding:4px 12px;font-size:0.8rem">Manage Subscription</button>
       </div>
     </div>
-    <div style="color:#8892b0;font-size:0.85rem;text-align:center;margin:5px 0 12px">— or buy a one-time bundle —</div>
-    <div class="packages">
-      <div class="package" onclick="buyPackage('starter')"><div class="package-name">Starter</div><div class="package-credits">30</div><div class="package-price">$14.99</div></div>
-      <div class="package popular" onclick="buyPackage('standard')"><div class="package-name">Standard</div><div class="package-credits">90</div><div class="package-price">$39.99</div><div class="package-save">Save 17%</div></div>
-      <div class="package" onclick="buyPackage('value')"><div class="package-name">Value</div><div class="package-credits">180</div><div class="package-price">$69.99</div><div class="package-save">Save 33%</div></div>
-    </div>
-    <div style="margin-top:20px;padding-top:20px;border-top:1px solid rgba(255,255,255,0.1)">
+    <div style="color:#8892b0;font-size:0.85rem;text-align:center;margin:5px 0 12px">— or —</div>
+    <div style="margin-top:0;padding-top:20px;border-top:1px solid rgba(255,255,255,0.1)">
       <h3 style="color:#22c55e;margin-bottom:10px">🎯 Buy Exact Credits for Your Probation</h3>
       <p style="color:#8892b0;font-size:0.85rem;margin-bottom:15px">Enter your probation end date and pay once - you're covered!</p>
       <div class="form-group">
@@ -1561,17 +1556,11 @@ function saveProbationDate() {
   });
 }
 
-function buyExactCredits() {
-  if (!calcData) return;
-  
-  fetch('/api/checkout/custom', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
-    body: JSON.stringify({ credits: calcData.creditsNeeded, priceCents: calcData.priceCents })
-  }).then(function(r) { return r.json(); }).then(function(d) {
-    if (d.url) window.location.href = d.url;
-  });
-}
+// (Dead first buyExactCredits removed — the second definition at the bottom
+// of this script always overrode it via JS hoisting/last-write-wins, so this
+// was unreachable code. The probation modal's "Buy Exact Credits" button
+// silently does nothing in practice as a result; fixing that is a separate
+// UX cleanup, not part of this pricing fix.)
 
 function updateProbationDisplay() {
   if (!probationEndDate) {
@@ -1710,37 +1699,49 @@ function calculateExactCredits() {
     document.getElementById('exactCalc').style.display = 'none';
     return;
   }
-  
+
   var end = new Date(endDate);
   var today = new Date();
   today.setHours(0, 0, 0, 0);
-  
+
   var days = Math.ceil((end - today) / (1000 * 60 * 60 * 24));
   if (days < 1) {
     document.getElementById('exactCalc').style.display = 'none';
     alert('Please select a future date');
     return;
   }
-  
-  // Pricing: bulk rate of $0.22/credit, minimum $5
-  var currentCredits = parseInt(document.getElementById('credits').textContent) || 0; var credits = Math.max(0, days - currentCredits);
-  // Graduated pricing (like tax brackets)
+
+  // Price is based purely on the number of credits being bought (= probation
+  // length). The user's existing balance does NOT reduce the charge — it
+  // gets added on top after the purchase. Server is authoritative and
+  // recomputes price from `credits` on /api/checkout/custom, ignoring whatever
+  // the client posts as priceCents.
+  var credits = days;
+  // Graduated pricing — keep in sync with computeTieredPriceCents in server.js
   var priceCents = 0;
   if (credits <= 30) {
     priceCents = credits * 50;                           // First 30 at $0.50
   } else if (credits <= 90) {
-    priceCents = (30 * 50) + ((credits - 30) * 42);      // First 30 at $0.50, rest at $0.42
+    priceCents = (30 * 50) + ((credits - 30) * 42);      // 31-90 at $0.42
   } else {
-    priceCents = (30 * 50) + (60 * 42) + ((credits - 90) * 33); // First 30 at $0.50, next 60 at $0.42, rest at $0.33
+    priceCents = (30 * 50) + (60 * 42) + ((credits - 90) * 33); // 91+ at $0.33
   }
   priceCents = Math.max(500, priceCents);
-  
+
+  var currentCredits = parseInt(document.getElementById('credits').textContent) || 0;
   document.getElementById('exactDays').textContent = days;
-  document.getElementById('exactCredits').textContent = credits; document.getElementById('existingCreditsNote').textContent = currentCredits > 0 ? '(You have ' + currentCredits + ' credits - already deducted)' : '';
+  document.getElementById('exactCredits').textContent = credits;
+  // Existing balance is shown for context only — it does NOT change the price.
+  if (currentCredits > 0) {
+    document.getElementById('existingCreditsNote').textContent =
+      '(You have ' + currentCredits + ' credits now; after purchase you\'ll have ' + (currentCredits + credits) + ')';
+  } else {
+    document.getElementById('existingCreditsNote').textContent = '';
+  }
   document.getElementById('exactPrice').textContent = '$' + (priceCents / 100).toFixed(2);
   document.getElementById('exactCalc').style.display = 'block';
-  
-  // Store for purchase
+
+  // Store for purchase. priceCents is sent for UI consistency only — server ignores it.
   window.exactPurchase = { credits: credits, priceCents: priceCents, endDate: endDate };
 }
 

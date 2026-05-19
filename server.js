@@ -3298,26 +3298,50 @@ app.post('/api/profile/color', auth, async function(req, res) {
   res.json({ success: true });
 });
 
-// Calculate credits needed for remaining probation
+// Tiered pricing for the "buy exact credits" flow — single source of truth
+// used by /api/calculate-credits (estimate display) AND /api/checkout/custom
+// (actual charge). Tiers: $0.50/credit for the first 30, $0.42 for 31-90,
+// $0.33 for 91+. $5 minimum (Stripe-compatible floor).
+//
+// IMPORTANT: existing credit balance does NOT discount this — pricing is
+// based purely on the number of credits being purchased. The dashboard
+// calculator mirrors this same formula client-side for live UX feedback,
+// but the server is authoritative and recomputes here on every checkout.
+function computeTieredPriceCents(credits) {
+  if (!Number.isFinite(credits) || credits < 1) return 0;
+  var price;
+  if (credits <= 30) {
+    price = credits * 50;
+  } else if (credits <= 90) {
+    price = (30 * 50) + ((credits - 30) * 42);
+  } else {
+    price = (30 * 50) + (60 * 42) + ((credits - 90) * 33);
+  }
+  return Math.max(500, price);
+}
+
+// Reasonable cap on a single exact-credits purchase. About 5 years.
+// Longer probation can buy multiple times; this bounds the server-side
+// trust window for client-supplied credit amounts.
+var MAX_EXACT_CREDITS = 1825;
+
+// Calculate credits needed for remaining probation. Pricing uses the shared
+// tiered model — no balance deduction (the customer pays the same regardless
+// of any credits they already have on file).
 app.get('/api/calculate-credits', auth, async function(req, res) {
   var endDate = req.query.endDate;
   if (!endDate) return res.status(400).json({ error: 'End date required' });
-  
+
   var end = new Date(endDate);
   var today = new Date();
   today.setHours(0, 0, 0, 0);
-  
+
   var daysRemaining = Math.ceil((end - today) / (1000 * 60 * 60 * 24));
   if (daysRemaining < 0) daysRemaining = 0;
-  
-  // Pricing: roughly $0.33 per credit at bulk rate
+
   var creditsNeeded = daysRemaining;
-  var pricePerCredit = 44; // cents (bulk rate ~$0.22/credit)
-  var totalCents = creditsNeeded * pricePerCredit;
-  
-  // Minimum $5
-  if (totalCents < 500 && totalCents > 0) totalCents = 500;
-  
+  var totalCents = computeTieredPriceCents(creditsNeeded);
+
   res.json({
     daysRemaining: daysRemaining,
     creditsNeeded: creditsNeeded,
@@ -3382,14 +3406,32 @@ app.post('/api/subscription/portal', auth, async function(req, res) {
   }
 });
 
-// Custom credits purchase for exact probation length
+// Custom credits purchase for exact probation length.
+// Server is authoritative on price: it RECOMPUTES priceCents from the
+// credits value using the shared tiered model and IGNORES whatever
+// priceCents the client posts. Trusting the client price was the original
+// bug (anyone could curl {credits:1000, priceCents:500} and get 1000
+// credits for $5). The dashboard's local calculator is a UX convenience
+// only — it has no authority over what's actually charged.
 app.post('/api/checkout/custom', auth, rateLimit('checkout', 10, 5 * 60 * 1000), async function(req, res) {
-  var credits = parseInt(req.body.credits);
-  var priceCents = parseInt(req.body.priceCents);
-  
-  if (!credits || credits < 1) return res.status(400).json({ error: 'Invalid credits' });
-  if (!priceCents || priceCents < 500) return res.status(400).json({ error: 'Minimum $5' });
-  
+  var credits = parseInt(req.body.credits, 10);
+
+  if (!Number.isInteger(credits) || credits < 1) {
+    return res.status(400).json({ error: 'Invalid credits' });
+  }
+  if (credits > MAX_EXACT_CREDITS) {
+    return res.status(400).json({ error: 'Maximum ' + MAX_EXACT_CREDITS + ' credits per purchase. Please buy in multiple smaller orders, or contact support for a longer term.' });
+  }
+
+  // Authoritative server-side price. Client-supplied req.body.priceCents is
+  // intentionally not read.
+  var priceCents = computeTieredPriceCents(credits);
+  if (priceCents < 500) {
+    // Defensive — shouldn't happen because the floor lives inside the helper,
+    // but keep the guard so any future bug here can't create sub-Stripe-minimum sessions.
+    return res.status(500).json({ error: 'price_compute_below_minimum' });
+  }
+
   var session = await stripe.checkout.sessions.create({
     payment_method_types: ['card'],
     line_items: [{
@@ -3405,7 +3447,7 @@ app.post('/api/checkout/custom', auth, rateLimit('checkout', 10, 5 * 60 * 1000),
     cancel_url: process.env.BASE_URL + '/dashboard?canceled=true',
     metadata: { user_id: req.user.id, package_id: 'custom', credits: String(credits) }
   });
-  
+
   res.json({ url: session.url });
 });
 
