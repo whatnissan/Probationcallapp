@@ -1460,10 +1460,17 @@ async function handleSubscriptionInvoicePaid(invoice, res) {
     }
     console.log('[STRIPE WEBHOOK] Credits granted (sub): ' + profile.id.slice(0, 8) + ' ' + currentCredits + ' -> ' + newCredits + ' (+' + SUBSCRIPTION_CREDITS_PER_PAYMENT + ', ' + subSource + ', invoice ' + invoice.id + ')');
 
+    // payment_intent on the invoice — defensive against the 2025-11-17
+    // schema change that moved several invoice fields under invoice.parent.
+    var invoicePI =
+      invoice.payment_intent
+      || (invoice.parent && invoice.parent.payment_settings && invoice.parent.payment_settings.payment_intent)
+      || null;
     var purchaseInsert = await supabase.from('purchases').insert({
       user_id: profile.id,
       stripe_session_id: null,
       stripe_invoice_id: invoice.id,
+      stripe_payment_intent: invoicePI,
       package_name: 'subscription',
       credits_purchased: SUBSCRIPTION_CREDITS_PER_PAYMENT,
       amount_cents: invoice.amount_paid
@@ -1539,11 +1546,158 @@ async function handleSubscriptionUpdated(subscription, res) {
   }
 }
 
-// When a charge is FULLY refunded for a customer with an active subscription,
-// cancel that subscription so they aren't billed again. Partial refunds are
-// ignored (intent: pay back this one period, keep the subscription).
-// Credits are intentionally NOT touched here — refunding money and clawing
-// back credits are separate decisions; this handler only manages the sub.
+// §6.D — Affiliate commission clawback for refunds and chargebacks.
+// Finds the purchase tied to the refunded/disputed charge, then reverses
+// every affiliate_earnings row tied to that purchase:
+//   - status='transferred' + stripe_transfer_id → call
+//     stripe.transfers.createReversal on the connected account.
+//   - status='credited' (non-Connect) → decrement
+//     affiliate_balance_cents (floor at 0).
+//   - status='failed' → no money moved; mark 'reversed' and move on.
+//   - status='reversed' / 'reversal_failed' → already handled; skip
+//     (this is the idempotency guard: a duplicate refund event won't
+//     reverse twice because the row's status reflects prior action).
+//
+// Looks up the purchase by stripe_payment_intent first (added in
+// migration 006); falls back to stripe_invoice_id for subscription
+// renewals where charge.invoice is on the payload. Old purchases from
+// before migration 006 will fail to match for one-time bundles —
+// admin would need to claw back manually.
+async function clawbackAffiliateCommissionForCharge(opts) {
+  // opts: { paymentIntentId, invoiceId, chargeId, reason, sourceEventId }
+  var paymentIntentId = opts.paymentIntentId || null;
+  var invoiceId = opts.invoiceId || null;
+  var chargeId = opts.chargeId || null;
+  var reason = opts.reason || 'unknown';
+  var sourceEventId = opts.sourceEventId || null;
+
+  // Locate the purchase. Prefer payment_intent (most reliable, all flows);
+  // fall back to invoice_id (works for subscriptions).
+  var purchase = null;
+  if (paymentIntentId) {
+    var byPi = await supabase.from('purchases')
+      .select('id, user_id, amount_cents, stripe_session_id, stripe_invoice_id')
+      .eq('stripe_payment_intent', paymentIntentId)
+      .maybeSingle();
+    if (byPi.data) purchase = byPi.data;
+  }
+  if (!purchase && invoiceId) {
+    var byInv = await supabase.from('purchases')
+      .select('id, user_id, amount_cents, stripe_session_id, stripe_invoice_id')
+      .eq('stripe_invoice_id', invoiceId)
+      .maybeSingle();
+    if (byInv.data) purchase = byInv.data;
+  }
+  if (!purchase) {
+    console.log('[CLAWBACK] No purchase matched for ' + reason + ' charge=' + chargeId + ' pi=' + paymentIntentId + ' invoice=' + invoiceId + ' — affiliate commission (if any) not clawed back, admin action may be required');
+    return { matchedPurchase: false, reversed: 0, failed: 0 };
+  }
+
+  // Find every affiliate_earnings row tied to this purchase. Could be 0 or 1
+  // in current data shape (one commission per purchase), but the loop is
+  // robust to future "split commission" scenarios.
+  var er = await supabase.from('affiliate_earnings')
+    .select('id, affiliate_id, amount_cents, status, stripe_transfer_id')
+    .eq('purchase_id', purchase.id);
+  if (er.error) {
+    console.error('[CLAWBACK] Failed to read affiliate_earnings for purchase ' + purchase.id + ':', er.error);
+    return { matchedPurchase: true, reversed: 0, failed: 0, error: er.error.message };
+  }
+  var earnings = er.data || [];
+  if (earnings.length === 0) {
+    console.log('[CLAWBACK] No affiliate earnings on purchase ' + purchase.id + ' (' + reason + ') — nothing to reverse');
+    return { matchedPurchase: true, reversed: 0, failed: 0 };
+  }
+
+  var reversedCount = 0;
+  var failedCount = 0;
+  for (var i = 0; i < earnings.length; i++) {
+    var e = earnings[i];
+
+    // Idempotency: if this row was already handled by a prior event, skip.
+    if (e.status === 'reversed' || e.status === 'reversal_failed') {
+      console.log('[CLAWBACK] Earning ' + e.id + ' already in terminal state (' + e.status + ') — skipping (' + reason + ')');
+      continue;
+    }
+
+    if (e.status === 'transferred' && e.stripe_transfer_id) {
+      // Connect affiliate — reverse the Stripe transfer.
+      try {
+        await stripe.transfers.createReversal(e.stripe_transfer_id, {
+          amount: e.amount_cents,
+          description: 'Affiliate commission clawback (' + reason + ')'
+        }, {
+          idempotencyKey: 'aff-reverse-' + e.id
+        });
+        await supabase.from('affiliate_earnings').update({
+          status: 'reversed',
+          error_message: null
+        }).eq('id', e.id);
+        reversedCount++;
+        console.log('[CLAWBACK] Reversed transfer ' + e.stripe_transfer_id + ' for earning ' + e.id + ' (' + reason + ', source=' + sourceEventId + ')');
+      } catch (re) {
+        var rmsg = re && re.message ? re.message : String(re);
+        // Common cause: affiliate already withdrew the funds, connected
+        // account doesn't have the balance to reverse. Mark for manual
+        // admin handling.
+        await supabase.from('affiliate_earnings').update({
+          status: 'reversal_failed',
+          error_message: rmsg
+        }).eq('id', e.id);
+        failedCount++;
+        console.error('[CLAWBACK] Reversal FAILED for earning ' + e.id + ' transfer ' + e.stripe_transfer_id + ' (' + reason + '):', rmsg);
+      }
+    } else if (e.status === 'credited') {
+      // Non-Connect affiliate — decrement their pending balance.
+      var pr = await supabase.from('profiles')
+        .select('id, affiliate_balance_cents')
+        .eq('id', e.affiliate_id)
+        .single();
+      if (pr.error || !pr.data) {
+        console.error('[CLAWBACK] Could not read profile for affiliate ' + e.affiliate_id + ' (' + reason + '):', pr.error);
+        failedCount++;
+        continue;
+      }
+      var currentBal = pr.data.affiliate_balance_cents || 0;
+      var newBal = Math.max(0, currentBal - e.amount_cents);
+      var shortfall = (currentBal - e.amount_cents) < 0 ? Math.abs(currentBal - e.amount_cents) : 0;
+      var bu = await supabase.from('profiles').update({ affiliate_balance_cents: newBal }).eq('id', e.affiliate_id);
+      if (bu.error) {
+        console.error('[CLAWBACK] Balance decrement failed for affiliate ' + e.affiliate_id + ':', bu.error);
+        failedCount++;
+        continue;
+      }
+      await supabase.from('affiliate_earnings').update({
+        status: 'reversed',
+        error_message: shortfall > 0 ? ('Balance was already partially paid out; shortfall=' + shortfall + ' cents — manual recovery needed') : null
+      }).eq('id', e.id);
+      reversedCount++;
+      console.log('[CLAWBACK] Reversed credit-balance earning ' + e.id + ' for affiliate ' + e.affiliate_id.slice(0, 8) + ' (' + reason + ') balance ' + currentBal + ' -> ' + newBal + (shortfall > 0 ? ' SHORTFALL=' + shortfall : ''));
+    } else if (e.status === 'failed') {
+      // Original transfer never succeeded → nothing to reverse on Stripe.
+      // Mark 'reversed' so the row reflects the final outcome and admin
+      // doesn't try to retry a now-defunct commission.
+      await supabase.from('affiliate_earnings').update({
+        status: 'reversed',
+        error_message: 'Original transfer never succeeded; reversed without Stripe action (' + reason + ')'
+      }).eq('id', e.id);
+      reversedCount++;
+      console.log('[CLAWBACK] Marked failed-earning ' + e.id + ' as reversed (no money moved; ' + reason + ')');
+    } else {
+      console.log('[CLAWBACK] Earning ' + e.id + ' in unexpected state (' + e.status + ') — skipping (' + reason + ')');
+    }
+  }
+
+  return { matchedPurchase: true, reversed: reversedCount, failed: failedCount };
+}
+
+// When a charge is FULLY refunded: cancel the subscription (existing
+// behavior) AND claw back any affiliate commission tied to the refunded
+// charge (§6.D). Partial refunds are still ignored — only full refunds
+// trigger clawback, matching the existing partial-refund policy.
+// Credits granted to the customer are intentionally NOT touched here —
+// refunding money and clawing back credits are separate decisions; this
+// handler manages subscription and affiliate state only.
 //
 // Idempotency: the customer-subscription cancel call is checked-then-called,
 // so a duplicate charge.refunded event finds the sub already 'canceled' and
@@ -1553,11 +1707,25 @@ async function handleChargeRefunded(charge, res) {
   try {
     // FULL refund only. Stripe sets charge.refunded=true once amount_refunded
     // covers the full amount; for partial refunds the event still fires but
-    // .refunded stays false.
+    // .refunded stays false. Partial refunds don't claw back commission
+    // either — full refund is the policy threshold for both subscription
+    // cancel and affiliate clawback.
     if (charge.refunded !== true) {
-      console.log('[STRIPE WEBHOOK] charge.refunded: partial refund, leaving subscription alone. charge=' + charge.id + ' refunded=' + charge.amount_refunded + '/' + charge.amount);
+      console.log('[STRIPE WEBHOOK] charge.refunded: partial refund, leaving subscription + affiliate commission alone. charge=' + charge.id + ' refunded=' + charge.amount_refunded + '/' + charge.amount);
       return res.json({ received: true, partial: true });
     }
+
+    // §6.D — claw back affiliate commission tied to this charge.
+    // Runs first (independent of customer/subscription state) so commission
+    // is always reversed on a full refund even if the customer lookup fails
+    // or the subscription was already canceled.
+    await clawbackAffiliateCommissionForCharge({
+      paymentIntentId: charge.payment_intent || null,
+      invoiceId: charge.invoice || null,
+      chargeId: charge.id,
+      reason: 'charge.refunded',
+      sourceEventId: charge.id
+    });
 
     var customerId = charge.customer;
     if (!customerId) {
@@ -1624,6 +1792,36 @@ async function handleChargeRefunded(charge, res) {
   }
 }
 
+// §6.D — A chargeback / dispute is also a money-out event. Treat it as a
+// refund for the purpose of affiliate commission clawback. We do NOT
+// auto-cancel the subscription on dispute (the customer might be disputing
+// fraudulently and you may win) — that's a different policy call. We DO
+// claw back the affiliate's commission immediately to limit exposure.
+// If you later win the dispute (charge.dispute.closed status='won'), the
+// commission won't auto-reinstate — that's a manual admin action for now.
+async function handleChargeDisputeCreated(dispute, res) {
+  try {
+    var pi = dispute.payment_intent || null;
+    var chargeId = dispute.charge || null;
+    if (!pi && !chargeId) {
+      console.log('[STRIPE WEBHOOK] charge.dispute.created: no payment_intent or charge id, nothing to do. dispute=' + dispute.id);
+      return res.json({ received: true });
+    }
+    var result = await clawbackAffiliateCommissionForCharge({
+      paymentIntentId: pi,
+      invoiceId: null, // dispute payload doesn't carry invoice; payment_intent is sufficient for the lookup
+      chargeId: chargeId,
+      reason: 'charge.dispute.created',
+      sourceEventId: dispute.id
+    });
+    console.log('[STRIPE WEBHOOK] dispute.created: dispute=' + dispute.id + ' charge=' + chargeId + ' pi=' + pi + ' matched=' + result.matchedPurchase + ' reversed=' + result.reversed + ' failed=' + result.failed);
+    return res.json({ received: true });
+  } catch (e) {
+    console.error('[STRIPE WEBHOOK] handleChargeDisputeCreated error:', e.message, e.stack);
+    return res.status(500).json({ error: 'charge_dispute_created_handler_error' });
+  }
+}
+
 app.post('/webhook/stripe', async function(req, res) {
   var event;
   try {
@@ -1650,6 +1848,9 @@ app.post('/webhook/stripe', async function(req, res) {
   }
   if (event.type === 'charge.refunded') {
     return handleChargeRefunded(event.data.object, res);
+  }
+  if (event.type === 'charge.dispute.created') {
+    return handleChargeDisputeCreated(event.data.object, res);
   }
 
   if (event.type !== 'checkout.session.completed') {
@@ -1722,6 +1923,7 @@ app.post('/webhook/stripe', async function(req, res) {
     var purchaseResult = await supabase.from('purchases').insert({
       user_id: userId,
       stripe_session_id: s.id,
+      stripe_payment_intent: s.payment_intent || null,
       package_name: s.metadata.package_id,
       credits_purchased: creditsToAdd,
       amount_cents: s.amount_total
@@ -1763,18 +1965,13 @@ app.post('/webhook/stripe', async function(req, res) {
 
         if (referrerResult.data) {
           var commission = Math.floor(s.amount_total * AFFILIATE_COMMISSION_PERCENT / 100);
-          // FIX (AFFILIATE_AUDIT §6.A — double-pay hole):
-          // Connect affiliates get paid via stripe.transfers.create below; the
-          // Connect transfer IS their payout. Crediting affiliate_balance_cents
-          // on top would let them also request a manual PayPal payout from
-          // /api/affiliate/request-payout — getting paid twice for one
-          // commission. So when stripe_connect_id is present, leave balance
-          // alone. affiliate_total_earned_cents still increments unconditionally
-          // (it's lifetime earnings used for display + 1099 threshold tracking).
+          // §6.A (double-pay hole): Connect affiliates do NOT accrue
+          // affiliate_balance_cents — their Stripe transfer IS the payout.
+          // affiliate_total_earned_cents increments unconditionally (lifetime).
           var isConnect = !!referrerResult.data.stripe_connect_id;
           var newBalance = isConnect
-            ? (referrerResult.data.affiliate_balance_cents || 0)                 // unchanged for Connect
-            : (referrerResult.data.affiliate_balance_cents || 0) + commission;   // accrue for manual payout
+            ? (referrerResult.data.affiliate_balance_cents || 0)
+            : (referrerResult.data.affiliate_balance_cents || 0) + commission;
           var newTotal = (referrerResult.data.affiliate_total_earned_cents || 0) + commission;
 
           await supabase.from('profiles').update({
@@ -1782,35 +1979,56 @@ app.post('/webhook/stripe', async function(req, res) {
             affiliate_total_earned_cents: newTotal
           }).eq('id', referrerResult.data.id);
 
+          // §3 (silent transfer failures): for Connect affiliates, attempt the
+          // Stripe transfer FIRST, then record the row with the real outcome.
+          // Old order recorded status='transferred' before transfer ran, so a
+          // failure left the DB lying. Now: status is one of
+          //   'transferred' (with stripe_transfer_id), 'failed' (with
+          //   error_message), or 'credited' (non-Connect, no transfer needed).
+          var earningStatus = 'credited';
+          var stripeTransferId = null;
+          var transferErrorMessage = null;
+          if (isConnect) {
+            try {
+              var transfer = await stripe.transfers.create({
+                amount: commission,
+                currency: 'usd',
+                destination: referrerResult.data.stripe_connect_id,
+                description: 'Affiliate commission for referral'
+              }, {
+                // Idempotency: a webhook replay must not create a second transfer.
+                // Outer purchases.stripe_session_id idempotency guard normally
+                // catches this earlier, but this is belt-and-suspenders in case
+                // the purchases insert ever fails between the two checks.
+                idempotencyKey: 'aff-commission-' + s.id
+              });
+              earningStatus = 'transferred';
+              stripeTransferId = transfer.id;
+              console.log('[CONNECT] Transferred $' + (commission / 100).toFixed(2) + ' to ' + referrerResult.data.stripe_connect_id + ' tr=' + transfer.id);
+            } catch (te) {
+              earningStatus = 'failed';
+              transferErrorMessage = te && te.message ? te.message : String(te);
+              console.error('[CONNECT] Transfer FAILED for ' + referrerResult.data.stripe_connect_id + ' (earnings row marked failed; retry via /api/admin/affiliate-earnings/:id/retry):', transferErrorMessage);
+            }
+          }
+
           await supabase.from('affiliate_earnings').insert({
             affiliate_id: referrerResult.data.id,
             referred_id: userId,
             purchase_id: purchaseResult.data ? purchaseResult.data.id : null,
             amount_cents: commission,
             purchase_amount_cents: s.amount_total,
-            status: isConnect ? 'transferred' : 'credited'
+            status: earningStatus,
+            stripe_transfer_id: stripeTransferId,
+            error_message: transferErrorMessage
           });
-
-          if (referrerResult.data.stripe_connect_id) {
-            try {
-              await stripe.transfers.create({
-                amount: commission,
-                currency: 'usd',
-                destination: referrerResult.data.stripe_connect_id,
-                description: 'Affiliate commission for referral'
-              });
-              console.log('[CONNECT] Transferred $' + (commission / 100).toFixed(2) + ' to ' + referrerResult.data.stripe_connect_id);
-            } catch (te) {
-              console.error('[CONNECT] Transfer failed:', te.message);
-            }
-          }
 
           await supabase.from('referrals')
             .update({ status: 'converted' })
             .eq('referred_id', userId)
             .eq('status', 'signed_up');
 
-          console.log('[AFFILIATE] Commission: $' + (commission / 100).toFixed(2) + ' for referrer of ' + profile.email);
+          console.log('[AFFILIATE] Commission $' + (commission / 100).toFixed(2) + ' for referrer of ' + profile.email + ' status=' + earningStatus);
         }
       } catch (ae) {
         console.error('[AFFILIATE] Commission processing failed (credit grant unaffected):', ae.message);
@@ -2802,6 +3020,70 @@ app.post('/api/admin/toggle-ftbend', adminAuth, async function(req, res) {
     return res.status(500).json({ error: result.error.message });
   }
   res.json({ success: true, ftbend_access: enable });
+});
+
+// §3: list affiliate_earnings rows in 'failed' state. Joined with the
+// affiliate's profile for context (email, current connect_id). Newest first.
+app.get('/api/admin/affiliate-earnings/failed', adminAuth, requireAffiliateEnabled, async function(req, res) {
+  var r = await supabase.from('affiliate_earnings')
+    .select('id, affiliate_id, referred_id, amount_cents, purchase_amount_cents, error_message, created_at, profiles!affiliate_id(email, stripe_connect_id)')
+    .eq('status', 'failed')
+    .order('created_at', { ascending: false })
+    .limit(500);
+  if (r.error) {
+    console.error('[ADMIN] List failed earnings error:', r.error);
+    return res.status(500).json({ error: r.error.message });
+  }
+  res.json({ earnings: r.data || [] });
+});
+
+// §3: retry a single failed transfer. Reads the affiliate's CURRENT
+// stripe_connect_id (in case it changed since the original attempt) and
+// retries with a fresh idempotency key. On success the row flips to
+// 'transferred' with the new stripe_transfer_id; on failure error_message
+// is updated and status stays 'failed' for another retry.
+app.post('/api/admin/affiliate-earnings/:id/retry', adminAuth, requireAffiliateEnabled, async function(req, res) {
+  var id = req.params.id;
+  var r = await supabase.from('affiliate_earnings')
+    .select('id, status, amount_cents, profiles!affiliate_id(stripe_connect_id, email)')
+    .eq('id', id)
+    .single();
+  if (r.error || !r.data) {
+    return res.status(404).json({ error: 'Earnings row not found' });
+  }
+  var earning = r.data;
+  if (earning.status !== 'failed') {
+    return res.status(400).json({ error: 'Row is not in failed state (current: ' + earning.status + ')' });
+  }
+  var destAcct = earning.profiles && earning.profiles.stripe_connect_id;
+  if (!destAcct) {
+    return res.status(400).json({ error: 'Affiliate no longer has a Stripe Connect account on file' });
+  }
+
+  try {
+    var transfer = await stripe.transfers.create({
+      amount: earning.amount_cents,
+      currency: 'usd',
+      destination: destAcct,
+      description: 'Affiliate commission for referral (admin retry)'
+    }, {
+      // Per-retry idempotency key so each click is a fresh Stripe request.
+      // Stripe still dedupes if the same key is replayed within 24h.
+      idempotencyKey: 'aff-earning-retry-' + earning.id + '-' + Date.now()
+    });
+    await supabase.from('affiliate_earnings').update({
+      status: 'transferred',
+      stripe_transfer_id: transfer.id,
+      error_message: null
+    }).eq('id', id);
+    console.log('[CONNECT] Admin retry SUCCESS for earning ' + id + ' (' + (earning.profiles && earning.profiles.email) + ') tr=' + transfer.id);
+    res.json({ success: true, transfer_id: transfer.id });
+  } catch (te) {
+    var msg = te && te.message ? te.message : String(te);
+    await supabase.from('affiliate_earnings').update({ error_message: msg }).eq('id', id);
+    console.error('[CONNECT] Admin retry FAILED for earning ' + id + ':', msg);
+    res.status(500).json({ error: msg });
+  }
 });
 
 // Set custom referral code for affiliates
