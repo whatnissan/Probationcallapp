@@ -935,14 +935,28 @@ app.post('/api/affiliate/payout-email', auth, requireAffiliateEnabled, async fun
 
 // Request payout
 app.post('/api/affiliate/request-payout', auth, requireAffiliateEnabled, async function(req, res) {
+  // FIX (AFFILIATE_AUDIT §6.A — double-pay hole):
+  // Connect affiliates are paid automatically via stripe.transfers.create on
+  // each commission. Letting them ALSO request a manual PayPal payout from
+  // here would double-pay them. Reject with a clear explanation. The webhook
+  // commission block doesn't credit affiliate_balance_cents for Connect
+  // affiliates anyway, so this check is the second line of defense (in case
+  // a profile somehow has both stripe_connect_id AND a stale balance from
+  // before this fix was deployed).
+  if (req.profile.stripe_connect_id) {
+    return res.status(400).json({
+      error: 'Your earnings are paid directly to your bank via Stripe Connect; no manual payout needed.'
+    });
+  }
+
   var balance = req.profile.affiliate_balance_cents || 0;
   var payoutEmail = req.profile.payout_email;
   var method = req.body.method || 'paypal';
-  
+
   if (!payoutEmail) {
     return res.status(400).json({ error: 'Please set your PayPal email first' });
   }
-  
+
   if (balance < MIN_PAYOUT_CENTS) {
     return res.status(400).json({ error: 'Minimum payout is $' + (MIN_PAYOUT_CENTS / 100).toFixed(2) });
   }
@@ -1749,7 +1763,18 @@ app.post('/webhook/stripe', async function(req, res) {
 
         if (referrerResult.data) {
           var commission = Math.floor(s.amount_total * AFFILIATE_COMMISSION_PERCENT / 100);
-          var newBalance = (referrerResult.data.affiliate_balance_cents || 0) + commission;
+          // FIX (AFFILIATE_AUDIT §6.A — double-pay hole):
+          // Connect affiliates get paid via stripe.transfers.create below; the
+          // Connect transfer IS their payout. Crediting affiliate_balance_cents
+          // on top would let them also request a manual PayPal payout from
+          // /api/affiliate/request-payout — getting paid twice for one
+          // commission. So when stripe_connect_id is present, leave balance
+          // alone. affiliate_total_earned_cents still increments unconditionally
+          // (it's lifetime earnings used for display + 1099 threshold tracking).
+          var isConnect = !!referrerResult.data.stripe_connect_id;
+          var newBalance = isConnect
+            ? (referrerResult.data.affiliate_balance_cents || 0)                 // unchanged for Connect
+            : (referrerResult.data.affiliate_balance_cents || 0) + commission;   // accrue for manual payout
           var newTotal = (referrerResult.data.affiliate_total_earned_cents || 0) + commission;
 
           await supabase.from('profiles').update({
@@ -1763,7 +1788,7 @@ app.post('/webhook/stripe', async function(req, res) {
             purchase_id: purchaseResult.data ? purchaseResult.data.id : null,
             amount_cents: commission,
             purchase_amount_cents: s.amount_total,
-            status: referrerResult.data.stripe_connect_id ? 'transferred' : 'credited'
+            status: isConnect ? 'transferred' : 'credited'
           });
 
           if (referrerResult.data.stripe_connect_id) {
