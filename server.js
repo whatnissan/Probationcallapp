@@ -136,7 +136,7 @@ const FTBEND_COLORS = [
   'bronze', 'canary', 'cherry', 'chestnut', 'chrome', 'coral', 'copper', 'cream', 'crimson', 'cyan',
   'emerald', 'forest', 'fuchsia', 'gold', 'gray', 'grey', 'green',
   'ivory', 'jade', 'khaki', 'lavender', 'lemon', 'lilac', 'lime', 'magenta', 'maroon', 'mint',
-  'navy', 'olive', 'orange', 'orchid', 'peach', 'pearl', 'pink', 'plum', 'purple',
+  'mocha', 'navy', 'olive', 'orange', 'orchid', 'peach', 'pearl', 'pink', 'plum', 'purple',
   'red', 'rose', 'ruby', 'rust', 'salmon', 'sapphire', 'scarlet', 'silver', 'slate',
   'tan', 'teal', 'turquoise', 'violet', 'white', 'wine', 'yellow'
 ];
@@ -156,7 +156,8 @@ const FTBEND_MISRECOGNITIONS = {
   'grey': 'gray',
   'cyn': 'cyan', 'zion': 'cyan',
   'sigh in': 'cyan', 'sigh an': 'cyan', 'sy an': 'cyan', 'psy an': 'cyan',
-  'tanned': 'tan'
+  'tanned': 'tan',
+  'moca': 'mocha'
 };
 
 // Validate any candidate string against the known-color list. Returns the
@@ -171,7 +172,17 @@ function validateFtbendColor(candidate) {
 }
 
 function detectColor(transcript) {
-  var lower = String(transcript || '').toLowerCase();
+  // Normalize spelled-out phase numerals to digits so they match canonical
+  // FTBEND_PHASES entries (which use 'phase 1 b' form). Deepgram transcribes
+  // spoken "phase one b" as text, not as digits, so without this the
+  // word-boundary match in Pass 1 below fails. Word-boundary anchor on
+  // `\bphase\s+one\b` keeps this from touching unrelated "one" mentions
+  // (e.g. "press one" in IVR menu navigation).
+  var lower = String(transcript || '').toLowerCase()
+    .replace(/\bphase\s+one\b/g, 'phase 1')
+    .replace(/\bphase\s+two\b/g, 'phase 2')
+    .replace(/\bphase\s+three\b/g, 'phase 3')
+    .replace(/\bphase\s+four\b/g, 'phase 4');
   console.log('[FTBEND] Analyzing: "' + lower + '"');
 
   // Pass 1 — known colors (longest first so "phase 1 a" beats "phase 1").

@@ -350,8 +350,8 @@ select option { background: #1a1a2e; color: #fff; }
   </div>
 
   <div class="tabs">
-    <div class="tab active" onclick="showTab('call')">📞 Call</div>
-    <div class="tab" onclick="showTab('schedule')">⏰ Schedule</div>
+    <div class="tab" id="callTabBtn" style="display:none" onclick="showTab('call')">📞 Call</div>
+    <div class="tab active" onclick="showTab('schedule')">⏰ Schedule</div>
     <div class="tab" onclick="showTab('history')">📜 History</div>
     <div class="tab" id="affiliateTabBtn" style="display:none" onclick="showTab('affiliate')">💰 Earn Cash</div>
     <div class="tab" id="ftbendTabBtn" style="display:none" onclick="showTab('ftbend')">🎨 Ft Bend</div>
@@ -359,7 +359,7 @@ select option { background: #1a1a2e; color: #fff; }
   </div>
   
   <!-- CALL TAB -->
-  <div id="callTab" class="tab-content active">
+  <div id="callTab" class="tab-content">
     <div class="card">
       <h2>Make a Call</h2>
       <form id="callForm">
@@ -390,7 +390,7 @@ select option { background: #1a1a2e; color: #fff; }
   </div>
   
   <!-- SCHEDULE TAB -->
-  <div id="scheduleTab" class="tab-content">
+  <div id="scheduleTab" class="tab-content active">
     <div class="card">
       <h2>Daily Schedule</h2>
       <div class="schedule-details" id="scheduleDetails" style="display:none">
@@ -1007,7 +1007,7 @@ function loadUser() {
       
       document.getElementById('userEmail').textContent = d.user.email;
       probationEndDate = d.probationEndDate || d.profile.probation_end_date;
-      updateProbationDisplay(); fetch('/api/admin/check',{headers:{Authorization:'Bearer '+token}}).then(function(r){return r.json()}).then(function(d){if(d.isAdmin){var el=document.getElementById('adminLink');if(el)el.style.display='inline-block';}}).catch(function(){});
+      updateProbationDisplay(); fetch('/api/admin/check',{headers:{Authorization:'Bearer '+token}}).then(function(r){return r.json()}).then(function(d){if(d.isAdmin){var el=document.getElementById('adminLink');if(el)el.style.display='inline-block';var ct=document.getElementById('callTabBtn');if(ct)ct.style.display='block';}}).catch(function(){});
       document.getElementById('credits').textContent = d.isDev ? '∞' : d.profile.credits;
       updateCoveredUntil(d.profile.credits);
       renderSubscriptionStatus(d.profile);
