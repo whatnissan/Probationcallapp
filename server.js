@@ -371,12 +371,6 @@ async function syncConnectStatusToProfile(accountId, status) {
   }
 }
 
-const PACKAGES = {
-  starter: { name: 'Starter', credits: 30, price: 1499 },
-  standard: { name: 'Standard', credits: 90, price: 3999 },
-  value: { name: 'Value', credits: 180, price: 6999 }
-};
-
 const KEYWORDS = {
   NO_TEST: ['do not test', 'not required', 'no need', 'you do not', 'do not need', 'not test'],
   MUST_TEST: ['required to test', 'must test', 'you are required', 'report for', 'required today']
@@ -1598,58 +1592,6 @@ async function loadAllSchedules() {
     console.log('[SCHED] Loaded ' + result.data.length + ' schedules (staggered over ' + STAGGER_MINUTES + ' minutes)');
   }
 }
-
-app.post('/api/checkout', auth, rateLimit('checkout', 10, 5 * 60 * 1000), async function(req, res) {
-  var pkg = PACKAGES[req.body.packageId];
-  if (!pkg) return res.status(400).json({ error: 'Invalid package' });
-  
-  // Check for affiliate/promo code — only when the affiliate program is on.
-  // When disabled, any affiliateCode in the request is silently ignored so a
-  // bundle purchase still succeeds and credits are still granted; just no
-  // affiliate lock is written and no metadata is passed to Stripe.
-  var affiliateCode = null;
-  var affiliateId = null;
-
-  if (AFFILIATE_ENABLED && req.body.affiliateCode) {
-    affiliateCode = req.body.affiliateCode.toUpperCase();
-    // Shared safe resolver — handles uppercasing internally + refuses to
-    // attribute commission to a duplicate-code match (returns null with a
-    // loud log if the UNIQUE constraint is somehow not in place).
-    var affiliateMatch = await resolveAffiliateByCode(affiliateCode);
-    if (affiliateMatch) {
-      affiliateId = affiliateMatch.id;
-      console.log('[CHECKOUT] Affiliate code ' + affiliateCode + ' found: ' + affiliateId.slice(0,8));
-
-      // Lock this user to the affiliate if not already locked
-      if (!req.profile.referred_by) {
-        await supabase.from('profiles')
-          .update({ referred_by: affiliateCode })
-          .eq('id', req.user.id);
-        console.log('[CHECKOUT] Locked user ' + req.user.id.slice(0,8) + ' to affiliate ' + affiliateCode);
-      }
-    } else {
-      console.log('[CHECKOUT] Affiliate code ' + affiliateCode + ' not found (or duplicate — see [AFFILIATE] log line above for diagnostic)');
-    }
-  } else if (req.body.affiliateCode && !AFFILIATE_ENABLED) {
-    console.log('[CHECKOUT] Affiliate program disabled — ignoring submitted affiliateCode');
-  }
-  
-  var session = await stripe.checkout.sessions.create({
-    payment_method_types: ['card'],
-    line_items: [{ price_data: { currency: 'usd', product_data: { name: pkg.name + ' - ' + pkg.credits + ' Credits' }, unit_amount: pkg.price }, quantity: 1 }],
-    mode: 'payment',
-    success_url: process.env.BASE_URL + '/dashboard?success=true',
-    cancel_url: process.env.BASE_URL + '/dashboard?canceled=true',
-    metadata: { 
-      user_id: req.user.id, 
-      package_id: req.body.packageId, 
-      credits: String(pkg.credits),
-      affiliate_code: affiliateCode || '',
-      affiliate_id: affiliateId || ''
-    }
-  });
-  res.json({ url: session.url });
-});
 
 // === SUBSCRIPTION SUPPORT ===
 // All subscription handlers below intentionally DO NOT touch affiliate /

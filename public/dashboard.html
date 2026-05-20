@@ -1132,17 +1132,6 @@ function showTab(name) {
 function showBuyModal() { document.getElementById('buyModal').classList.add('active'); if(probationEndDate){ document.getElementById('buyEndDate').value = probationEndDate; calculateExactCredits(); } }
 function closeBuyModal() { document.getElementById('buyModal').classList.remove('active'); }
 
-function buyPackage(packageId) {
-  var affiliateCode = savedAffiliateCode || document.getElementById('promoCode').value.trim();
-  fetch('/api/checkout', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
-    body: JSON.stringify({ packageId: packageId, affiliateCode: affiliateCode })
-  }).then(function(r) { return r.json(); }).then(function(d) {
-    if (d.url) window.location.href = d.url;
-    else alert('Error: ' + (d.error || 'Unknown'));
-  });
-}
 
 function subscribeMonthly() {
   var btn = document.getElementById('subscribeBtn');
