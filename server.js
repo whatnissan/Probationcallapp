@@ -554,6 +554,11 @@ async function checkConsecutiveUnknown(userId, lastReason, notifyNumber, notifyE
     scheduledJobs.get(userId).stop();
     scheduledJobs.delete(userId);
   }
+  // Stop any in-flight retry sequence for this user — schedule is now off,
+  // we shouldn't keep retrying.
+  await supabase.from('pending_retries').delete().eq('user_id', userId).then(function() {}, function(e) {
+    console.error('[RETRY] Failed to clean pending_retries on auto-pause:', e.message);
+  });
   // Message must read sensibly whether the streak was caused by
   // transcripts we couldn't parse (UNKNOWN/HOTLINE_DOWN) OR calls that
   // never connected (CALL_FAILED). "Didn't complete successfully" covers
@@ -623,6 +628,202 @@ async function handlePinExpiredResult(userId, lastTranscript, notifyNumber, noti
           'pin_expired_admin').catch(function() {});
       }
     }
+  }
+}
+
+// ========== AUTO-RETRY-ON-UNKNOWN (morning-aggregated retry) ==========
+// Built-in retry sequence for the daily Montgomery scheduled call. When a
+// scheduled-morning call resolves to a no-result outcome (UNKNOWN /
+// CALL_FAILED / HOTLINE_DOWN), state is persisted to pending_retries and a
+// per-minute cron poller fires the next attempt at the scheduled time.
+// Exactly one call_history row is written per morning — either the
+// resolving confirmed result, or the final no-result outcome after retries
+// are exhausted or the 14:00 local cutoff is hit. Customer pays nothing
+// for retries; credit is deducted only on confirmed MUST_TEST / NO_TEST.
+//
+// Out of scope: Fort Bend system call, manual /api/call, admin
+// trigger-call. These set isScheduledMorning=false and keep single-shot
+// behavior.
+//
+// PIN_EXPIRED is NEVER retried — own counter, handled by
+// handlePinExpiredResult.
+
+// Gaps between attempts: +5min after T0, +1hr after T1, +2hr after T2.
+// 3 retries total (T1, T2, T3). T0 + 3 retries = 4 attempts max.
+var RETRY_GAPS_MS = [5 * 60 * 1000, 60 * 60 * 1000, 2 * 60 * 60 * 1000];
+
+// Format a UTC Date as YYYY-MM-DD in the given IANA timezone. Used for
+// "is this row from today?" staleness checks across the date boundary.
+function formatLocalDay(date, tz) {
+  var parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(date);
+  var y = parts.find(function(p) { return p.type === 'year'; }).value;
+  var m = parts.find(function(p) { return p.type === 'month'; }).value;
+  var d = parts.find(function(p) { return p.type === 'day'; }).value;
+  return y + '-' + m + '-' + d;
+}
+
+// Would firing at `utcMoment` violate the "no attempt later than 2:00 PM
+// local" cutoff? At minute precision: 14:00 OK, 14:01+ not OK.
+function wouldExceedCutoff(utcMoment, tz) {
+  var parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    hour: 'numeric',
+    hour12: false,
+    minute: 'numeric'
+  }).formatToParts(utcMoment);
+  var hour = parseInt(parts.find(function(p) { return p.type === 'hour'; }).value, 10);
+  var minute = parseInt(parts.find(function(p) { return p.type === 'minute'; }).value, 10);
+  if (hour < 14) return false;
+  if (hour > 14) return true;
+  return minute > 0;
+}
+
+// Given attempts_completed (1 = T0 done, 2 = T0+T1 done, ...), return the
+// UTC Date when the NEXT attempt should fire, or null if exhausted.
+function computeNextAttemptAt(attemptsCompleted) {
+  if (attemptsCompleted >= RETRY_GAPS_MS.length + 1) return null;
+  var gap = RETRY_GAPS_MS[attemptsCompleted - 1];
+  return new Date(Date.now() + gap);
+}
+
+// Look up user's timezone. Fallback to America/Chicago if schedule is
+// missing (e.g. user deleted schedule mid-morning before pending_retries
+// cleanup ran).
+async function getUserTimezone(userId) {
+  var r = await supabase.from('user_schedules').select('timezone').eq('user_id', userId).maybeSingle();
+  if (r.error || !r.data) return 'America/Chicago';
+  return r.data.timezone || 'America/Chicago';
+}
+
+// Final-fail: write ONE call_history row for the morning, delete the
+// pending_retries row, notify the user. Streak SELECT runs before the
+// INSERT (race-safe, same pattern as d8bfe71).
+async function finalFailMorning(state, existingRow) {
+  var userId = state.user_id;
+  var attemptsMade = state.attempt_number;
+
+  // Streak check FIRST so its lookback SELECT doesn't race with our INSERT.
+  await checkConsecutiveUnknown(userId, '(retry sequence exhausted after ' + attemptsMade + ' attempts — last: ' + state.last_result + ')', state.notify_number, state.notify_email, state.notify_method)
+    .catch(function(e) { console.error('[UNKNOWN-STREAK] check failed:', e.message); });
+
+  var row = {
+    user_id: userId,
+    call_sid: state.last_call_sid || 'unknown',
+    target_number: state.target_number || '+19362834848',
+    pin_used: state.pin,
+    result: state.last_result,
+    recording_url: state.last_recording_url,
+    created_at: new Date().toISOString()
+  };
+  var insertResult = await supabase.from('call_history').insert(row);
+  if (insertResult.error) {
+    console.error('[RETRY] Final-fail call_history insert error for ' + userId.slice(0, 8) + ':', JSON.stringify(insertResult.error));
+  } else {
+    console.log('[RETRY] Final-fail recorded for ' + userId.slice(0, 8) + ' after ' + attemptsMade + ' attempts (last: ' + state.last_result + ')');
+  }
+
+  if (existingRow && existingRow.id) {
+    await supabase.from('pending_retries').delete().eq('id', existingRow.id);
+  } else {
+    await supabase.from('pending_retries').delete().eq('user_id', userId);
+  }
+
+  var msg = '⚠️ Couldn\'t determine your status today\n\nWe tried calling the hotline ' + attemptsMade + ' times this morning but couldn\'t get a clear result. Please call the hotline yourself today to verify whether you need to test.\n\nYou were NOT charged a credit for these attempts.\n\n- ProbationCall.com';
+  await notify(state.notify_number, state.notify_email, state.notify_method, msg, 'retry-final-fail').catch(function(e) {
+    console.error('[RETRY] Failed to notify user of final-fail:', e.message);
+  });
+}
+
+// Dispatcher: called from /webhook/recording (UNKNOWN, HOTLINE_DOWN) and
+// /webhook/status (CALL_FAILED) when config.isScheduledMorning is true.
+// Creates / updates the pending_retries row, OR triggers final-fail when
+// retries are exhausted or the cutoff is hit. Never writes call_history
+// directly (that's finalFailMorning's job or the success path's job).
+async function handleScheduledMorningNoResult(config, result, callSid, transcript, recordingUrl) {
+  if (!config.userId) return;
+
+  var existing = await supabase.from('pending_retries').select('*').eq('user_id', config.userId).maybeSingle();
+  var row = existing.data || null;
+
+  // Determine TZ — from the row if present, else look up the schedule.
+  var tz;
+  if (row) {
+    tz = await getUserTimezone(config.userId);
+    // Stale-row detection: row from a prior day (in user's TZ) is a leak.
+    var rowDay = formatLocalDay(new Date(row.created_at), tz);
+    var todayDay = formatLocalDay(new Date(), tz);
+    if (rowDay !== todayDay) {
+      console.log('[RETRY] Cleaning stale pending_retries row from ' + rowDay + ' for user ' + config.userId.slice(0, 8));
+      await supabase.from('pending_retries').delete().eq('id', row.id);
+      row = null;
+    }
+  } else {
+    tz = await getUserTimezone(config.userId);
+  }
+
+  var attemptsCompleted = row ? row.attempt_number + 1 : 1;
+  var nextAt = computeNextAttemptAt(attemptsCompleted);
+
+  if (nextAt === null || wouldExceedCutoff(nextAt, tz)) {
+    console.log('[RETRY] ' + (nextAt === null ? 'Exhausted' : 'Cutoff would be exceeded') + ' for ' + config.userId.slice(0, 8) + ' after ' + attemptsCompleted + ' attempts — final-fail');
+    await finalFailMorning({
+      user_id: config.userId,
+      county: (row && row.county) || config.county || 'montgomery',
+      target_number: config.targetNumber || (row && row.target_number),
+      pin: config.pin || (row && row.pin),
+      notify_number: config.notifyNumber || (row && row.notify_number),
+      notify_email: config.notifyEmail || (row && row.notify_email),
+      notify_method: config.notifyMethod || (row && row.notify_method),
+      attempt_number: attemptsCompleted,
+      last_result: result,
+      last_call_sid: callSid,
+      last_transcript: transcript,
+      last_recording_url: recordingUrl
+    }, row);
+    return;
+  }
+
+  if (row) {
+    var upd = await supabase.from('pending_retries').update({
+      attempt_number: attemptsCompleted,
+      last_result: result,
+      last_call_sid: callSid,
+      last_transcript: transcript,
+      last_recording_url: recordingUrl,
+      next_attempt_at: nextAt.toISOString(),
+      updated_at: new Date().toISOString()
+    }).eq('id', row.id);
+    if (upd.error) {
+      console.error('[RETRY] Failed to update pending_retries for ' + config.userId.slice(0, 8) + ':', upd.error.message);
+      return;
+    }
+    console.log('[RETRY] Queued attempt ' + (attemptsCompleted + 1) + ' for ' + config.userId.slice(0, 8) + ' at ' + nextAt.toISOString() + ' (after ' + result + ')');
+  } else {
+    var ins = await supabase.from('pending_retries').insert({
+      user_id: config.userId,
+      county: config.county || 'montgomery',
+      target_number: config.targetNumber,
+      pin: config.pin,
+      notify_number: config.notifyNumber,
+      notify_email: config.notifyEmail,
+      notify_method: config.notifyMethod,
+      attempt_number: attemptsCompleted,
+      last_result: result,
+      last_call_sid: callSid,
+      last_transcript: transcript,
+      last_recording_url: recordingUrl,
+      next_attempt_at: nextAt.toISOString()
+    });
+    if (ins.error) {
+      console.error('[RETRY] Failed to insert pending_retries for ' + config.userId.slice(0, 8) + ':', ins.error.message);
+      return;
+    }
+    console.log('[RETRY] Queued first retry for ' + config.userId.slice(0, 8) + ' at ' + nextAt.toISOString() + ' (after ' + result + ')');
   }
 }
 
@@ -1267,7 +1468,6 @@ app.post('/api/schedule', auth, async function(req, res) {
     hour: hour,
     minute: minute,
     timezone: req.body.timezone || 'America/Chicago',
-    retry_on_unknown: req.body.retryOnUnknown || false,
     quiet_mode: req.body.quietMode || false,
     ftbend_office: req.body.ftbend_office || 'missouri',
     enabled: true,
@@ -1304,6 +1504,9 @@ app.delete('/api/schedule', auth, async function(req, res) {
     scheduledJobs.get(req.user.id).stop();
     scheduledJobs.delete(req.user.id);
   }
+  await supabase.from('pending_retries').delete().eq('user_id', req.user.id).then(function() {}, function(e) {
+    console.error('[RETRY] Failed to clean pending_retries on schedule delete:', e.message);
+  });
   res.json({ success: true });
 });
 
@@ -1325,9 +1528,8 @@ function rescheduleUser(userId, sched) {
   var staggerMinutes = Math.floor(staggerDelay / 60000);
   var staggerSeconds = Math.floor((staggerDelay % 60000) / 1000);
   
-  console.log('[SCHED] User ' + userId.slice(0,8) + '...: ' + expr + ' ' + sched.timezone + 
-    ' (stagger: +' + staggerMinutes + 'm ' + staggerSeconds + 's)' +
-    (sched.retry_on_unknown ? ' [retry enabled]' : ''));
+  console.log('[SCHED] User ' + userId.slice(0,8) + '...: ' + expr + ' ' + sched.timezone +
+    ' (stagger: +' + staggerMinutes + 'm ' + staggerSeconds + 's)');
   
   var job = cron.schedule(expr, async function() {
     // Apply stagger delay to spread out calls
@@ -1357,7 +1559,9 @@ function rescheduleUser(userId, sched) {
         
         // Credit is deducted in /webhook/recording once a result (MUST_TEST
         // or NO_TEST) is known. UNKNOWN does not bill. See deductCreditOnce.
-        await initiateCall(sched.target_number, sched.pin, sched.notify_number, sched.notify_email, sched.notify_method, userId, sched.retry_on_unknown, 0);
+        // isScheduledMorning=true → if this call returns a no-result outcome,
+        // it enters the auto-retry sequence (handleScheduledMorningNoResult).
+        await initiateCall(sched.target_number, sched.pin, sched.notify_number, sched.notify_email, sched.notify_method, userId, 0, undefined, true);
       } catch (e) {
         // This catches a pre-flight throw from initiateCall (e.g. Twilio
         // SDK rejected the request before a call_sid was assigned). No
@@ -2257,8 +2461,7 @@ app.post('/api/call', auth, async function(req, res) {
   var notifyNumber = req.body.notifyNumber;
   var notifyEmail = req.body.notifyEmail;
   var notifyMethod = req.body.notifyMethod || 'email';
-  var retryOnUnknown = req.body.retryOnUnknown || false;
-  
+
   var countyConfig = COUNTIES[county] || COUNTIES['montgomery'];
   if (countyConfig.process !== 'color' && !pin) return res.status(400).json({ error: 'PIN required for this county' });
   if (!/^\+\d{10,15}$/.test(targetNumber)) return res.status(400).json({ error: 'Invalid phone format' });
@@ -2266,27 +2469,27 @@ app.post('/api/call', auth, async function(req, res) {
   
   try {
     // Credit is deducted in /webhook/recording once a result is known.
-    var result = await initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notifyMethod, req.user.id, retryOnUnknown, 0, county);
+    var result = await initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notifyMethod, req.user.id, 0, county);
     res.json(result);
   } catch(e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-async function initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notifyMethod, userId, retryOnUnknown, retryCount, county) {
+async function initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notifyMethod, userId, retryCount, county, isScheduledMorning) {
   var callId = 'call_' + Date.now();
   log(callId, 'Starting call to ' + targetNumber + (retryCount > 0 ? ' (retry #' + retryCount + ')' : ''), 'info');
-  
-  pendingCalls.set(callId, { 
-    targetNumber: targetNumber, 
+
+  pendingCalls.set(callId, {
+    targetNumber: targetNumber,
     pin: pin,
-    county: county, 
+    county: county,
     notifyNumber: notifyNumber,
     notifyEmail: notifyEmail,
     notifyMethod: notifyMethod,
-    userId: userId, 
-    retryOnUnknown: retryOnUnknown,
+    userId: userId,
     retryCount: retryCount,
+    isScheduledMorning: isScheduledMorning === true,
     result: null
   });
   
@@ -2399,7 +2602,12 @@ app.post('/webhook/recording', async function(req, res) {
       if (retryCount < 2 && config.userId && !config.isFtbendDaily) {
         console.log('[TRANSCRIBE] Retrying call for', callId, '(attempt ' + (retryCount + 1) + ')');
         try {
-          var retryResult = await initiateCall(config.targetNumber, config.pin, config.notifyNumber, config.notifyEmail, config.notifyMethod, config.userId, false, 0);
+          // Inherit isScheduledMorning so the transcribeRetry chain stays
+          // attached to the same morning-aggregation flow per design §6.
+          // (The arg slot also previously held leftover false/0 values from
+          // the deleted retryOnUnknown signature — now correctly carries
+          // retryCount, county, and isScheduledMorning.)
+          var retryResult = await initiateCall(config.targetNumber, config.pin, config.notifyNumber, config.notifyEmail, config.notifyMethod, config.userId, retryCount + 1, config.county, config.isScheduledMorning);
           // Mark the specific new pendingCall (not "the last key in the Map",
           // which races with any other concurrent call that just started).
           if (retryResult && retryResult.callId && pendingCalls.get(retryResult.callId)) {
@@ -2434,28 +2642,34 @@ app.post('/webhook/recording', async function(req, res) {
         // PIN_EXPIRED counter is untouched. Fort Bend system calls have no
         // per-user userId — skip both the streak check and the insert.
         if (config.userId && !config.isFtbendDaily) {
-          // Await the streak check BEFORE the insert so the lookback SELECT
-          // provably completes before this row hits the table — without await
-          // the two queries race and the SELECT can see today's row, firing
-          // the auto-pause one call early. .catch swallows errors so a check
-          // failure can't block the insert.
-          await checkConsecutiveUnknown(config.userId, '(empty transcript x3 — hotline likely down)', config.notifyNumber, config.notifyEmail, config.notifyMethod)
-            .catch(function(e) { console.error('[UNKNOWN-STREAK] check failed:', e.message); });
-
-          var downRow = {
-            user_id: config.userId,
-            call_sid: config.callSid || 'unknown',
-            target_number: config.targetNumber || '+19362834848',
-            pin_used: config.pin,
-            result: 'HOTLINE_DOWN',
-            recording_url: recordingUrl + '.mp3',
-            created_at: new Date().toISOString()
-          };
-          var downInsert = await supabase.from('call_history').insert(downRow);
-          if (downInsert.error) {
-            console.error('[TRANSCRIBE] HOTLINE_DOWN insert error for', callId, ':', downInsert.error);
+          if (config.isScheduledMorning) {
+            // Route into morning-aggregated retry flow — no notify, no
+            // streak, no call_history row written here. Handler decides
+            // whether to queue another retry or final-fail.
+            await handleScheduledMorningNoResult(config, 'HOTLINE_DOWN', config.callSid, null, recordingUrl + '.mp3');
           } else {
-            console.log('[TRANSCRIBE] Saved HOTLINE_DOWN to call_history for', callId);
+            // Non-scheduled (manual/admin) call — keep the d8bfe71 behavior:
+            // notify-via-existing-admin-alert above, write a HOTLINE_DOWN row,
+            // run the streak check. Await BEFORE insert so the SELECT can't
+            // race with the INSERT.
+            await checkConsecutiveUnknown(config.userId, '(empty transcript x3 — hotline likely down)', config.notifyNumber, config.notifyEmail, config.notifyMethod)
+              .catch(function(e) { console.error('[UNKNOWN-STREAK] check failed:', e.message); });
+
+            var downRow = {
+              user_id: config.userId,
+              call_sid: config.callSid || 'unknown',
+              target_number: config.targetNumber || '+19362834848',
+              pin_used: config.pin,
+              result: 'HOTLINE_DOWN',
+              recording_url: recordingUrl + '.mp3',
+              created_at: new Date().toISOString()
+            };
+            var downInsert = await supabase.from('call_history').insert(downRow);
+            if (downInsert.error) {
+              console.error('[TRANSCRIBE] HOTLINE_DOWN insert error for', callId, ':', downInsert.error);
+            } else {
+              console.log('[TRANSCRIBE] Saved HOTLINE_DOWN to call_history for', callId);
+            }
           }
         }
       }
@@ -2525,16 +2739,22 @@ app.post('/webhook/recording', async function(req, res) {
         await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, noTestMsg, callId);
       } else {
         console.log('[TRANSCRIBE] ⚠️ Unknown result for', callId, ':', transcript);
-        await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, '⚠️ Could not determine result.\n\nHeard: "' + transcript.substring(0, 100) + '"\n\nPlease call the hotline to verify.\n\n- ProbationCall.com', callId);
-        // If this user has now had several UNKNOWNs in a row, pause their
-        // schedule and alert them + admins. Catches non-PIN-expired
-        // unparseable results (e.g. hotline wording changes).
-        if (config.userId) {
-          // Await BEFORE the call_history insert below so the streak SELECT
-          // can't race with the INSERT and see today's row in the lookback.
-          // .catch swallows errors so a check failure can't block the insert.
-          await checkConsecutiveUnknown(config.userId, transcript, config.notifyNumber, config.notifyEmail, config.notifyMethod)
-            .catch(function(e) { console.error('[UNKNOWN-STREAK] check failed:', e.message); });
+        if (config.isScheduledMorning && config.userId) {
+          // Scheduled-morning retry flow — no notify, no streak, no row.
+          // Handler decides whether to queue another retry or final-fail.
+          await handleScheduledMorningNoResult(config, 'UNKNOWN', config.callSid, transcript, recordingUrl + '.mp3');
+        } else {
+          await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, '⚠️ Could not determine result.\n\nHeard: "' + transcript.substring(0, 100) + '"\n\nPlease call the hotline to verify.\n\n- ProbationCall.com', callId);
+          // If this user has now had several UNKNOWNs in a row, pause their
+          // schedule and alert them + admins. Catches non-PIN-expired
+          // unparseable results (e.g. hotline wording changes).
+          if (config.userId) {
+            // Await BEFORE the call_history insert below so the streak SELECT
+            // can't race with the INSERT and see today's row in the lookback.
+            // .catch swallows errors so a check failure can't block the insert.
+            await checkConsecutiveUnknown(config.userId, transcript, config.notifyNumber, config.notifyEmail, config.notifyMethod)
+              .catch(function(e) { console.error('[UNKNOWN-STREAK] check failed:', e.message); });
+          }
         }
       }
 
@@ -2562,7 +2782,12 @@ app.post('/webhook/recording', async function(req, res) {
       }
 
       config.result = result;
-      if (config.userId) {
+      // Suppress the per-attempt UNKNOWN row when this is a scheduled-morning
+      // retry — handleScheduledMorningNoResult either queued the next attempt
+      // (no row needed yet) or final-failed (already wrote ONE morning row).
+      // MUST_TEST / NO_TEST / PIN_EXPIRED still write here as normal.
+      var skipInsertForRetryFlow = config.isScheduledMorning && config.userId && result === 'UNKNOWN';
+      if (config.userId && !skipInsertForRetryFlow) {
         var row = {
           user_id: config.userId,
           call_sid: config.callSid || 'unknown',
@@ -2578,6 +2803,14 @@ app.post('/webhook/recording', async function(req, res) {
           console.error('[TRANSCRIBE] INSERT ERROR:', JSON.stringify(insertResult.error));
         } else {
           console.log('[TRANSCRIBE] Saved result to call_history:', result, shouldMarkBilled ? '(billed)' : '');
+        }
+        // A confirmed result ends the morning — clean up any in-flight
+        // retry sequence. Covers scheduled-morning AND manual paths (e.g.
+        // user clicks "Call Now" mid-retry and gets an answer).
+        if (!insertResult.error && (result === 'MUST_TEST' || result === 'NO_TEST' || result === 'PIN_EXPIRED')) {
+          await supabase.from('pending_retries').delete().eq('user_id', config.userId).then(function() {}, function(e) {
+            console.error('[RETRY] Failed to clean pending_retries on confirmed result:', e.message);
+          });
         }
       }
       broadcastToClients({ type: 'result', callId: callId, result: result, speech: transcript });
@@ -2685,6 +2918,14 @@ app.post('/webhook/status', async function(req, res) {
     return;
   }
 
+  if (config.isScheduledMorning) {
+    // Scheduled-morning retry flow — no notify (mid-retry silence), no
+    // streak, no call_history row. Handler decides whether to queue
+    // another retry or final-fail.
+    await handleScheduledMorningNoResult(config, 'CALL_FAILED', config.callSid, '(no audio — Twilio status: ' + callStatus + ')', null);
+    return;
+  }
+
   var reason = callStatus === 'no-answer' ? 'the hotline did not answer'
              : callStatus === 'busy' ? 'the hotline line was busy'
              : callStatus === 'canceled' ? 'the call was canceled'
@@ -2697,20 +2938,9 @@ app.post('/webhook/status', async function(req, res) {
     console.error('[STATUS] notify failed for ' + callId + ':', e.message);
   }
 
-  // call_history row with result='CALL_FAILED', billed_at NULL.
-  // Billing is gated on result IN ('MUST_TEST','NO_TEST') only, so this
-  // does NOT charge a credit. It DOES make the :45 recovery cron skip
-  // the user (it looks for any row today, regardless of result).
-  // It counts toward the no-result auto-pause streak alongside UNKNOWN
-  // and HOTLINE_DOWN — see checkConsecutiveUnknown. PIN_EXPIRED counter
-  // is untouched.
-  //
-  // Await the streak check BEFORE the insert so the lookback SELECT
-  // provably completes before this row hits the table — without await the
-  // two queries race and the SELECT can see today's row, firing the
-  // auto-pause one call early. .catch swallows errors so a check failure
-  // can't block the insert. Safe: res.sendStatus(200) already fired at the
-  // top of this handler, so Twilio's response is not delayed.
+  // Non-scheduled (manual/admin) path. Keep the d8bfe71 behavior:
+  // notify, streak check, call_history row with result='CALL_FAILED',
+  // billed_at NULL. Streak SELECT runs before INSERT (race-safe).
   await checkConsecutiveUnknown(config.userId, '(no audio — Twilio status: ' + callStatus + ')', config.notifyNumber, config.notifyEmail, config.notifyMethod)
     .catch(function(e) { console.error('[UNKNOWN-STREAK] check failed:', e.message); });
 
@@ -3308,7 +3538,6 @@ app.post('/api/admin/trigger-call/:userId', adminAuth, async function(req, res) 
         sched.notify_email,
         sched.notify_method,
         userId,
-        sched.retry_on_unknown,
         0,
         sched.county
       );
@@ -4201,9 +4430,18 @@ cron.schedule('45 * * * *', async function() {
       .eq('user_id', sched.user_id)
       .gte('created_at', todayStart.toISOString())
       .limit(1);
-    
+
     if (callResult.data && callResult.data.length > 0) continue; // Already called today
-    
+
+    // Also skip if a retry sequence is in flight — no call_history row gets
+    // written until the morning resolves, but pending_retries IS populated.
+    // Without this check we'd collide with a queued retry.
+    var pendingRetryResult = await supabase.from('pending_retries')
+      .select('id')
+      .eq('user_id', sched.user_id)
+      .limit(1);
+    if (pendingRetryResult.data && pendingRetryResult.data.length > 0) continue;
+
     console.log('[RECOVERY] MISSED CALL detected for user ' + sched.user_id.slice(0,8) + '... (scheduled ' + schedHour + ':' + String(schedMin).padStart(2,'0') + ')');
     
     // Get user profile and credits
@@ -4221,9 +4459,11 @@ cron.schedule('45 * * * *', async function() {
     }
     
     // Make the recovery call. Credit is deducted in /webhook/recording.
+    // isScheduledMorning=true so a no-result outcome enters the auto-retry
+    // sequence — recovery is functionally a delayed scheduled-morning call.
     console.log('[RECOVERY] Initiating recovery call for ' + sched.user_id.slice(0,8) + '...');
     try {
-      await initiateCall(sched.target_number, sched.pin, sched.notify_number, sched.notify_email, sched.notify_method, sched.user_id, sched.retry_on_unknown, 0);
+      await initiateCall(sched.target_number, sched.pin, sched.notify_number, sched.notify_email, sched.notify_method, sched.user_id, 0, undefined, true);
     } catch (e) {
       console.error('[RECOVERY] Call failed for ' + sched.user_id.slice(0,8) + '...:', e.message);
       await notify(sched.notify_number, sched.notify_email, sched.notify_method, '⚠️ Call Issue\n\nWe had trouble completing your check-in today. Please call the hotline manually to verify.\n\n- ProbationCall.com', 'recovery');
@@ -4234,6 +4474,109 @@ cron.schedule('45 * * * *', async function() {
   }
   
   console.log('[RECOVERY] Check complete');
+}, { timezone: 'America/Chicago' });
+
+
+// ========== AUTO-RETRY POLLER ==========
+// Per-minute scan of pending_retries. Fires any due retry whose
+// next_attempt_at <= now AND whose lease has expired. Restart-safe:
+// pending_retries rows survive a container restart, and this poller
+// resumes work on the next minute boundary after boot.
+cron.schedule('* * * * *', async function() {
+  var dueResult = await supabase.from('pending_retries')
+    .select('*')
+    .lte('next_attempt_at', new Date().toISOString());
+  if (dueResult.error) {
+    console.error('[RETRY-POLLER] Failed to scan pending_retries:', dueResult.error.message);
+    return;
+  }
+  if (!dueResult.data || dueResult.data.length === 0) return;
+
+  for (var i = 0; i < dueResult.data.length; i++) {
+    var row = dueResult.data[i];
+    var userId = row.user_id;
+
+    // TZ lookup for cutoff check + day comparison. Fallback if the
+    // schedule was deleted out from under us.
+    var tz = await getUserTimezone(userId);
+
+    // Orphan-cleanup guard: if a confirmed result for this user already
+    // exists today (e.g. crash between webhook insert and pending_retries
+    // delete), don't fire — just clean up the orphan row.
+    var twentyFourAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    var confirmedQuery = await supabase.from('call_history')
+      .select('id, result, created_at')
+      .eq('user_id', userId)
+      .gte('created_at', twentyFourAgo.toISOString())
+      .in('result', ['MUST_TEST', 'NO_TEST', 'PIN_EXPIRED']);
+    var todayLocal = formatLocalDay(new Date(), tz);
+    var confirmedToday = false;
+    if (confirmedQuery.data) {
+      for (var j = 0; j < confirmedQuery.data.length; j++) {
+        if (formatLocalDay(new Date(confirmedQuery.data[j].created_at), tz) === todayLocal) {
+          confirmedToday = true;
+          break;
+        }
+      }
+    }
+    if (confirmedToday) {
+      console.log('[RETRY-POLLER] Orphan pending_retries row for ' + userId.slice(0, 8) + ' — morning already resolved by confirmed result. Deleting, not firing.');
+      await supabase.from('pending_retries').delete().eq('id', row.id);
+      continue;
+    }
+
+    // Cutoff check at fire time. If now is already past 14:00 local
+    // (poller slipped, container restart delay, etc.), final-fail
+    // instead of firing.
+    if (wouldExceedCutoff(new Date(), tz)) {
+      console.log('[RETRY-POLLER] Cutoff exceeded for ' + userId.slice(0, 8) + ' — final-fail instead of firing');
+      await finalFailMorning({
+        user_id: userId,
+        county: row.county,
+        target_number: row.target_number,
+        pin: row.pin,
+        notify_number: row.notify_number,
+        notify_email: row.notify_email,
+        notify_method: row.notify_method,
+        attempt_number: row.attempt_number,
+        last_result: row.last_result,
+        last_call_sid: row.last_call_sid,
+        last_transcript: row.last_transcript,
+        last_recording_url: row.last_recording_url
+      }, row);
+      continue;
+    }
+
+    // Lease: bump next_attempt_at to +10 min so the next poller tick
+    // doesn't double-fire while this call is in flight. The webhook
+    // handler will update the row (or delete it) on resolution.
+    var leaseUntil = new Date(Date.now() + 10 * 60 * 1000);
+    var leaseUpd = await supabase.from('pending_retries')
+      .update({ next_attempt_at: leaseUntil.toISOString(), updated_at: new Date().toISOString() })
+      .eq('id', row.id);
+    if (leaseUpd.error) {
+      console.error('[RETRY-POLLER] Failed to set lease for ' + userId.slice(0, 8) + ':', leaseUpd.error.message);
+      continue;
+    }
+
+    console.log('[RETRY-POLLER] Firing retry attempt ' + (row.attempt_number + 1) + ' for ' + userId.slice(0, 8));
+    try {
+      await initiateCall(
+        row.target_number,
+        row.pin,
+        row.notify_number,
+        row.notify_email,
+        row.notify_method,
+        userId,
+        row.attempt_number,
+        row.county,
+        true
+      );
+    } catch (e) {
+      console.error('[RETRY-POLLER] Failed to fire retry for ' + userId.slice(0, 8) + ':', e.message);
+      // Lease still expires in 10 min and the poller will try again.
+    }
+  }
 }, { timezone: 'America/Chicago' });
 
 

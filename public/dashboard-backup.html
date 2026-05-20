@@ -294,10 +294,6 @@ select option { background: #1a1a2e; color: #fff; }
         </div>
         <div class="form-group" id="emailGroup"><label>Your Email</label><input type="email" id="notifyEmail" placeholder="you@example.com"></div>
         <div class="form-group" id="phoneGroup" style="display:none"><label>Your Phone Number</label><input type="tel" id="notifyNumber" placeholder="+1234567890" onblur="formatPhoneNumber(this)"></div>
-        <div class="checkbox-group">
-          <input type="checkbox" id="retryOnUnknown">
-          <label for="retryOnUnknown">Auto-retry on unknown result<small>If we can't determine the result, automatically try again in 5 minutes (max 2 retries)</small></label>
-        </div>
         <div class="consent-box" id="smsConsentBox" style="display:none">
           <h4>📱 SMS Notification Consent</h4>
           <p>By checking the box below, you agree to receive SMS text messages from ProbationCall. Message frequency: up to 1 per call. Msg & data rates may apply. Reply STOP to unsubscribe.</p>
@@ -324,7 +320,6 @@ select option { background: #1a1a2e; color: #fff; }
           <tr><td>PIN:</td><td id="schedDisplayPin"></td></tr>
           <tr><td>Notify:</td><td id="schedDisplayNotify"></td></tr>
           <tr><td>Method:</td><td id="schedDisplayMethod"></td></tr>
-          <tr><td>Auto-Retry:</td><td id="schedDisplayRetry"></td></tr>
         </table>
         <button class="btn btn-danger" style="margin-top:15px" onclick="deleteSchedule()">🗑️ Delete</button>
       </div>
@@ -372,10 +367,6 @@ select option { background: #1a1a2e; color: #fff; }
             <input type="number" id="schedMin" min="0" max="59" value="0" style="width:70px">
             <select id="schedTZ"><option value="America/Chicago">Central Time</option></select>
           </div>
-        </div>
-        <div class="checkbox-group">
-          <input type="checkbox" id="schedRetry">
-          <label for="schedRetry">Auto-retry on unknown result<small>If we can't determine the result, automatically try again in 5 minutes (max 2 retries)</small></label>
         </div>
         <div class="checkbox-group">
           <input type="checkbox" id="schedQuiet">
@@ -918,7 +909,7 @@ function loadUser() {
       
       if (d.schedule) {
         var t = formatTime(d.schedule.hour, d.schedule.minute);
-        document.getElementById('scheduleBannerText').textContent = 'Daily at ' + t + (d.schedule.retry_on_unknown ? ' (auto-retry on)' : '');
+        document.getElementById('scheduleBannerText').textContent = 'Daily at ' + t;
         document.getElementById('scheduleBannerTime').textContent = t;
         document.getElementById('scheduleBanner').classList.add('active');
         document.getElementById('noSchedule').classList.remove('active');
@@ -935,7 +926,6 @@ function loadUser() {
         document.getElementById('schedDisplayPin').textContent = d.schedule.pin;
         document.getElementById('schedDisplayNotify').textContent = d.schedule.notify_method === 'sms' ? d.schedule.notify_number : (d.schedule.notify_method === 'both' ? (d.schedule.notify_number + ' & ' + d.schedule.notify_email) : d.schedule.notify_email) || '-';
         document.getElementById('schedDisplayMethod').textContent = (d.schedule.notify_method || 'email').toUpperCase();
-        document.getElementById('schedDisplayRetry').textContent = d.schedule.retry_on_unknown ? 'Yes (5 min delay)' : 'No';
         document.getElementById('scheduleDetails').style.display = 'block';
         document.getElementById('noSchedInfo').style.display = 'none';
         document.getElementById('schedBtn').textContent = '💾 Update Schedule';
@@ -955,7 +945,6 @@ function loadUser() {
           }
         }
         document.getElementById('schedTZ').value = d.schedule.timezone;
-        document.getElementById('schedRetry').checked = d.schedule.retry_on_unknown || false;
         document.getElementById('schedQuiet').checked = d.schedule.quiet_mode || false;
         if (d.schedule.notify_email) document.getElementById('schedEmail').value = d.schedule.notify_email;
         if (d.schedule.notify_number) document.getElementById('schedNotify').value = d.schedule.notify_number;
@@ -1202,8 +1191,7 @@ document.getElementById('callForm').onsubmit = function(e) {
       pin: document.getElementById('pin').value,
       notifyNumber: document.getElementById('notifyNumber').value,
       notifyEmail: document.getElementById('notifyEmail').value,
-      notifyMethod: method,
-      retryOnUnknown: document.getElementById('retryOnUnknown').checked
+      notifyMethod: method
     })
   }).then(function(r) { return r.json(); }).then(function(d) {
     if (d.error) { st.className = 'status error'; st.textContent = d.error; }
@@ -1247,7 +1235,6 @@ document.getElementById('scheduleForm').onsubmit = function(e) {
       hour: hour,
       minute: minute,
       timezone: document.getElementById('schedTZ').value,
-      retryOnUnknown: document.getElementById('schedRetry').checked,
       quietMode: document.getElementById('schedQuiet') ? document.getElementById('schedQuiet').checked : false,
       ftbend_office: document.getElementById('ftbendOffice') ? document.getElementById('ftbendOffice').value : 'missouri'
     })
@@ -1475,7 +1462,6 @@ function completeOnboarding() {
       hour: 6 + Math.floor(Math.random() * 3),  // Random 6, 7, or 8
       minute: Math.floor(Math.random() * (county === 'montgomery' ? 30 : 60)),  // 0-29 for 6-7am, 0-59 for 7-8am
       timezone: 'America/Chicago',
-      retryOnUnknown: false,
       quietMode: false
     })
   });
