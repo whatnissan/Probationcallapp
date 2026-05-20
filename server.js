@@ -11,8 +11,7 @@ const { createClient } = require('@supabase/supabase-js');
 
 
 // --- BREVO EMAIL VIA HTTP API ---
-const sgMail = {
-  setApiKey: () => {},
+const brevoMail = {
   send: async (msg) => {
     try {
       var fromEmail = typeof msg.from === "object" ? msg.from.email : msg.from;
@@ -66,8 +65,7 @@ const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
 if (process.env.BREVO_KEY) {
-  sgMail.setApiKey(process.env.BREVO_KEY);
-  console.log('[EMAIL] SendGrid configured');
+  console.log('[EMAIL] Brevo configured');
 }
 
 const pendingCalls = new Map();
@@ -670,6 +668,20 @@ function formatLocalDay(date, tz) {
   var m = parts.find(function(p) { return p.type === 'month'; }).value;
   var d = parts.find(function(p) { return p.type === 'day'; }).value;
   return y + '-' + m + '-' + d;
+}
+
+// Format today's date as M/D in the given TZ (no leading zeros). Used
+// to date-stamp daily notification email subjects so Gmail doesn't bundle
+// multiple days into one collapsed thread in the recipient's inbox.
+function todayMD(tz) {
+  var parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz || 'America/Chicago',
+    month: 'numeric',
+    day: 'numeric'
+  }).formatToParts(new Date());
+  var m = parts.find(function(p) { return p.type === 'month'; }).value;
+  var d = parts.find(function(p) { return p.type === 'day'; }).value;
+  return m + '/' + d;
 }
 
 // Would firing at `utcMoment` violate the "no attempt later than 2:00 PM
@@ -1329,7 +1341,7 @@ app.post('/api/affiliate/request-payout', auth, requireAffiliateEnabled, async f
   
   // Notify you (the owner) about payout request
   if (process.env.BREVO_KEY) {
-    await sgMail.send({
+    await brevoMail.send({
       to: 'whatnissan@gmail.com',
       from: FROM_EMAIL,
       subject: '💰 New Payout Request - ProbationCall',
@@ -2939,27 +2951,33 @@ async function notify(phone, email, method, message, callId) {
 
 async function sendEmail(to, message, callId) {
   if (!process.env.BREVO_KEY) {
-    log(callId, "SendGrid not configured", "error");
+    log(callId, "Brevo not configured", "error");
     return { success: false, error: "Email not configured" };
   }
-  
-  var subject = "ProbationCall Alert";
+
+  // Date-stamp the subject so Gmail doesn't bundle today's notification
+  // into yesterday's thread. Excluded: one-off transactional emails (test,
+  // low-credit) where threading isn't a problem. (Welcome emails use a
+  // separate path that bypasses this function entirely.)
+  var stamp = (callId === 'test' || callId === 'low_credit') ? '' : ' (' + todayMD() + ')';
+
+  var subject = "ProbationCall Alert" + stamp;
   var headerColor = "#00d9ff";
   var resultBadge = "";
   var headerEmoji = "📞";
-  
+
   if (message.includes("MUST TEST") || message.includes("TEST REQUIRED")) {
-    subject = "🚨 TEST REQUIRED TODAY - ProbationCall";
+    subject = "🚨 TEST REQUIRED TODAY" + stamp + " - ProbationCall";
     headerColor = "#ef4444";
     resultBadge = "<div style='background:#ef4444;color:#fff;padding:15px 25px;border-radius:8px;font-size:20px;font-weight:bold;text-align:center;margin:20px 0'>⚠️ YOU MUST TEST TODAY</div>";
     headerEmoji = "🚨";
   } else if (message.includes("NO_TEST") || message.includes("No test today") || message.includes("do NOT need to test")) {
-    subject = "✅ No Test Today - ProbationCall";
+    subject = "✅ No Test Today" + stamp + " - ProbationCall";
     headerColor = "#22c55e";
     resultBadge = "<div style='background:#22c55e;color:#fff;padding:15px 25px;border-radius:8px;font-size:20px;font-weight:bold;text-align:center;margin:20px 0'>✅ NO TEST REQUIRED</div>";
     headerEmoji = "✅";
   } else if (message.includes("Fort Bend") || message.includes("Color")) {
-    subject = "🎨 Fort Bend Color Update - ProbationCall";
+    subject = "🎨 Fort Bend Color Update" + stamp + " - ProbationCall";
     headerColor = "#f59e0b";
     headerEmoji = "🎨";
   }
@@ -2985,7 +3003,7 @@ async function sendEmail(to, message, callId) {
     "</table>" +
     "</td></tr></table></body></html>";
   try {
-    await sgMail.send({
+    await brevoMail.send({
       to: to,
       from: { email: FROM_EMAIL, name: "ProbationCall" },
       subject: subject,
@@ -3045,7 +3063,7 @@ async function sendWelcomeEmail(email, credits, callId) {
     '\n\n- The ProbationCall Team' +
     '\nhttps://probationcall.com';
   try {
-    await sgMail.send({
+    await brevoMail.send({
       to: email,
       from: { email: FROM_EMAIL, name: 'ProbationCall' },
       subject: subject,
@@ -3247,7 +3265,7 @@ server.listen(PORT, function() {
   console.log('ProbationCall Server Running');
   console.log('Port: ' + PORT);
   console.log('Voice: ' + TWILIO_VOICE_NUMBER);
-  console.log('Email: ' + (process.env.BREVO_KEY ? 'SendGrid configured' : 'Not configured'));
+  console.log('Email: ' + (process.env.BREVO_KEY ? 'Brevo configured' : 'Not configured'));
   console.log('SMS: Messaging Service ' + MESSAGING_SERVICE_SID);
   console.log('WhatsApp: ' + WHATSAPP_NUMBER);
   console.log('Call Hours: ' + MIN_HOUR + ':00 AM - ' + MAX_HOUR + ':59 PM');
