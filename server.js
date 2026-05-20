@@ -8,6 +8,7 @@ const path = require('path');
 const cron = require('node-cron');
 const Stripe = require('stripe');
 const { createClient } = require('@supabase/supabase-js');
+const doubleMetaphone = require('double-metaphone');
 
 
 // --- BREVO EMAIL VIA HTTP API ---
@@ -2648,25 +2649,59 @@ app.post('/webhook/recording', async function(req, res) {
       var officeId = config.officeId || 'missouri';
       var detectedColor = detectColor(lower);
       var phases = (typeof detectPhaseColors === 'function') ? detectPhaseColors(transcript) : { phase1: null, phase2: null };
-      
+
       // Set on config so notifyFtbendOfficeUsers can read them
       config.phase1 = phases.phase1;
       config.phase2 = phases.phase2;
-      
-      if (detectedColor) {
-        config.result = detectedColor;
-        console.log('[TRANSCRIBE] Fort Bend ' + officeId + ' color detected:', detectedColor);
-        await storeFtbendColor(detectedColor, transcript, officeId, phases.phase1, phases.phase2);
-      } else if (phases.phase1) {
-        config.result = phases.phase1;
-        console.log('[TRANSCRIBE] Fort Bend ' + officeId + ' phase detected:', phases.phase1);
-        await storeFtbendColor(phases.phase1, transcript, officeId, phases.phase1, phases.phase2);
-      } else {
-        config.result = 'UNKNOWN';
-        console.log('[TRANSCRIBE] Fort Bend ' + officeId + ' no color detected in:', transcript);
-        await storeFtbendColor('UNKNOWN', transcript, officeId, null, null);
-      }
-      
+
+      // Our own detection — what Deepgram + detectColor parsed.
+      var ourDetection = detectedColor || phases.phase1 || 'UNKNOWN';
+      console.log('[TRANSCRIBE] Fort Bend ' + officeId + ' our_detection:', ourDetection);
+
+      // Cross-check against finishprobation.com ground truth. Network call
+      // (~500ms-2s); res.sendStatus(200) already fired at /webhook/recording
+      // entry so Twilio isn't waiting.
+      var groundTruthResult = await fetchFinishProbationGroundTruth(officeId).catch(function(e) {
+        console.error('[FTBEND-XCHECK] fetch threw for ' + officeId + ':', e.message);
+        return { error: 'fetch_threw:' + e.message };
+      });
+      var groundTruthArr = groundTruthResult.testGroups || null;
+      var crossCheck = doCrossCheck(transcript, ourDetection, groundTruthArr);
+
+      console.log('[FTBEND-XCHECK] office=' + officeId
+        + ' our=' + ourDetection
+        + ' truth=' + (groundTruthArr ? groundTruthArr.join(', ') : '(' + (groundTruthResult.error || 'none') + ')')
+        + ' method=' + crossCheck.match_method
+        + (crossCheck.misrecognition_added ? ' added=' + crossCheck.misrecognition_added : ''));
+
+      // Decide final answer for user notification + storage.
+      //   verified (substring / phonetic / detection_already_correct) →
+      //     trust ground truth.
+      //   no_ground_truth or no_match → fall back to our_detection
+      //     (this is the current behavior; Commit B replaces these
+      //     fallback paths with retry).
+      var finalAnswer = crossCheck.final_answer || ourDetection;
+
+      config.result = finalAnswer;
+      await storeFtbendColor(finalAnswer, transcript, officeId, phases.phase1, phases.phase2);
+
+      // Log to fort_bend_learnings — best effort, don't block notify if it fails.
+      var ftbendLearningDate = formatLocalDay(new Date(), 'America/Chicago');
+      var ftbendOfficeHotline = (FTBEND_OFFICES[officeId] && FTBEND_OFFICES[officeId].number) || '';
+      await supabase.from('fort_bend_learnings').insert({
+        date: ftbendLearningDate,
+        office: officeId,
+        hotline_number: ftbendOfficeHotline,
+        raw_transcript: transcript,
+        our_detection: ourDetection,
+        ground_truth: groundTruthArr ? groundTruthArr.join(', ') : null,
+        match_method: crossCheck.match_method,
+        misrecognition_added: crossCheck.misrecognition_added,
+        attempt_number: 1
+      }).then(function() {}, function(e) {
+        console.error('[FTBEND-XCHECK] fort_bend_learnings insert failed for ' + officeId + ':', e.message);
+      });
+
       // Notify Fort Bend users for this office
       await notifyFtbendOfficeUsers(officeId, config);
     } else {
@@ -3932,6 +3967,158 @@ function detectPhaseColors(transcript) {
 }
 
 
+
+// ========== FORT BEND CROSS-CHECK (verification layer) ==========
+// Fetch finishprobation.com's published "today's color" for an office and
+// cross-check it against what our own Deepgram-transcribed call produced.
+// finishprobation publishes the same data via JSON embedded in their
+// Next.js page (__NEXT_DATA__ script tag). We extract testGroups (array of
+// color/phase strings) from the latest release.
+//
+// Slug mapping is hardcoded because finishprobation's URLs are inconsistent
+// — 2 of 3 use the misspelled "ford" form, 1 uses the correct "fort". The
+// "correct" spelling returns 500 for the misspelled-form offices. Verified
+// 2026-05-20.
+async function fetchFinishProbationGroundTruth(officeId) {
+  var slugMap = {
+    'missouri':   'tx-ford-bend-county-probation',   // misspelled in upstream
+    'rosenberg':  'tx-ford-bend-county-pretrial',    // misspelled in upstream
+    'rosenberg2': 'tx-fort-bend-county-drug-court'   // correctly spelled
+  };
+  var slug = slugMap[officeId];
+  if (!slug) return { error: 'unknown_office:' + officeId };
+
+  var url = 'https://finishprobation.com/test-locations/' + slug;
+  var res;
+  try {
+    res = await fetch(url);
+  } catch (e) {
+    return { error: 'fetch_threw:' + e.message };
+  }
+  if (!res.ok) return { error: 'http_' + res.status };
+
+  var html;
+  try {
+    html = await res.text();
+  } catch (e) {
+    return { error: 'body_read_failed:' + e.message };
+  }
+
+  var match = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]+?)<\/script>/);
+  if (!match) return { error: 'no_next_data' };
+
+  var data;
+  try {
+    data = JSON.parse(match[1]);
+  } catch (e) {
+    return { error: 'json_parse_failed:' + e.message };
+  }
+
+  var releases = (data && data.props && data.props.pageProps && data.props.pageProps.releases) || [];
+  if (!releases.length) return { error: 'no_releases' };
+
+  var latest = releases.reduce(function(a, b) {
+    return (a.createdAt > b.createdAt) ? a : b;
+  });
+
+  // Freshness check — must be today in America/Chicago.
+  var todayLocal = formatLocalDay(new Date(), 'America/Chicago');
+  var latestLocal = formatLocalDay(new Date(latest.createdAt), 'America/Chicago');
+  if (todayLocal !== latestLocal) {
+    return { error: 'not_today', latest_date: latestLocal };
+  }
+
+  return {
+    testGroups: latest.testGroups || [],
+    createdAt: latest.createdAt,
+    transcript: latest.phoneRecording || ''
+  };
+}
+
+// Phonetic match using Double Metaphone. Returns true if either word's
+// primary or secondary code matches the other's primary or secondary.
+// Example: 'moca' [MK,MK] vs 'mocha' [MX,MK] → MK matches MK → true.
+function phoneticMatch(a, b) {
+  if (!a || !b) return false;
+  var ca = doubleMetaphone(String(a));
+  var cb = doubleMetaphone(String(b));
+  // ca = [primary, secondary]; cb = [primary, secondary]; cross-match all 4 pairings
+  if (ca[0] && ca[0] === cb[0]) return true;
+  if (ca[0] && ca[0] === cb[1]) return true;
+  if (ca[1] && ca[1] === cb[0]) return true;
+  if (ca[1] && ca[1] === cb[1]) return true;
+  return false;
+}
+
+// Cross-check our Deepgram-derived detection against finishprobation's
+// published ground truth. Mutates FTBEND_MISRECOGNITIONS in memory when a
+// phonetic match is found so the rest of today's calls/retries benefit.
+//
+// groundTruthArr: array of strings (testGroups from finishprobation), e.g.
+//   ['Mocha'] or ['Prep', 'Phase 1 B'].
+//
+// For multi-word ground-truth items (e.g. 'Phase 1 B'), phonetic matching
+// is skipped — we rely on substring matching only (the transcript is
+// already phase-numeral-normalized by detectColor's pre-pass, so 'phase
+// one b' → 'phase 1 b' before this check runs).
+function doCrossCheck(transcript, ourDetection, groundTruthArr) {
+  if (!groundTruthArr || groundTruthArr.length === 0) {
+    return { match_method: 'no_ground_truth', final_answer: null, misrecognition_added: null };
+  }
+
+  var joined = groundTruthArr.join(', ');
+  var joinedLower = joined.toLowerCase();
+  var ourLower = (ourDetection || '').toLowerCase();
+
+  // Fast path 1: detection matches the full joined ground truth.
+  if (ourLower && ourLower === joinedLower) {
+    return { match_method: 'detection_already_correct', final_answer: joined, misrecognition_added: null };
+  }
+  // Fast path 2: single-element array matches our detection.
+  if (groundTruthArr.length === 1 && ourLower && ourLower === groundTruthArr[0].toLowerCase()) {
+    return { match_method: 'detection_already_correct', final_answer: joined, misrecognition_added: null };
+  }
+
+  var transcriptLower = String(transcript || '').toLowerCase();
+  var transcriptTokens = transcriptLower.split(/[^a-z0-9]+/).filter(function(t) {
+    return t.length >= 2;
+  });
+
+  // Every ground-truth item must be verifiable. Substring beats phonetic;
+  // for multi-word items phonetic doesn't apply (relies on substring only).
+  var addedMisrecognitions = [];
+  var sawPhonetic = false;
+  var allResolved = groundTruthArr.every(function(item) {
+    var itemLower = item.toLowerCase();
+    if (transcriptLower.indexOf(itemLower) !== -1) return true;
+    if (itemLower.indexOf(' ') !== -1) return false; // multi-word: no phonetic fallback
+    for (var i = 0; i < transcriptTokens.length; i++) {
+      if (phoneticMatch(transcriptTokens[i], itemLower)) {
+        addedMisrecognitions.push({ token: transcriptTokens[i], target: itemLower });
+        sawPhonetic = true;
+        return true;
+      }
+    }
+    return false;
+  });
+
+  if (!allResolved) {
+    return { match_method: 'no_match', final_answer: null, misrecognition_added: null };
+  }
+
+  if (sawPhonetic) {
+    // Mutate the in-memory map so the rest of today's calls/retries pick up
+    // these phonetic mappings via Pass 3 of detectColor.
+    addedMisrecognitions.forEach(function(m) {
+      FTBEND_MISRECOGNITIONS[m.token] = m.target;
+      console.log('[FTBEND-XCHECK] Auto-added misrecognition: "' + m.token + '" -> "' + m.target + '" (in-memory only; codify in code for permanence)');
+    });
+    var addedTokens = addedMisrecognitions.map(function(m) { return m.token; }).join(', ');
+    return { match_method: 'phonetic', final_answer: joined, misrecognition_added: addedTokens };
+  }
+
+  return { match_method: 'substring', final_answer: joined, misrecognition_added: null };
+}
 
 async function storeFtbendColor(color, transcript, officeId, phase1, phase2) {
   var now = new Date();
