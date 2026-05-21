@@ -701,6 +701,24 @@ function wouldExceedCutoff(utcMoment, tz) {
   return minute > 0;
 }
 
+// Fort Bend cutoff: 9:30 AM CDT hard stop. Fort Bend hotlines close earlier
+// than Montgomery (~10-11 AM); 9:30 leaves buffer for the cutoff path to
+// notify users before lines close. At minute precision: 9:30 OK, 9:31+ NOT
+// OK. Always called with America/Chicago — Fort Bend is single-county/TZ.
+function wouldExceedFtbendCutoff(utcMoment, tz) {
+  var parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    hour: 'numeric',
+    hour12: false,
+    minute: 'numeric'
+  }).formatToParts(utcMoment);
+  var hour = parseInt(parts.find(function(p) { return p.type === 'hour'; }).value, 10);
+  var minute = parseInt(parts.find(function(p) { return p.type === 'minute'; }).value, 10);
+  if (hour < 9) return false;
+  if (hour > 9) return true;
+  return minute > 30;
+}
+
 // Given attempts_completed (1 = T0 done, 2 = T0+T1 done, ...), return the
 // UTC Date when the NEXT attempt should fire, or null if exhausted.
 function computeNextAttemptAt(attemptsCompleted) {
@@ -2685,36 +2703,105 @@ app.post('/webhook/recording', async function(req, res) {
         + ' method=' + crossCheck.match_method
         + (crossCheck.misrecognition_added ? ' added=' + crossCheck.misrecognition_added : ''));
 
-      // Decide final answer for user notification + storage.
-      //   verified (substring / phonetic / detection_already_correct) →
-      //     trust ground truth.
-      //   no_ground_truth or no_match → fall back to our_detection
-      //     (this is the current behavior; Commit B replaces these
-      //     fallback paths with retry).
-      var finalAnswer = crossCheck.final_answer || ourDetection;
+      // Look up existing retry row to derive thisAttemptNumber. If a row
+      // exists, this webhook is resolving a poller-fired retry → increment.
+      // If no row, this is attempt 1 (the original 5:05 cron-fired call).
+      var existingRetryResult = await supabase.from('fort_bend_retries').select('*').eq('office', officeId).maybeSingle();
+      var existingRetry = (existingRetryResult && existingRetryResult.data) || null;
+      var thisAttemptNumber = existingRetry ? existingRetry.attempt_number + 1 : 1;
 
-      config.result = finalAnswer;
-      await storeFtbendColor(finalAnswer, transcript, officeId, phases.phase1, phases.phase2);
-
-      // Log to fort_bend_learnings — best effort, don't block notify if it fails.
       var ftbendLearningDate = formatLocalDay(new Date(), 'America/Chicago');
       var ftbendOfficeHotline = (FTBEND_OFFICES[officeId] && FTBEND_OFFICES[officeId].number) || '';
+      var loggedMethod = crossCheck.match_method;
+      var loggedGroundTruth = groundTruthArr ? groundTruthArr.join(', ') : null;
+      var loggedMisrecognition = crossCheck.misrecognition_added;
+
+      // Decision branch. doCrossCheck's three confirmed methods short-circuit
+      // straight to notify+store+delete-row. no_ground_truth and no_match
+      // either queue a retry (within window) or final-fail (cutoff).
+      if (crossCheck.match_method === 'detection_already_correct'
+          || crossCheck.match_method === 'substring'
+          || crossCheck.match_method === 'phonetic') {
+        // CONFIRMED — notify, store, delete retry row if it exists.
+        config.result = crossCheck.final_answer;
+        await storeFtbendColor(crossCheck.final_answer, transcript, officeId, phases.phase1, phases.phase2);
+        await notifyFtbendOfficeUsers(officeId, config);
+        if (existingRetry) {
+          await supabase.from('fort_bend_retries').delete().eq('id', existingRetry.id).then(function() {}, function(e) {
+            console.error('[FTBEND-RETRY] delete-on-confirm failed for ' + officeId + ':', e.message);
+          });
+          console.log('[FTBEND-RETRY] Resolved ' + officeId + ' on attempt ' + thisAttemptNumber + ' (' + crossCheck.match_method + ') — retry row deleted');
+        }
+      } else {
+        // no_ground_truth or no_match. Two sub-paths: within window → upsert
+        // retry; past cutoff → cutoff_with_ground_truth or
+        // cutoff_no_ground_truth final-fail.
+        var nextAt = new Date(Date.now() + 5 * 60 * 1000);
+        if (wouldExceedFtbendCutoff(nextAt, 'America/Chicago')) {
+          // CUTOFF — try one last ground-truth fetch if we don't already have one.
+          var cutoffGT = (groundTruthArr && groundTruthArr.length > 0) ? groundTruthArr : null;
+          if (!cutoffGT) {
+            var lastFetch = await fetchFinishProbationGroundTruth(officeId).catch(function() { return { error: 'cutoff_fetch_failed' }; });
+            cutoffGT = (lastFetch && lastFetch.testGroups && lastFetch.testGroups.length > 0) ? lastFetch.testGroups : null;
+          }
+          if (cutoffGT) {
+            // cutoff_with_ground_truth — notify with disclaimer.
+            var joined = cutoffGT.join(', ');
+            config.result = joined;
+            config.phase1 = cutoffGT[0];
+            config.phase2 = cutoffGT[1] || null;
+            config.verifiedViaFinishProbation = true;
+            await storeFtbendColor(joined, transcript, officeId, cutoffGT[0], cutoffGT[1] || null);
+            await notifyFtbendOfficeUsers(officeId, config);
+            loggedMethod = 'cutoff_with_ground_truth';
+            loggedGroundTruth = joined;
+            console.log('[FTBEND-RETRY] Cutoff reached for ' + officeId + ' with ground truth — notified with disclaimer (attempt ' + thisAttemptNumber + ')');
+          } else {
+            // cutoff_no_ground_truth — final-fail.
+            await finalFailFortBendOffice(officeId, thisAttemptNumber, ftbendOfficeHotline);
+            loggedMethod = 'cutoff_no_ground_truth';
+            console.log('[FTBEND-RETRY] Cutoff reached for ' + officeId + ' with no ground truth — final-fail (attempt ' + thisAttemptNumber + ')');
+          }
+          if (existingRetry) {
+            await supabase.from('fort_bend_retries').delete().eq('id', existingRetry.id).then(function() {}, function(e) {
+              console.error('[FTBEND-RETRY] delete-on-cutoff failed for ' + officeId + ':', e.message);
+            });
+          }
+        } else {
+          // WITHIN WINDOW — upsert retry row. NO notify, NO storeFtbendColor.
+          // (Avoids dashboard UNKNOWN-flicker during the retry window.)
+          var upsertData = {
+            office: officeId,
+            attempt_number: thisAttemptNumber,
+            next_attempt_at: nextAt.toISOString(),
+            last_call_sid: config.callSid || null,
+            last_transcript: transcript,
+            last_our_detection: ourDetection,
+            last_ground_truth: loggedGroundTruth,
+            updated_at: new Date().toISOString()
+          };
+          await supabase.from('fort_bend_retries').upsert(upsertData, { onConflict: 'office' }).then(function() {}, function(e) {
+            console.error('[FTBEND-RETRY] upsert failed for ' + officeId + ':', e.message);
+          });
+          console.log('[FTBEND-RETRY] Queued retry for ' + officeId + ' at ' + nextAt.toISOString() + ' (attempt ' + thisAttemptNumber + ' resolved as ' + crossCheck.match_method + ', next will be ' + (thisAttemptNumber + 1) + ')');
+        }
+      }
+
+      // ALWAYS log to fort_bend_learnings (best-effort). loggedMethod may have
+      // been overridden by a cutoff branch above.
       await supabase.from('fort_bend_learnings').insert({
         date: ftbendLearningDate,
         office: officeId,
         hotline_number: ftbendOfficeHotline,
         raw_transcript: transcript,
         our_detection: ourDetection,
-        ground_truth: groundTruthArr ? groundTruthArr.join(', ') : null,
-        match_method: crossCheck.match_method,
-        misrecognition_added: crossCheck.misrecognition_added,
-        attempt_number: 1
+        ground_truth: loggedGroundTruth,
+        match_method: loggedMethod,
+        misrecognition_added: loggedMisrecognition,
+        attempt_number: thisAttemptNumber
       }).then(function() {}, function(e) {
         console.error('[FTBEND-XCHECK] fort_bend_learnings insert failed for ' + officeId + ':', e.message);
       });
-
-      // Notify Fort Bend users for this office
-      await notifyFtbendOfficeUsers(officeId, config);
     } else {
       // Montgomery - detect test/no-test. PIN_EXPIRED check runs FIRST so an
       // expired-PIN announcement isn't accidentally classified as UNKNOWN
@@ -4254,8 +4341,14 @@ async function notifyFtbendOfficeUsers(officeId, config) {
         } else {
           personalMsg = '🎨 Today\'s Color: ' + todayDisplay + '\n\nFort Bend ' + office.name + '\n\nCheck if this is your assigned color.\n\n- ProbationCall.com';
         }
-        
-        console.log('[FTBEND] Sending ' + oid + ' notification to ' + s.user_id.slice(0,8) + ' (user color: ' + (userColor || 'none') + ', today: ' + todayDisplay + ')');
+
+        // Cutoff path used finishprobation.com because our own call could
+        // not confirm. Append a disclaimer line so users know to verify.
+        if (cfg.verifiedViaFinishProbation) {
+          personalMsg = personalMsg.replace(/\n\n- ProbationCall\.com$/, '\n\n(Verified via finishprobation.com — our call could not confirm today. Verify by phone if uncertain.)\n\n- ProbationCall.com');
+        }
+
+        console.log('[FTBEND] Sending ' + oid + ' notification to ' + s.user_id.slice(0,8) + ' (user color: ' + (userColor || 'none') + ', today: ' + todayDisplay + (cfg.verifiedViaFinishProbation ? ', verified=true' : '') + ')');
         await notify(s.notify_number, s.notify_email, s.notify_method, personalMsg, 'ftbend_daily');
         // Don't bill when we couldn't detect today's color (UNKNOWN).
         // Key includes user_id so per-user billing is independent.
@@ -4293,6 +4386,39 @@ async function notifyFtbendOfficeUsers(officeId, config) {
       }, delay);
     })(sched, delayMs, null, officeId, config);
   }
+}
+
+// Cutoff_no_ground_truth path: 9:30 AM CDT reached and finishprobation.com
+// still has no data. Notify subscribed users of the final failure with the
+// attempt count so they know we genuinely tried. Does NOT call
+// storeFtbendColor (no answer to store) and does NOT bill any credit.
+async function finalFailFortBendOffice(officeId, attemptCount, hotlineNumber) {
+  var office = FTBEND_OFFICES[officeId] || { name: officeId, number: hotlineNumber };
+  var result = await supabase.from('user_schedules')
+    .select('*')
+    .eq('county', 'ftbend')
+    .eq('ftbend_office', officeId)
+    .eq('enabled', true);
+  if (!result.data || result.data.length === 0) {
+    console.log('[FTBEND-RETRY] Final-fail: no users subscribed to ' + officeId);
+    return;
+  }
+  var phoneForVerify = (office && office.number) || hotlineNumber || '';
+  var msg = '⚠️ Could not determine today\'s color for Fort Bend ' + office.name
+    + '\n\nWe tried ' + attemptCount + ' times this morning but could not get a clear result, '
+    + 'and finishprobation.com hasn\'t published either. Please call the hotline yourself to verify: '
+    + phoneForVerify
+    + '\n\n- ProbationCall.com';
+  for (var i = 0; i < result.data.length; i++) {
+    (function(s, idx) {
+      setTimeout(async function() {
+        await notify(s.notify_number, s.notify_email, s.notify_method, msg, 'ftbend_final_fail').catch(function(e) {
+          console.error('[FTBEND-RETRY] Final-fail notify error for ' + s.user_id.slice(0, 8) + ':', e.message);
+        });
+      }, idx * 1000);
+    })(result.data[i], i);
+  }
+  console.log('[FTBEND-RETRY] Final-fail notifications dispatched for ' + officeId + ' to ' + result.data.length + ' users after ' + attemptCount + ' attempts');
 }
 
 // Cron job - 5:05 AM CST every day, calls all offices
@@ -4744,6 +4870,116 @@ cron.schedule('* * * * *', async function() {
     } catch (e) {
       console.error('[RETRY-POLLER] Failed to fire retry for ' + userId.slice(0, 8) + ':', e.message);
       // Lease still expires in 10 min and the poller will try again.
+    }
+  }
+
+  // ========== FORT BEND RETRY POLLER BRANCH ==========
+  // Additive — doesn't touch the pending_retries loop above. Scans
+  // fort_bend_retries for due rows. Per office: orphan-skip if a confirmed
+  // answer already landed today, cutoff-handle if past 9:30 CDT, else
+  // lease+fire. Same per-minute cadence as Montgomery.
+  var ftbDueResult = await supabase.from('fort_bend_retries')
+    .select('*')
+    .lte('next_attempt_at', new Date().toISOString());
+  if (ftbDueResult.error) {
+    console.error('[FTBEND-RETRY-POLLER] Failed to scan fort_bend_retries:', ftbDueResult.error.message);
+  } else if (ftbDueResult.data && ftbDueResult.data.length > 0) {
+    for (var k = 0; k < ftbDueResult.data.length; k++) {
+      var ftbRow = ftbDueResult.data[k];
+      var ftbOfficeId = ftbRow.office;
+      var ftbOffice = FTBEND_OFFICES[ftbOfficeId];
+      if (!ftbOffice) {
+        console.error('[FTBEND-RETRY-POLLER] Unknown office "' + ftbOfficeId + '" in retries row ' + ftbRow.id + ' — deleting');
+        await supabase.from('fort_bend_retries').delete().eq('id', ftbRow.id);
+        continue;
+      }
+
+      // Orphan skip — confirmed answer already logged today via another path?
+      var ftbTodayLocal = formatLocalDay(new Date(), 'America/Chicago');
+      var confirmedQuery = await supabase.from('fort_bend_learnings')
+        .select('id')
+        .eq('date', ftbTodayLocal)
+        .eq('office', ftbOfficeId)
+        .in('match_method', ['detection_already_correct', 'substring', 'phonetic'])
+        .limit(1);
+      if (confirmedQuery.data && confirmedQuery.data.length > 0) {
+        console.log('[FTBEND-RETRY-POLLER] Orphan retry row for ' + ftbOfficeId + ' — confirmed answer already logged today. Deleting.');
+        await supabase.from('fort_bend_retries').delete().eq('id', ftbRow.id);
+        continue;
+      }
+
+      // Cutoff check at fire-time. If now is past 9:30 CDT, take cutoff path
+      // (final fetch + notify-with-disclaimer OR final-fail) instead of
+      // firing another Twilio call.
+      if (wouldExceedFtbendCutoff(new Date(), 'America/Chicago')) {
+        console.log('[FTBEND-RETRY-POLLER] Cutoff reached for ' + ftbOfficeId + ' — handling final outcome');
+        var ftbHotline = ftbOffice.number || '';
+        var ftbLastFetch = await fetchFinishProbationGroundTruth(ftbOfficeId).catch(function() { return null; });
+        var ftbCutoffGT = (ftbLastFetch && ftbLastFetch.testGroups && ftbLastFetch.testGroups.length > 0) ? ftbLastFetch.testGroups : null;
+        if (ftbCutoffGT) {
+          var ftbJoined = ftbCutoffGT.join(', ');
+          await storeFtbendColor(ftbJoined, ftbRow.last_transcript || '', ftbOfficeId, ftbCutoffGT[0], ftbCutoffGT[1] || null);
+          await notifyFtbendOfficeUsers(ftbOfficeId, {
+            result: ftbJoined,
+            phase1: ftbCutoffGT[0],
+            phase2: ftbCutoffGT[1] || null,
+            hasPhases: !!(ftbOffice && ftbOffice.hasPhases),
+            verifiedViaFinishProbation: true
+          });
+          await supabase.from('fort_bend_learnings').insert({
+            date: ftbTodayLocal,
+            office: ftbOfficeId,
+            hotline_number: ftbHotline,
+            raw_transcript: ftbRow.last_transcript,
+            our_detection: ftbRow.last_our_detection,
+            ground_truth: ftbJoined,
+            match_method: 'cutoff_with_ground_truth',
+            misrecognition_added: null,
+            attempt_number: ftbRow.attempt_number
+          }).then(function() {}, function(e) {
+            console.error('[FTBEND-RETRY-POLLER] learnings insert failed:', e.message);
+          });
+          console.log('[FTBEND-RETRY-POLLER] Cutoff_with_ground_truth for ' + ftbOfficeId + ' (' + ftbJoined + ') after ' + ftbRow.attempt_number + ' attempts');
+        } else {
+          await finalFailFortBendOffice(ftbOfficeId, ftbRow.attempt_number, ftbHotline);
+          await supabase.from('fort_bend_learnings').insert({
+            date: ftbTodayLocal,
+            office: ftbOfficeId,
+            hotline_number: ftbHotline,
+            raw_transcript: ftbRow.last_transcript,
+            our_detection: ftbRow.last_our_detection,
+            ground_truth: ftbRow.last_ground_truth,
+            match_method: 'cutoff_no_ground_truth',
+            misrecognition_added: null,
+            attempt_number: ftbRow.attempt_number
+          }).then(function() {}, function(e) {
+            console.error('[FTBEND-RETRY-POLLER] learnings insert failed:', e.message);
+          });
+          console.log('[FTBEND-RETRY-POLLER] Cutoff_no_ground_truth for ' + ftbOfficeId + ' after ' + ftbRow.attempt_number + ' attempts');
+        }
+        await supabase.from('fort_bend_retries').delete().eq('id', ftbRow.id);
+        continue;
+      }
+
+      // Lease — bump next_attempt_at to +10 min so the next poll tick
+      // doesn't double-fire while the call is in flight. Webhook handler
+      // will update or delete the row on resolution.
+      var ftbLeaseUntil = new Date(Date.now() + 10 * 60 * 1000);
+      var ftbLeaseUpd = await supabase.from('fort_bend_retries')
+        .update({ next_attempt_at: ftbLeaseUntil.toISOString(), updated_at: new Date().toISOString() })
+        .eq('id', ftbRow.id);
+      if (ftbLeaseUpd.error) {
+        console.error('[FTBEND-RETRY-POLLER] Lease set failed for ' + ftbOfficeId + ':', ftbLeaseUpd.error.message);
+        continue;
+      }
+
+      console.log('[FTBEND-RETRY-POLLER] Firing retry for ' + ftbOfficeId + ' (attempt ' + (ftbRow.attempt_number + 1) + ')');
+      try {
+        await ftbendCallOffice(ftbOfficeId, ftbOffice);
+      } catch (e) {
+        console.error('[FTBEND-RETRY-POLLER] Failed to fire for ' + ftbOfficeId + ':', e.message);
+        // Lease expires in 10 min and the poller will try again.
+      }
     }
   }
 }, { timezone: 'America/Chicago' });
