@@ -1116,6 +1116,18 @@ function loadUser() {
         document.getElementById('noSchedule').classList.add('active');
         document.getElementById('scheduleDetails').style.display = 'none';
         document.getElementById('noSchedInfo').style.display = 'block';
+        // Returning Fort Bend user (ftbend_access=true) with no current
+        // schedule — likely had one auto-deleted by the NO_CREDITS path.
+        // Pre-select Fort Bend in the County dropdown so they don't have
+        // to re-pick it. Calls updateCountyUI to swap PIN/office field
+        // visibility to match.
+        if (d.ftbend_access) {
+          var sc = document.getElementById('schedCounty');
+          if (sc) sc.value = 'ftbend';
+          var oc = document.getElementById('onboardCounty');
+          if (oc) oc.value = 'ftbend';
+          if (typeof updateCountyUI === 'function') updateCountyUI('schedCounty', 'schedPin');
+        }
       }
       
       window.callHistoryData = d.history || [];

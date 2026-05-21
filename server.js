@@ -1511,7 +1511,18 @@ app.post('/api/schedule', auth, async function(req, res) {
     console.error('[SCHEDULE] Error:', result.error);
     return res.status(500).json({ error: result.error.message || 'Database error' });
   }
-  
+
+  // Persistent "this user is Fort Bend" memory. Set ftbend_access=true so
+  // the Ft Bend tab stays visible and the County dropdown defaults to Ft
+  // Bend even after the NO_CREDITS path (server.js ~line 4226) auto-deletes
+  // the user_schedules row. Only flips false->true; we don't unset on
+  // county switch since revoking tab access would be a UX surprise.
+  if (county === 'ftbend') {
+    await supabase.from('profiles').update({ ftbend_access: true }).eq('id', req.user.id).then(function() {}, function(e) {
+      console.error('[SCHEDULE] Failed to set ftbend_access for ' + req.user.id.slice(0, 8) + ':', e.message);
+    });
+  }
+
   rescheduleUser(req.user.id, data);
   res.json({ success: true });
 });
