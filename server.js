@@ -4778,15 +4778,20 @@ cron.schedule('45 * * * *', async function() {
 // pending_retries rows survive a container restart, and this poller
 // resumes work on the next minute boundary after boot.
 cron.schedule('* * * * *', async function() {
+  // === MONTGOMERY pending_retries scan ===
+  // (Wrapped in else-if instead of early-return so the FORT BEND BRANCH
+  // at the bottom of this callback executes every tick regardless of
+  // Montgomery state. Pre-Commit-B, the early-return was harmless
+  // because Montgomery was the only retry path. After Commit B added the
+  // Fort Bend branch, the early-return silently bypassed it whenever
+  // Montgomery had zero due rows — which is most ticks. Bug landed in
+  // 341be67 on 2026-05-21; first noticed 2026-05-29.)
   var dueResult = await supabase.from('pending_retries')
     .select('*')
     .lte('next_attempt_at', new Date().toISOString());
   if (dueResult.error) {
     console.error('[RETRY-POLLER] Failed to scan pending_retries:', dueResult.error.message);
-    return;
-  }
-  if (!dueResult.data || dueResult.data.length === 0) return;
-
+  } else if (dueResult.data && dueResult.data.length > 0) {
   for (var i = 0; i < dueResult.data.length; i++) {
     var row = dueResult.data[i];
     var userId = row.user_id;
@@ -4872,6 +4877,7 @@ cron.schedule('* * * * *', async function() {
       // Lease still expires in 10 min and the poller will try again.
     }
   }
+  } // end of `else if (dueResult.data && dueResult.data.length > 0)` Montgomery block
 
   // ========== FORT BEND RETRY POLLER BRANCH ==========
   // Additive — doesn't touch the pending_retries loop above. Scans
