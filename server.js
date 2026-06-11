@@ -3288,9 +3288,15 @@ async function checkCallHealth() {
 
     var missed = due.filter(function(s) { return !ranUserIds[s.user_id]; });
 
-    // Only alert if a meaningful fraction is missing AND it's at least 3 users.
-    if (missed.length < 3) return;
-    if (missed.length / due.length < 0.25) return;
+    // Noise thresholds scale with fleet size. With < 8 due users the old
+    // "at least 3 missed" floor meant a single user's calls could fail
+    // every day forever without an alert — at small scale every miss is
+    // worth a ping. Larger fleets keep the fraction+floor damping.
+    if (missed.length === 0) return;
+    if (due.length >= 8) {
+      if (missed.length < 3) return;
+      if (missed.length / due.length < 0.25) return;
+    }
 
     var adminResult = await supabase.from('profiles').select('id').eq('is_admin', true);
     var admins = adminResult.data || [];
