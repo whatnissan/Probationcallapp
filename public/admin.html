@@ -28,7 +28,15 @@
 </div>
 <div id="massTextPreview" style="display:none;margin-top:10px;padding:10px;background:rgba(0,0,0,0.3);border-radius:6px;font-size:0.85rem;white-space:pre-wrap;color:#ccc"></div>
 <div style="margin-top:16px;padding-top:14px;border-top:1px solid rgba(255,255,255,0.08)">
-<div style="font-size:0.85rem;color:#8892b0;margin-bottom:8px">Fort Bend recovery — pull today's color from finishprobation.com and notify subscribers (no phone call). Use when an office is stuck empty.</div>
+<div style="font-size:0.85rem;color:#8892b0;margin-bottom:8px">Fort Bend — trigger a live hotline call. Result runs through detection + the finishprobation cross-check; if the call can't confirm it re-dials until a clear result or the 9:30 AM CDT cutoff, then resolves from finishprobation.</div>
+<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+<button class="btn btn-primary" data-ftcall="missouri" style="padding:8px 14px">📞 Call Missouri City</button>
+<button class="btn btn-primary" data-ftcall="rosenberg" style="padding:8px 14px">📞 Call Rosenberg</button>
+<button class="btn btn-primary" data-ftcall="rosenberg2" style="padding:8px 14px">📞 Call Rosenberg 2</button>
+<button class="btn btn-secondary" data-ftcall="" style="padding:8px 14px">📞 Call All Offices</button>
+<span id="ftbendCallStatus" style="color:#8892b0;font-size:0.85rem"></span>
+</div>
+<div style="font-size:0.85rem;color:#8892b0;margin-bottom:8px">Or skip the call and pull today's color straight from finishprobation.com (instant, no dialing). Use when an office is stuck empty.</div>
 <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
 <button class="btn btn-teal" id="ftbendPopulate" style="padding:10px 20px">🎨 Populate Fort Bend from finishprobation</button>
 <span id="ftbendPopulateStatus" style="color:#8892b0;font-size:0.85rem"></span>
@@ -166,6 +174,18 @@ document.getElementById('ftbendPopulate').onclick=function(){
     st.innerHTML=(d.results||[]).map(function(x){var c=x.status==='populated'?'#22c55e':'#f59e0b';return '<span style="color:'+c+'">'+x.office+': '+x.status+(x.color?' ('+x.color+')':'')+'</span>'}).join(' | ');
   }).catch(function(e){btn.disabled=false;btn.textContent='🎨 Populate Fort Bend from finishprobation';st.textContent='Error: '+e.message});
 };
+Array.prototype.forEach.call(document.querySelectorAll('[data-ftcall]'),function(b){
+  b.onclick=function(){
+    var office=this.getAttribute('data-ftcall');
+    var label=office?('Fort Bend '+office):'ALL Fort Bend offices';
+    if(!confirm('Place a live hotline call for '+label+' now? It will re-dial until a clear result or the 9:30 AM CDT cutoff, then fall back to finishprobation.'))return;
+    var st=document.getElementById('ftbendCallStatus');st.textContent='Calling '+label+'…';
+    fetch('/api/admin/ftbend-call',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify(office?{office:office}:{})}).then(function(r){return r.json()}).then(function(d){
+      if(d.error){st.textContent='Error: '+d.error;return}
+      st.innerHTML='<span style="color:#22c55e">✅ Call placed for '+(d.office||'all')+' — watch the office color update shortly (or by 9:30 cutoff).</span>';
+    }).catch(function(e){st.textContent='Error: '+e.message});
+  };
+});
 function loadFullCalls(uid){fetch('/api/admin/user/'+uid+'/calls',{headers:{Authorization:'Bearer '+token}}).then(function(r){return r.json()}).then(function(d){var ac=d.calls||[];var el=document.getElementById('fullCallsArea');if(!el)return;var ch='<div class="section-title">All Calls ('+ac.length+')</div><div style="max-height:400px;overflow-y:auto"><table><thead><tr><th>Date</th><th>Result</th></tr></thead><tbody>';ac.forEach(function(c){var b=c.result==='NO_TEST'?'active':c.result==='MUST_TEST'?'disabled':'pending';ch+='<tr><td>'+new Date(c.created_at).toLocaleString()+'</td><td><span class="badge '+b+'">'+c.result+'</span></td></tr>'});ch+='</tbody></table></div>';el.innerHTML=ch}).catch(function(){})}
 
 // Affiliate Transfer Issues — calls existing endpoints, no money logic here.

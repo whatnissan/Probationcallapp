@@ -3639,6 +3639,29 @@ app.post('/api/admin/trigger-ftbend', adminAuth, async function(req, res) {
   res.json({ success: true, message: 'Fort Bend call triggered' });
 });
 
+// Admin: trigger a live Fort Bend hotline call for ONE office (or all). The
+// result flows through the normal pipeline — detection + finishprobation
+// cross-check; if it doesn't confirm, a fort_bend_retries row is queued and
+// the per-minute poller re-dials until a confident result OR the 9:30 AM CDT
+// cutoff, at which point it resolves from finishprobation.com (or final-fail
+// if even that has nothing). Pass { office: 'rosenberg' } for one office, or
+// omit for all three. This is the "keep calling until we get an answer"
+// button; the populate-from-truth endpoint is the "skip the call, just take
+// finishprobation" button.
+app.post('/api/admin/ftbend-call', adminAuth, async function(req, res) {
+  var only = req.body && req.body.office;
+  if (only) {
+    var office = FTBEND_OFFICES[only];
+    if (!office) return res.status(400).json({ error: 'Unknown office: ' + only });
+    console.log('[FTBEND] Admin triggered single-office call: ' + only);
+    ftbendCallOffice(only, office); // fire-and-forget; pipeline handles the rest
+    return res.json({ success: true, office: only, status: 'calling' });
+  }
+  console.log('[FTBEND] Admin triggered call for ALL offices');
+  ftbendDailyColorCall();
+  res.json({ success: true, office: 'all', status: 'calling' });
+});
+
 // Admin recovery: populate an office (or all) DIRECTLY from
 // finishprobation.com — no phone call. This is the cutoff-with-ground-truth
 // path exposed on demand, for mornings where our own calls dead-ended and
