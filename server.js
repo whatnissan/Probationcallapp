@@ -3561,36 +3561,74 @@ app.post('/api/admin/trigger-ftbend', adminAuth, async function(req, res) {
 // and clears any stale fort_bend_retries row. Billing idempotency is the
 // same per-user/office/day key used by the normal path, so re-running can't
 // double-charge. Pass { office: 'rosenberg' } to target one, or omit for all.
+// Populate one office directly from finishprobation.com: fetch ground
+// truth, and if present store the color + notify subscribers (with the
+// verified-via disclaimer) and clear any stale retry row. Returns a small
+// status object. Shared by the admin recovery endpoint and the pre-cutoff
+// safety-net cron. Billing idempotency (per user/office/day) lives in
+// notifyFtbendOfficeUsers, so calling this twice can't double-charge.
+async function populateFtbendOfficeFromTruth(officeId) {
+  var office = FTBEND_OFFICES[officeId];
+  if (!office) return { office: officeId, status: 'unknown_office' };
+  var gt = await fetchFinishProbationGroundTruth(officeId).catch(function(e) { return { error: 'fetch_threw:' + e.message }; });
+  var groups = (gt && gt.testGroups && gt.testGroups.length > 0) ? gt.testGroups : null;
+  if (!groups) {
+    return { office: officeId, status: 'no_ground_truth', detail: gt && gt.error };
+  }
+  var joined = groups.join(', ');
+  await storeFtbendColor(joined, gt.transcript || '(finishprobation.com)', officeId, groups[0], groups[1] || null);
+  await notifyFtbendOfficeUsers(officeId, {
+    result: joined,
+    phase1: groups[0],
+    phase2: groups[1] || null,
+    hasPhases: !!office.hasPhases,
+    verifiedViaFinishProbation: true
+  });
+  await supabase.from('fort_bend_retries').delete().eq('office', officeId).then(function() {}, function() {});
+  console.log('[FTBEND] Populated ' + officeId + ' from finishprobation.com: ' + joined);
+  return { office: officeId, status: 'populated', color: joined };
+}
+
 app.post('/api/admin/ftbend-populate-from-truth', adminAuth, async function(req, res) {
   var only = req.body && req.body.office;
   var officeIds = only ? [only] : Object.keys(FTBEND_OFFICES);
   var out = [];
   for (var i = 0; i < officeIds.length; i++) {
-    var officeId = officeIds[i];
-    var office = FTBEND_OFFICES[officeId];
-    if (!office) { out.push({ office: officeId, status: 'unknown_office' }); continue; }
-    var gt = await fetchFinishProbationGroundTruth(officeId).catch(function(e) { return { error: 'fetch_threw:' + e.message }; });
-    var groups = (gt && gt.testGroups && gt.testGroups.length > 0) ? gt.testGroups : null;
-    if (!groups) {
-      out.push({ office: officeId, status: 'no_ground_truth', detail: gt && gt.error });
-      continue;
-    }
-    var joined = groups.join(', ');
-    await storeFtbendColor(joined, gt.transcript || '(admin: finishprobation.com)', officeId, groups[0], groups[1] || null);
-    await notifyFtbendOfficeUsers(officeId, {
-      result: joined,
-      phase1: groups[0],
-      phase2: groups[1] || null,
-      hasPhases: !!office.hasPhases,
-      verifiedViaFinishProbation: true
-    });
-    // Clear any in-flight retry row so the poller doesn't also act on it.
-    await supabase.from('fort_bend_retries').delete().eq('office', officeId).then(function() {}, function() {});
-    console.log('[FTBEND] Admin populated ' + officeId + ' from finishprobation.com: ' + joined);
-    out.push({ office: officeId, status: 'populated', color: joined });
+    out.push(await populateFtbendOfficeFromTruth(officeIds[i]));
   }
   res.json({ success: true, results: out });
 });
+
+// Pre-cutoff safety net — 9:25 AM CDT, five minutes before the 9:30 hard
+// stop. For any office with no daily_county_status row for today, pull
+// finishprobation.com and populate it. This self-heals the exact failure
+// behind the 2026-06-11 incident (all call paths dead-ended, office left
+// empty) WITHOUT depending on the call path or an admin clicking anything.
+// Idempotent: offices already populated today are skipped, and the
+// per-user/office/day billing key prevents any double-charge.
+cron.schedule('25 9 * * *', async function() {
+  console.log('[FTBEND-SAFETY] Pre-cutoff sweep — checking for empty offices...');
+  var today = formatLocalDay(new Date(), 'America/Chicago');
+  var officeIds = Object.keys(FTBEND_OFFICES);
+  for (var i = 0; i < officeIds.length; i++) {
+    var officeId = officeIds[i];
+    var countyKey = 'ftbend_' + officeId;
+    var existing = await supabase.from('daily_county_status')
+      .select('id, color')
+      .eq('county', countyKey)
+      .eq('date', today)
+      .maybeSingle();
+    if (existing.data && existing.data.color && existing.data.color !== 'UNKNOWN') {
+      continue; // already have a real answer for this office today
+    }
+    console.log('[FTBEND-SAFETY] ' + officeId + ' empty for ' + today + ' — attempting finishprobation populate');
+    var result = await populateFtbendOfficeFromTruth(officeId).catch(function(e) {
+      return { office: officeId, status: 'error', detail: e.message };
+    });
+    console.log('[FTBEND-SAFETY] ' + officeId + ' -> ' + result.status + (result.color ? ' (' + result.color + ')' : ''));
+  }
+  console.log('[FTBEND-SAFETY] Pre-cutoff sweep complete');
+}, { timezone: 'America/Chicago' });
 
 // Manually trigger a call for a specific user
 app.post('/api/admin/trigger-call/:userId', adminAuth, async function(req, res) {
