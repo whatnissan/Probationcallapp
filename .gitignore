@@ -5,6 +5,11 @@ node_modules/
 .env
 .env.local
 .env.*.local
+.env.production
+
+# Stale copies — never track backups of live code
+*.bak
+*.backup
 
 # Logs
 logs
