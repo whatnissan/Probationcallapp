@@ -4453,10 +4453,55 @@ app.get("/api/ftbend/colors", auth, async function(req, res) {
   res.json({ colors: result.data || [], offices: FTBEND_OFFICES });
 });
 
-app.get('/api/recording/:recordingSid', function(req, res) {
+// Authenticated recording proxy. <audio> tags can't send an Authorization
+// header, so a Supabase access token is also accepted via ?token=. A user
+// may stream a recording only if it belongs to one of their own
+// call_history rows, is a county-wide Fort Bend daily recording, or they
+// are an admin. Previously this endpoint was unauthenticated and proxied
+// ANY recording in the Twilio account to anyone holding its SID.
+app.get('/api/recording/:recordingSid', async function(req, res) {
   var recordingSid = req.params.recordingSid;
+  if (!/^RE[a-f0-9]{32}$/.test(recordingSid)) {
+    return res.status(400).json({ error: 'Invalid recording id' });
+  }
+
+  var authHeader = req.headers.authorization;
+  var token = req.query.token || (authHeader ? authHeader.replace('Bearer ', '') : null);
+  if (!token) return res.status(401).json({ error: 'Auth required' });
+  var authRes;
+  try {
+    authRes = await supabase.auth.getUser(token);
+  } catch (e) {
+    return res.status(500).json({ error: 'Auth error' });
+  }
+  if (authRes.error || !authRes.data || !authRes.data.user) {
+    return res.status(401).json({ error: 'Invalid token' });
+  }
+  var userId = authRes.data.user.id;
+
+  var allowed = false;
+  var own = await supabase.from('call_history')
+    .select('id')
+    .eq('user_id', userId)
+    .ilike('recording_url', '%' + recordingSid + '%')
+    .limit(1);
+  if (own.data && own.data.length > 0) allowed = true;
+  if (!allowed) {
+    // Fort Bend daily recordings are county-wide info — any authed user.
+    var county = await supabase.from('daily_county_status')
+      .select('id')
+      .ilike('recording_url', '%' + recordingSid + '%')
+      .limit(1);
+    if (county.data && county.data.length > 0) allowed = true;
+  }
+  if (!allowed) {
+    var prof = await supabase.from('profiles').select('is_admin, is_disabled').eq('id', userId).single();
+    if (prof.data && prof.data.is_admin && !prof.data.is_disabled) allowed = true;
+  }
+  if (!allowed) return res.status(403).json({ error: 'Not your recording' });
+
   var https = require('https');
-  
+
   var options = {
     hostname: 'api.twilio.com',
     path: '/2010-04-01/Accounts/' + process.env.TWILIO_ACCOUNT_SID + '/Recordings/' + recordingSid + '.mp3',
@@ -4476,6 +4521,19 @@ app.get('/api/recording/:recordingSid', function(req, res) {
 });
 
 app.get("/api/ftbend/today", async function(req, res) {
+  // Colors stay public (cheap to share, useful for the landing page), but
+  // transcript and recording_url are auth-only — recording SIDs feed
+  // /api/recording and must not be handed to the open internet.
+  var includePrivate = false;
+  var tkHeader = req.headers.authorization;
+  var tk = tkHeader ? tkHeader.replace('Bearer ', '') : null;
+  if (tk) {
+    try {
+      var tkRes = await supabase.auth.getUser(tk);
+      if (!tkRes.error && tkRes.data && tkRes.data.user) includePrivate = true;
+    } catch (e) { /* treat as unauthenticated */ }
+  }
+
   var now = new Date();
   var cst = new Date(now.toLocaleString("en-US", { timeZone: "America/Chicago" }));
   var hour = cst.getHours();
@@ -4501,8 +4559,8 @@ app.get("/api/ftbend/today", async function(req, res) {
         phase1: r.phase1_color,
         phase2: r.phase2_color,
         office_name: r.office_name,
-        recording_url: r.recording_url,
-        transcript: r.transcript
+        recording_url: includePrivate ? r.recording_url : null,
+        transcript: includePrivate ? r.transcript : null
       };
     });
   }

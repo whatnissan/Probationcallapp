@@ -802,7 +802,7 @@ function selectSchedMethod(method) {
 
 
 function loadFtbendColors() {
-  fetch("/api/ftbend/today")
+  fetch("/api/ftbend/today", token ? { headers: { Authorization: "Bearer " + token } } : {})
     .then(function(r) { return r.json(); })
     .then(function(d) {
       document.getElementById("colorDate").textContent = "Date: " + d.date;
@@ -846,7 +846,7 @@ function loadFtbendColors() {
         if (officeData && officeData.recording_url) {
           var recSid = officeData.recording_url.match(/RE[a-f0-9]{32}/);
           if (recSid) {
-            audioEl.src = "/api/recording/" + recSid[0];
+            audioEl.src = "/api/recording/" + recSid[0] + "?token=" + encodeURIComponent(token || "");
             recDiv.style.display = "block";
           }
         } else {
@@ -2030,7 +2030,7 @@ function renderCallHistory(filter) {
     var recUrl = h.recording_url;
     if (recUrl && recUrl.includes("Recordings/")) {
       var sid = recUrl.match(/Recordings\/([A-Za-z0-9]+)/);
-      if (sid) recUrl = "/api/recording/" + sid[1];
+      if (sid) recUrl = "/api/recording/" + sid[1] + "?token=" + encodeURIComponent(token || "");
     }
     var recording = h.recording_url ? "<div class='audio-player'><audio controls preload='none' src='" + recUrl + "'></audio></div>" : "";
     var transcript = h.transcript ? "<div class='history-transcript'>\"" + h.transcript + "\"</div>" : "";
