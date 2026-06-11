@@ -2578,9 +2578,7 @@ app.post('/webhook/recording', validateTwilio, async function(req, res) {
 
   // Save recording URL first
   if (config.isFtbendDaily) {
-    var now = new Date();
-    var cst = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
-    var today = cst.getFullYear() + '-' + String(cst.getMonth() + 1).padStart(2, '0') + '-' + String(cst.getDate()).padStart(2, '0');
+    var today = formatLocalDay(new Date(), 'America/Chicago');
     var countyKey = 'ftbend_' + (config.officeId || 'missouri');
     await supabase.from('daily_county_status')
       .update({ recording_url: mp3Url })
@@ -3863,10 +3861,8 @@ app.post('/api/admin/trigger-call/:userId', adminAuth, async function(req, res) 
   console.log('[ADMIN] Triggering call for user ' + userId.slice(0,8) + ' county: ' + sched.county);
   
   if (sched.county === 'ftbend') {
-    var now = new Date();
-    var cst = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
-    var today = cst.getFullYear() + '-' + String(cst.getMonth() + 1).padStart(2, '0') + '-' + String(cst.getDate()).padStart(2, '0');
-    
+    var today = formatLocalDay(new Date(), 'America/Chicago');
+
     var colorResult = await supabase.from('daily_county_status')
       .select('color')
       .eq('county', 'ftbend')
@@ -4357,10 +4353,8 @@ async function fetchFinishProbationGroundTruth(officeId) {
 // phoneticMatch and doCrossCheck moved to lib/detection.js
 
 async function storeFtbendColor(color, transcript, officeId, phase1, phase2) {
-  var now = new Date();
-  var cst = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
-  var today = cst.getFullYear() + '-' + String(cst.getMonth() + 1).padStart(2, '0') + '-' + String(cst.getDate()).padStart(2, '0');
-  
+  var today = formatLocalDay(new Date(), 'America/Chicago');
+
   var office = FTBEND_OFFICES[officeId] || { name: officeId };
   console.log('[FTBEND] Storing ' + office.name + ' color: ' + color + ' for ' + today);
   
