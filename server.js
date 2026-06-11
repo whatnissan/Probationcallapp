@@ -53,6 +53,11 @@ const brevoMail = {
       }
     } catch (error) {
       console.error("[EMAIL] ❌ Brevo Error:", error.message);
+      // Email has silently broken for days twice (Brevo IP allowlist vs
+      // Railway's dynamic egress IP). Fire a throttled admin alert so an
+      // outage is caught in minutes, not days. Fire-and-forget; never let
+      // the alert path interfere with the original throw.
+      alertAdminEmailFailure(error.message);
       throw error;
     }
   }
@@ -3197,6 +3202,34 @@ async function sendSMS(to, message, callId) {
   } catch (e) {
     log(callId, 'SMS failed: ' + e.message, 'error');
     return { success: false, error: e.message };
+  }
+}
+
+// One-per-day admin SMS when email sending fails. Email has gone down
+// silently for days at a time (Brevo's Authorised-IPs restriction vs
+// Railway's dynamic egress IP); this surfaces an outage immediately.
+// Throttled to one alert per calendar day (America/Chicago) so a full-day
+// outage = exactly one SMS, not one per failed send. Admin-only; never
+// touches user delivery.
+var _emailAlertDate = null;
+async function alertAdminEmailFailure(errMsg) {
+  try {
+    var today = formatLocalDay(new Date(), 'America/Chicago');
+    if (_emailAlertDate === today) return; // already alerted today
+    _emailAlertDate = today;
+    var admins = await supabase.from('profiles').select('id').eq('is_admin', true);
+    if (!admins.data) return;
+    var body = '🚨 ADMIN: Email sending is FAILING.\n\nFirst failure today:\n' + String(errMsg || '').slice(0, 180) +
+      '\n\nLikely Brevo Authorised-IPs again — disable the IP restriction in Brevo (the API key is the credential). No emails go out until fixed.';
+    for (var i = 0; i < admins.data.length; i++) {
+      var as = await supabase.from('user_schedules').select('notify_number').eq('user_id', admins.data[i].id).single();
+      if (as.data && as.data.notify_number) {
+        await sendSMS(as.data.notify_number, body, 'email_down_admin').catch(function() {});
+      }
+    }
+    console.log('[EMAIL-ALERT] Admin notified that email is failing (first failure today)');
+  } catch (e) {
+    console.error('[EMAIL-ALERT] Failed to alert admin of email outage:', e.message);
   }
 }
 
