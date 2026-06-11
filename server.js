@@ -149,6 +149,16 @@ setInterval(async function() {
   } catch (e) {
     console.error('[PENDING] hourly sweep threw:', e.message);
   }
+  // Backstop for pending_notifications: a row that keeps throwing on
+  // delivery would otherwise retry forever. Anything older than 6 hours is
+  // well past the morning window — drop it.
+  try {
+    var pnCutoff = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+    var rn = await supabase.from('pending_notifications').delete().lt('created_at', pnCutoff);
+    if (rn.error) console.error('[FTBEND-NOTIFY] stale sweep failed:', rn.error.message);
+  } catch (e) {
+    console.error('[FTBEND-NOTIFY] stale sweep threw:', e.message);
+  }
 }, 60 * 60 * 1000);
 
 const TWILIO_VOICE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
@@ -4280,102 +4290,169 @@ async function notifyFtbendOfficeUsers(officeId, config) {
   
   var now = new Date();
   var cst = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
-  var currentHour = cst.getHours();
-  var currentMin = cst.getMinutes();
-  
+  var currentTotal = cst.getHours() * 60 + cst.getMinutes();
+  var notifyDate = formatLocalDay(new Date(), 'America/Chicago');
+
+  console.log('[FTBEND] Enqueuing ' + result.data.length + ' notification(s) for ' + office.name +
+    ' (today: ' + (isUnknown ? 'UNKNOWN' : todayDisplay) + ')');
+
   for (var i = 0; i < result.data.length; i++) {
     var sched = result.data[i];
-    var schedHour = sched.hour !== undefined ? sched.hour : 5;
-    var schedMin = sched.minute !== undefined ? sched.minute : 10;
-    
-    var delayMs = i * 2000;
-    if (schedHour > currentHour || (schedHour === currentHour && schedMin > currentMin)) {
-      var minutesUntil = (schedHour - currentHour) * 60 + (schedMin - currentMin);
-      delayMs = minutesUntil * 60 * 1000 + (i * 1000);
+    var schedHour = (sched.hour !== undefined && sched.hour !== null) ? sched.hour : 5;
+    var schedMin = (sched.minute !== undefined && sched.minute !== null) ? sched.minute : 10;
+    var schedTotal = schedHour * 60 + schedMin;
+    // Already-passed preferred time -> due now (next poller tick). Future
+    // time -> due then. Same arithmetic the old setTimeout delay used, but
+    // persisted so a redeploy in the wait window can't drop the send.
+    var sendAt = now;
+    if (schedTotal > currentTotal) {
+      sendAt = new Date(now.getTime() + (schedTotal - currentTotal) * 60 * 1000);
     }
-    
-    (function(s, delay, msg, oid, cfg) {
-      setTimeout(async function() {
-        var profileResult = await supabase.from('profiles').select('credits, email, is_disabled').eq('id', s.user_id).single();
-        var profile = profileResult.data;
-        if (!profile) return;
-        if (profile.is_disabled) {
-          console.log('[FTBEND] User ' + s.user_id.slice(0,8) + '... is disabled — skipping notification');
-          return;
-        }
-        var isDevUser = isDev(profile.email);
-        if (!isDevUser && profile.credits < 1) {
-          var skipCount = (s.no_credit_skip_count || 0) + 1;
-          console.log('[FTBEND] User ' + s.user_id.slice(0,8) + '... has no credits, skipping');
-          if (skipCount >= 2) {
-            await supabase.from('user_schedules').delete().eq('user_id', s.user_id);
-            await notify(s.notify_number, s.notify_email, s.notify_method, '⚠️ Schedule Removed\n\nYour daily check-ins have stopped due to no credits remaining.\n\nPurchase credits and set up your schedule again at:\nprobationcall.com\n\n- ProbationCall.com', 'ftbend');
-          } else {
-            await supabase.from('user_schedules').update({ no_credit_skip_count: skipCount }).eq('user_id', s.user_id);
-            await notify(s.notify_number, s.notify_email, s.notify_method, '⚠️ Call Skipped - Low Credits\n\nToday\'s check-in was skipped because you\'re out of credits. Your schedule will be removed tomorrow if credits are not added.\n\nPurchase credits now at:\nprobationcall.com\n\n- ProbationCall.com', 'ftbend');
-          }
-          await supabase.from('call_history').insert({ user_id: s.user_id, target_number: FTBEND_OFFICES[oid] ? FTBEND_OFFICES[oid].number : COUNTIES.ftbend.number, result: 'NO_CREDITS', county: 'ftbend', ftbend_office: oid });
-          return;
-        }
-        // Get user's assigned color
-        var userProfileResult = await supabase.from('profiles').select('user_color').eq('id', s.user_id).single();
-        var userColor = (userProfileResult.data && userProfileResult.data.user_color) ? userProfileResult.data.user_color.toLowerCase() : null;
-        
-        var personalMsg;
-        if (isUnknown) {
-          personalMsg = '⚠️ Could not detect today\'s color.\n\nPlease call the hotline to verify:\n' + (FTBEND_OFFICES[oid] ? FTBEND_OFFICES[oid].number : '+12812383668') + '\n\n- ProbationCall.com';
-        } else if (userColor && todayColors.indexOf(userColor) >= 0) {
-          personalMsg = '🚨 TEST REQUIRED! 🚨\n\nToday\'s color is ' + todayDisplay + '.\n\nYour color (' + userColor.charAt(0).toUpperCase() + userColor.slice(1) + ') was called. You MUST test today.\n\n- ProbationCall.com';
-        } else if (userColor) {
-          personalMsg = '✅ No test today!\n\nToday\'s color is ' + todayDisplay + '.\nYour color (' + userColor.charAt(0).toUpperCase() + userColor.slice(1) + ') was NOT called. Enjoy your day!\n\n- ProbationCall.com';
-        } else {
-          personalMsg = '🎨 Today\'s Color: ' + todayDisplay + '\n\nFort Bend ' + office.name + '\n\nCheck if this is your assigned color.\n\n- ProbationCall.com';
-        }
-
-        // Cutoff path used finishprobation.com because our own call could
-        // not confirm. Append a disclaimer line so users know to verify.
-        if (cfg.verifiedViaFinishProbation) {
-          personalMsg = personalMsg.replace(/\n\n- ProbationCall\.com$/, '\n\n(Verified via finishprobation.com — our call could not confirm today. Verify by phone if uncertain.)\n\n- ProbationCall.com');
-        }
-
-        console.log('[FTBEND] Sending ' + oid + ' notification to ' + s.user_id.slice(0,8) + ' (user color: ' + (userColor || 'none') + ', today: ' + todayDisplay + (cfg.verifiedViaFinishProbation ? ', verified=true' : '') + ')');
-        await notify(s.notify_number, s.notify_email, s.notify_method, personalMsg, 'ftbend_daily');
-        // Don't bill when we couldn't detect today's color (UNKNOWN).
-        // Key includes user_id so per-user billing is independent.
-        var todayDate = (new Date()).toISOString().slice(0, 10);
-        var shouldMarkFtBilled = false;
-        if (!isUnknown) {
-          shouldMarkFtBilled = await deductCreditOnce(s.user_id, 'ftbend:' + s.user_id + ':' + oid + ':' + todayDate, {
-            notifyNumber: s.notify_number,
-            notifyEmail: s.notify_email,
-            notifyMethod: s.notify_method,
-            alreadyBilledCheck: async function() {
-              var r = await supabase.from('call_history')
-                .select('id')
-                .eq('user_id', s.user_id)
-                .eq('county', 'ftbend')
-                .eq('ftbend_office', oid)
-                .gte('created_at', todayDate + 'T00:00:00')
-                .lte('created_at', todayDate + 'T23:59:59')
-                .not('billed_at', 'is', null)
-                .limit(1);
-              if (r.error) throw r.error;
-              return !!(r.data && r.data.length > 0);
-            }
-          });
-        }
-        var ftRow = {
-          user_id: s.user_id,
-          target_number: FTBEND_OFFICES[oid] ? FTBEND_OFFICES[oid].number : COUNTIES.ftbend.number,
-          result: cfg.hasPhases ? 'P1:' + (cfg.phase1 || '?') + ' P2:' + (cfg.phase2 || '?') : 'COLOR:' + cfg.result,
-          county: 'ftbend',
-          ftbend_office: oid
-        };
-        if (shouldMarkFtBilled) ftRow.billed_at = new Date().toISOString();
-        await supabase.from('call_history').insert(ftRow);
-      }, delay);
-    })(sched, delayMs, null, officeId, config);
+    var rowData = {
+      user_id: sched.user_id,
+      office_id: officeId,
+      notify_date: notifyDate,
+      send_at: sendAt.toISOString(),
+      is_unknown: isUnknown,
+      today_colors: todayColors,
+      today_display: todayDisplay,
+      verified_via_finishprobation: !!config.verifiedViaFinishProbation,
+      has_phases: !!config.hasPhases,
+      phase1: config.phase1 || null,
+      phase2: config.phase2 || null,
+      result: config.result || null
+    };
+    // Upsert on (user_id, office_id, notify_date) so a re-trigger (e.g. the
+    // admin populate button after the auto path) can't double-enqueue. If
+    // the table is missing (migration 014 not applied) or the upsert errors,
+    // fall back to immediate inline delivery so this change never silently
+    // drops a notification.
+    var up = await supabase.from('pending_notifications').upsert(rowData, { onConflict: 'user_id,office_id,notify_date' });
+    if (up.error) {
+      console.error('[FTBEND] Enqueue failed for ' + sched.user_id.slice(0, 8) + ' (' + up.error.message + ') -- delivering inline as fallback');
+      await deliverFtbendNotification(rowData).catch(function(e) {
+        console.error('[FTBEND] Inline fallback delivery failed:', e.message);
+      });
+    }
   }
+}
+
+// Deliver one Fort Bend notification. Drained from pending_notifications by
+// the per-minute poller (or called inline as a fallback). Re-fetches the
+// schedule + profile FRESH so the credit check happens at send time, exactly
+// as the old setTimeout body did. Idempotent: if a call_history row already
+// exists for this user/office/day, delivery already happened -> skip, so a
+// re-enqueue cannot double-notify. Throws on a transient DB failure so the
+// poller leaves the row for a retry; returns normally on delivery or a
+// terminal skip (disabled/no-schedule/no-credits/already-done).
+async function deliverFtbendNotification(row) {
+  var oid = row.office_id;
+  var userId = row.user_id;
+  var office = FTBEND_OFFICES[oid] || { name: oid };
+  var todayDate = row.notify_date;
+
+  var existing = await supabase.from('call_history')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('county', 'ftbend')
+    .eq('ftbend_office', oid)
+    .gte('created_at', todayDate + 'T00:00:00')
+    .lte('created_at', todayDate + 'T23:59:59')
+    .limit(1);
+  if (existing.error) throw new Error('idempotency check failed: ' + existing.error.message);
+  if (existing.data && existing.data.length > 0) {
+    console.log('[FTBEND] ' + userId.slice(0, 8) + '/' + oid + ' already delivered today -- skipping');
+    return;
+  }
+
+  var schedRes = await supabase.from('user_schedules')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('county', 'ftbend')
+    .eq('ftbend_office', oid)
+    .eq('enabled', true)
+    .maybeSingle();
+  if (schedRes.error) throw new Error('schedule fetch failed: ' + schedRes.error.message);
+  var s = schedRes.data;
+  if (!s) {
+    console.log('[FTBEND] Schedule gone/disabled for ' + userId.slice(0, 8) + '/' + oid + ' -- skipping');
+    return;
+  }
+
+  var profileResult = await supabase.from('profiles').select('credits, email, is_disabled, user_color').eq('id', userId).single();
+  var profile = profileResult.data;
+  if (!profile) return;
+  if (profile.is_disabled) {
+    console.log('[FTBEND] User ' + userId.slice(0, 8) + '... is disabled -- skipping notification');
+    return;
+  }
+  var isDevUser = isDev(profile.email);
+  if (!isDevUser && profile.credits < 1) {
+    var skipCount = (s.no_credit_skip_count || 0) + 1;
+    console.log('[FTBEND] User ' + userId.slice(0, 8) + '... has no credits, skipping');
+    if (skipCount >= 2) {
+      await supabase.from('user_schedules').delete().eq('user_id', userId);
+      await notify(s.notify_number, s.notify_email, s.notify_method, '⚠️ Schedule Removed\n\nYour daily check-ins have stopped due to no credits remaining.\n\nPurchase credits and set up your schedule again at:\nprobationcall.com\n\n- ProbationCall.com', 'ftbend');
+    } else {
+      await supabase.from('user_schedules').update({ no_credit_skip_count: skipCount }).eq('user_id', userId);
+      await notify(s.notify_number, s.notify_email, s.notify_method, '⚠️ Call Skipped - Low Credits\n\nToday\'s check-in was skipped because you\'re out of credits. Your schedule will be removed tomorrow if credits are not added.\n\nPurchase credits now at:\nprobationcall.com\n\n- ProbationCall.com', 'ftbend');
+    }
+    await supabase.from('call_history').insert({ user_id: userId, target_number: FTBEND_OFFICES[oid] ? FTBEND_OFFICES[oid].number : COUNTIES.ftbend.number, result: 'NO_CREDITS', county: 'ftbend', ftbend_office: oid });
+    return;
+  }
+
+  var userColor = profile.user_color ? profile.user_color.toLowerCase() : null;
+  var todayColors = row.today_colors || [];
+  var todayDisplay = row.today_display || '';
+  var isUnknown = !!row.is_unknown;
+
+  var personalMsg;
+  if (isUnknown) {
+    personalMsg = '⚠️ Could not detect today\'s color.\n\nPlease call the hotline to verify:\n' + (FTBEND_OFFICES[oid] ? FTBEND_OFFICES[oid].number : '+12812383668') + '\n\n- ProbationCall.com';
+  } else if (userColor && todayColors.indexOf(userColor) >= 0) {
+    personalMsg = '🚨 TEST REQUIRED! 🚨\n\nToday\'s color is ' + todayDisplay + '.\n\nYour color (' + userColor.charAt(0).toUpperCase() + userColor.slice(1) + ') was called. You MUST test today.\n\n- ProbationCall.com';
+  } else if (userColor) {
+    personalMsg = '✅ No test today!\n\nToday\'s color is ' + todayDisplay + '.\nYour color (' + userColor.charAt(0).toUpperCase() + userColor.slice(1) + ') was NOT called. Enjoy your day!\n\n- ProbationCall.com';
+  } else {
+    personalMsg = '🎨 Today\'s Color: ' + todayDisplay + '\n\nFort Bend ' + office.name + '\n\nCheck if this is your assigned color.\n\n- ProbationCall.com';
+  }
+  if (row.verified_via_finishprobation) {
+    personalMsg = personalMsg.replace(/\n\n- ProbationCall\.com$/, '\n\n(Verified via finishprobation.com -- our call could not confirm today. Verify by phone if uncertain.)\n\n- ProbationCall.com');
+  }
+
+  console.log('[FTBEND] Sending ' + oid + ' notification to ' + userId.slice(0, 8) + ' (user color: ' + (userColor || 'none') + ', today: ' + todayDisplay + (row.verified_via_finishprobation ? ', verified=true' : '') + ')');
+  await notify(s.notify_number, s.notify_email, s.notify_method, personalMsg, 'ftbend_daily');
+
+  var shouldMarkFtBilled = false;
+  if (!isUnknown) {
+    shouldMarkFtBilled = await deductCreditOnce(userId, 'ftbend:' + userId + ':' + oid + ':' + todayDate, {
+      notifyNumber: s.notify_number,
+      notifyEmail: s.notify_email,
+      notifyMethod: s.notify_method,
+      alreadyBilledCheck: async function() {
+        var r = await supabase.from('call_history')
+          .select('id')
+          .eq('user_id', userId)
+          .eq('county', 'ftbend')
+          .eq('ftbend_office', oid)
+          .gte('created_at', todayDate + 'T00:00:00')
+          .lte('created_at', todayDate + 'T23:59:59')
+          .not('billed_at', 'is', null)
+          .limit(1);
+        if (r.error) throw r.error;
+        return !!(r.data && r.data.length > 0);
+      }
+    });
+  }
+  var ftRow = {
+    user_id: userId,
+    target_number: FTBEND_OFFICES[oid] ? FTBEND_OFFICES[oid].number : COUNTIES.ftbend.number,
+    result: row.has_phases ? 'P1:' + (row.phase1 || '?') + ' P2:' + (row.phase2 || '?') : 'COLOR:' + row.result,
+    county: 'ftbend',
+    ftbend_office: oid
+  };
+  if (shouldMarkFtBilled) ftRow.billed_at = new Date().toISOString();
+  await supabase.from('call_history').insert(ftRow);
 }
 
 // Queue (or advance) a fort_bend_retries row for an office whose call
@@ -5070,6 +5147,41 @@ cron.schedule('* * * * *', async function() {
       } catch (e) {
         console.error('[FTBEND-RETRY-POLLER] Failed to fire for ' + ftbOfficeId + ':', e.message);
         // Lease expires in 10 min and the poller will try again.
+      }
+    }
+  }
+
+  // ========== PENDING NOTIFICATIONS BRANCH (M2.2) ==========
+  // Drain Fort Bend per-user notifications whose send_at has arrived. This
+  // replaces the old bare setTimeout fan-out so a redeploy mid-morning can't
+  // drop a user's notification. Lease +5 min so a slow delivery doesn't
+  // double-fire on the next tick. Delete on success/terminal-skip; on a
+  // thrown (transient) error, leave the row so the lease expiry re-drives it.
+  var nowIsoPn = new Date().toISOString();
+  var pnDue = await supabase.from('pending_notifications')
+    .select('*')
+    .lte('send_at', nowIsoPn)
+    .or('lease_until.is.null,lease_until.lte.' + nowIsoPn)
+    .limit(200);
+  if (pnDue.error) {
+    console.error('[FTBEND-NOTIFY-POLLER] scan failed:', pnDue.error.message);
+  } else if (pnDue.data && pnDue.data.length > 0) {
+    for (var p = 0; p < pnDue.data.length; p++) {
+      var pn = pnDue.data[p];
+      var pnLease = await supabase.from('pending_notifications')
+        .update({ lease_until: new Date(Date.now() + 5 * 60 * 1000).toISOString() })
+        .eq('id', pn.id);
+      if (pnLease.error) {
+        console.error('[FTBEND-NOTIFY-POLLER] lease failed for ' + pn.id + ':', pnLease.error.message);
+        continue;
+      }
+      try {
+        await deliverFtbendNotification(pn);
+        await supabase.from('pending_notifications').delete().eq('id', pn.id);
+      } catch (e) {
+        console.error('[FTBEND-NOTIFY-POLLER] deliver failed for ' + pn.id + ' (will retry after lease):', e.message);
+        // Leave the row; the 5-min lease expires and the next tick retries.
+        // The daily stale-row sweep is the backstop against a permanent error.
       }
     }
   }
