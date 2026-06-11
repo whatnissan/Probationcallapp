@@ -969,6 +969,12 @@ async function auth(req, res, next) {
       sendWelcomeEmail(user.email, startCredits, 'welcome').catch(function(e) { console.log('[WELCOME] Email failed:', e.message); });
     }
     
+    // Admin kill-switch. Checked here so a disabled account is locked out
+    // of every authed endpoint, not just hidden in the admin UI.
+    if (profile.is_disabled) {
+      return res.status(403).json({ error: 'Account disabled. Contact support.' });
+    }
+
     // Generate referral code if user doesn't have one
     if (!profile.referral_code) {
       var newCode = generateReferralCode();
@@ -1583,11 +1589,15 @@ function rescheduleUser(userId, sched) {
     setTimeout(async function() {
       console.log('[SCHED] Running for ' + userId.slice(0,8) + '... (after ' + staggerMinutes + 'm stagger)');
       try {
-        var profileResult = await supabase.from('profiles').select('credits, email').eq('id', userId).single();
+        var profileResult = await supabase.from('profiles').select('credits, email, is_disabled').eq('id', userId).single();
         var profile = profileResult.data;
-        
+
         if (!profile) return;
-        
+        if (profile.is_disabled) {
+          console.log('[SCHED] User ' + userId.slice(0,8) + '... is disabled — skipping scheduled call');
+          return;
+        }
+
         var isDevUser = isDev(profile.email);
         
         if (!isDevUser && profile.credits < 1) {
@@ -3420,6 +3430,7 @@ async function adminAuth(req, res, next) {
     if (result.error || !result.data.user) return res.status(401).json({ error: 'Invalid' });
     var pr = await supabase.from('profiles').select('*').eq('id', result.data.user.id).single();
     if (!pr.data || !pr.data.is_admin) return res.status(403).json({ error: 'Not admin' });
+    if (pr.data.is_disabled) return res.status(403).json({ error: 'Account disabled' });
     req.user = result.data.user;
     req.profile = pr.data;
     // Track last login
@@ -4310,9 +4321,13 @@ async function notifyFtbendOfficeUsers(officeId, config) {
     
     (function(s, delay, msg, oid, cfg) {
       setTimeout(async function() {
-        var profileResult = await supabase.from('profiles').select('credits, email').eq('id', s.user_id).single();
+        var profileResult = await supabase.from('profiles').select('credits, email, is_disabled').eq('id', s.user_id).single();
         var profile = profileResult.data;
         if (!profile) return;
+        if (profile.is_disabled) {
+          console.log('[FTBEND] User ' + s.user_id.slice(0,8) + '... is disabled — skipping notification');
+          return;
+        }
         var isDevUser = isDev(profile.email);
         if (!isDevUser && profile.credits < 1) {
           var skipCount = (s.no_credit_skip_count || 0) + 1;
@@ -4740,10 +4755,14 @@ cron.schedule('45 * * * *', async function() {
     console.log('[RECOVERY] MISSED CALL detected for user ' + sched.user_id.slice(0,8) + '... (scheduled ' + schedHour + ':' + String(schedMin).padStart(2,'0') + ')');
     
     // Get user profile and credits
-    var profileResult = await supabase.from('profiles').select('credits, email').eq('id', sched.user_id).single();
+    var profileResult = await supabase.from('profiles').select('credits, email, is_disabled').eq('id', sched.user_id).single();
     var profile = profileResult.data;
     if (!profile) continue;
-    
+    if (profile.is_disabled) {
+      console.log('[RECOVERY] User ' + sched.user_id.slice(0,8) + '... is disabled — skipping');
+      continue;
+    }
+
     var isDevUser = isDev(profile.email);
     
     if (!isDevUser && profile.credits < 1) {
