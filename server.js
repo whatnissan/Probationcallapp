@@ -1715,19 +1715,32 @@ async function handleSubscriptionCheckoutCompleted(s, res) {
 // paths defensively so a Stripe-side API-version change doesn't silently
 // stop crediting renewals (which is exactly what happened on the first
 // real customer, invoice in_1TYpTKBkZn5hOJIgLqSCOsv1).
+// Resolve the subscription ID + metadata user_id from an invoice payload,
+// reading BOTH the legacy (`invoice.subscription`) and 2025-11-17+
+// (`invoice.parent.subscription_details`) schemas. Shared by invoice.paid
+// AND invoice.payment_failed so a Stripe API-version change can't silently
+// disable one of them — payment_failed previously gated on the legacy
+// field alone and no-oped on current payloads (past_due was never set).
+function extractInvoiceSubscriptionRefs(invoice) {
+  var subDetails = (invoice.parent && invoice.parent.subscription_details) || null;
+  var firstLineParent =
+    (invoice.lines && invoice.lines.data && invoice.lines.data[0] && invoice.lines.data[0].parent) || null;
+  var subId =
+    invoice.subscription
+    || (subDetails && subDetails.subscription)
+    || (firstLineParent && firstLineParent.subscription_item_details && firstLineParent.subscription_item_details.subscription)
+    || null;
+  var metaUserId =
+    (subDetails && subDetails.metadata && subDetails.metadata.user_id)
+    || null;
+  return { subId: subId, metaUserId: metaUserId };
+}
+
 async function handleSubscriptionInvoicePaid(invoice, res) {
   try {
-    var subDetails = (invoice.parent && invoice.parent.subscription_details) || null;
-    var firstLineParent =
-      (invoice.lines && invoice.lines.data && invoice.lines.data[0] && invoice.lines.data[0].parent) || null;
-    var subId =
-      invoice.subscription
-      || (subDetails && subDetails.subscription)
-      || (firstLineParent && firstLineParent.subscription_item_details && firstLineParent.subscription_item_details.subscription)
-      || null;
-    var metaUserId =
-      (subDetails && subDetails.metadata && subDetails.metadata.user_id)
-      || null;
+    var refs = extractInvoiceSubscriptionRefs(invoice);
+    var subId = refs.subId;
+    var metaUserId = refs.metaUserId;
 
     if (!subId && !metaUserId) {
       // Genuine "we cannot route this invoice anywhere" case. Fail loud so
@@ -1830,10 +1843,25 @@ async function handleSubscriptionInvoicePaid(invoice, res) {
 
 async function handleSubscriptionInvoicePaymentFailed(invoice, res) {
   try {
-    if (!invoice.subscription) return res.json({ received: true });
-    var profile = await findUserForSubscription(invoice.subscription, invoice.customer);
+    var refs = extractInvoiceSubscriptionRefs(invoice);
+    if (!refs.subId && !refs.metaUserId && !invoice.customer) {
+      // Nothing to route on — not a subscription invoice we can resolve.
+      return res.json({ received: true });
+    }
+    var profile = null;
+    if (refs.metaUserId) {
+      var pr = await supabase.from('profiles').select('*').eq('id', refs.metaUserId).single();
+      if (pr.data) profile = pr.data;
+    }
+    if (!profile) profile = await findUserForSubscription(refs.subId, invoice.customer);
     if (!profile) {
       console.error('[STRIPE WEBHOOK] No profile for failed invoice', invoice.id);
+      return res.json({ received: true });
+    }
+    if (profile.subscription_status === 'canceled' && !refs.subId && !refs.metaUserId) {
+      // Matched only via stripe_customer_id and the sub is already over —
+      // don't resurrect a past_due badge on a terminated subscription.
+      console.log('[STRIPE WEBHOOK] payment_failed for canceled sub (customer-only match) — ignoring. invoice=' + invoice.id);
       return res.json({ received: true });
     }
     await supabase.from('profiles')
