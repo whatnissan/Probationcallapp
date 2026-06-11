@@ -238,7 +238,7 @@ function formatPhone(phone) {
     return '+' + cleaned;
   }
   return phone.startsWith('+') ? phone : '+' + cleaned;
-} // 30% commission
+}
 const MIN_PAYOUT_CENTS = 2000; // $20 minimum payout
 const REFERRED_BONUS_CREDITS = 5; // Bonus credits for new users who use referral
 
@@ -899,8 +899,12 @@ async function auth(req, res, next) {
       var referralCode = generateReferralCode();
       var startCredits = isDev(user.email) ? 9999 : 5;
       // Insert with 0 credits, then grant via the ledger RPC so the signup
-      // bonus shows up in the audit trail.
-      await supabase.from('profiles').insert({
+      // bonus shows up in the audit trail. The insert is the race gate: the
+      // profiles PK on id means only one of two concurrent first-requests
+      // wins it. If it conflicts, another request already created the
+      // profile (and granted the bonus) — re-fetch and skip the grant so a
+      // racing double-request can't double the starter credits.
+      var ins = await supabase.from('profiles').insert({
         id: user.id,
         email: user.email,
         credits: 0,
@@ -908,15 +912,25 @@ async function auth(req, res, next) {
         affiliate_balance_cents: 0,
         affiliate_total_earned_cents: 0
       });
-      await recordCreditAdd({
-        userId: user.id,
-        amount: startCredits,
-        source: 'signup_bonus',
-        note: isDev(user.email) ? 'Dev account starting credits' : 'New user starter credits'
-      });
-      profile = { id: user.id, email: user.email, credits: startCredits, referral_code: referralCode };
-      // Send welcome email to new user
-      sendWelcomeEmail(user.email, startCredits, 'welcome').catch(function(e) { console.log('[WELCOME] Email failed:', e.message); });
+      if (ins.error) {
+        var rf = await supabase.from('profiles').select('*').eq('id', user.id).single();
+        if (rf.data) {
+          profile = rf.data;
+        } else {
+          console.error('[AUTH] Profile insert failed and re-fetch empty for ' + user.id.slice(0, 8) + ':', ins.error.message);
+          return res.status(500).json({ error: 'Account setup failed, please retry' });
+        }
+      } else {
+        await recordCreditAdd({
+          userId: user.id,
+          amount: startCredits,
+          source: 'signup_bonus',
+          note: isDev(user.email) ? 'Dev account starting credits' : 'New user starter credits'
+        });
+        profile = { id: user.id, email: user.email, credits: startCredits, referral_code: referralCode };
+        // Send welcome email to new user (only the request that won the insert).
+        sendWelcomeEmail(user.email, startCredits, 'welcome').catch(function(e) { console.log('[WELCOME] Email failed:', e.message); });
+      }
     }
     
     // Admin kill-switch. Checked here so a disabled account is locked out
@@ -5314,6 +5328,3 @@ cron.schedule('* * * * *', async function() {
     }
   }
 }, { timezone: 'America/Chicago' });
-
-
-// SAFETY FALLBACK
