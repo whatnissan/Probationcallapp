@@ -3639,6 +3639,66 @@ app.post('/api/admin/trigger-ftbend', adminAuth, async function(req, res) {
   res.json({ success: true, message: 'Fort Bend call triggered' });
 });
 
+// Payments self-test — verify the charging path is fully configured BEFORE
+// turning on real billing. Confirms keys are present, Stripe is reachable,
+// the subscription price exists and is the right shape, the webhook secret
+// is set, and reports whether purchases have been landing (proof the
+// webhook is actually reaching us). Read-only; makes no charges.
+app.get('/api/admin/payments-health', adminAuth, async function(req, res) {
+  var checks = [];
+  var ok = true;
+  function add(name, pass, detail) {
+    checks.push({ name: name, pass: !!pass, detail: detail || '' });
+    if (!pass) ok = false;
+  }
+
+  var sk = process.env.STRIPE_SECRET_KEY || '';
+  add('STRIPE_SECRET_KEY set', !!sk, sk ? (sk.indexOf('sk_live') === 0 ? 'LIVE mode' : 'TEST mode') : 'missing');
+  add('STRIPE_WEBHOOK_SECRET set', !!process.env.STRIPE_WEBHOOK_SECRET, process.env.STRIPE_WEBHOOK_SECRET ? 'present' : 'missing — webhook signature checks will all fail');
+  add('BASE_URL set', !!process.env.BASE_URL, process.env.BASE_URL || 'missing — checkout success/cancel + webhook URLs break');
+
+  try {
+    await stripe.balance.retrieve();
+    add('Stripe API reachable (key valid)', true, 'ok');
+  } catch (e) {
+    add('Stripe API reachable (key valid)', false, e.message);
+  }
+
+  var priceId = process.env.STRIPE_SUBSCRIPTION_PRICE_ID;
+  if (!priceId) {
+    add('STRIPE_SUBSCRIPTION_PRICE_ID set', false, 'missing — /api/subscription/checkout returns 500, no one can subscribe');
+  } else {
+    try {
+      var price = await stripe.prices.retrieve(priceId);
+      var shape = '$' + (price.unit_amount / 100).toFixed(2) + '/' + (price.recurring ? price.recurring.interval : 'one-time') + (price.active ? ' active' : ' INACTIVE');
+      add('Subscription price valid', price.active && !!price.recurring, shape + (price.livemode ? ' (live)' : ' (test)'));
+      // Warn if SDK mode and price mode disagree (live key + test price = silent failures).
+      if (sk) {
+        var keyLive = sk.indexOf('sk_live') === 0;
+        add('Key/price mode match', keyLive === !!price.livemode, (keyLive ? 'key=live' : 'key=test') + ', ' + (price.livemode ? 'price=live' : 'price=test'));
+      }
+    } catch (e) {
+      add('Subscription price valid', false, e.message);
+    }
+  }
+
+  try {
+    var recent = await supabase.from('purchases').select('created_at, package_name, amount_cents').order('created_at', { ascending: false }).limit(3);
+    var rows = recent.data || [];
+    add('Purchases landing (webhook reaching us)', true,
+      rows.length + ' recent; newest: ' + (rows[0] ? (rows[0].created_at + ' ' + rows[0].package_name + ' $' + ((rows[0].amount_cents || 0) / 100).toFixed(2)) : 'none yet'));
+  } catch (e) {
+    add('Purchases table readable', false, e.message);
+  }
+
+  res.json({
+    ok: ok,
+    expectedWebhookUrl: (process.env.BASE_URL || 'https://www.probationcall.com') + '/webhook/stripe',
+    requiredWebhookEvents: ['checkout.session.completed', 'invoice.paid', 'invoice.payment_failed', 'customer.subscription.deleted', 'customer.subscription.updated', 'charge.refunded'],
+    checks: checks
+  });
+});
+
 // Admin: trigger a live Fort Bend hotline call for ONE office (or all). The
 // result flows through the normal pipeline — detection + finishprobation
 // cross-check; if it doesn't confirm, a fort_bend_retries row is queued and

@@ -41,6 +41,13 @@
 <button class="btn btn-teal" id="ftbendPopulate" style="padding:10px 20px">🎨 Populate Fort Bend from finishprobation</button>
 <span id="ftbendPopulateStatus" style="color:#8892b0;font-size:0.85rem"></span>
 </div>
+<div style="margin-top:16px;padding-top:14px;border-top:1px solid rgba(255,255,255,0.08)">
+<div style="font-size:0.85rem;color:#8892b0;margin-bottom:8px">Payments self-test — verify Stripe is fully configured before turning on charging. Read-only, makes no charges.</div>
+<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+<button class="btn btn-primary" id="paymentsHealth" style="padding:10px 20px">💳 Run Payments Self-Test</button>
+</div>
+<div id="paymentsHealthResult" style="margin-top:10px;font-size:0.82rem"></div>
+</div>
 </div>
 </div>
 <div class="tabs"><div class="tab active" id="tabUsers">Users</div><div class="tab" id="tabPayouts">Payouts</div><div class="tab" id="tabPurchases">Purchases</div><div class="tab" id="tabCalls">Calls</div><div class="tab" id="tabPromos">Promos</div><div class="tab" id="tabTransfers">Transfers</div></div>
@@ -186,6 +193,21 @@ Array.prototype.forEach.call(document.querySelectorAll('[data-ftcall]'),function
     }).catch(function(e){st.textContent='Error: '+e.message});
   };
 });
+document.getElementById('paymentsHealth').onclick=function(){
+  var btn=this;btn.disabled=true;btn.textContent='Testing…';
+  var box=document.getElementById('paymentsHealthResult');box.innerHTML='Running…';
+  fetch('/api/admin/payments-health',{headers:{Authorization:'Bearer '+token}}).then(function(r){return r.json()}).then(function(d){
+    btn.disabled=false;btn.textContent='💳 Run Payments Self-Test';
+    if(d.error){box.innerHTML='<span style="color:#ef4444">Error: '+d.error+'</span>';return}
+    var rows=(d.checks||[]).map(function(c){
+      var icon=c.pass?'<span style="color:#22c55e">✅</span>':'<span style="color:#ef4444">❌</span>';
+      return '<div style="padding:3px 0">'+icon+' <b>'+esc(c.name)+'</b>'+(c.detail?' — <span style="color:#8892b0">'+esc(c.detail)+'</span>':'')+'</div>';
+    }).join('');
+    var head=d.ok?'<div style="color:#22c55e;font-weight:bold;margin-bottom:6px">✅ Ready to charge</div>':'<div style="color:#ef4444;font-weight:bold;margin-bottom:6px">❌ Not ready — fix the ❌ items below</div>';
+    var foot='<div style="margin-top:8px;color:#8892b0">Webhook URL should be: <b>'+esc(d.expectedWebhookUrl)+'</b><br>Required events: '+esc((d.requiredWebhookEvents||[]).join(', '))+'</div>';
+    box.innerHTML=head+rows+foot;
+  }).catch(function(e){btn.disabled=false;btn.textContent='💳 Run Payments Self-Test';box.innerHTML='<span style="color:#ef4444">Error: '+e.message+'</span>'});
+};
 function loadFullCalls(uid){fetch('/api/admin/user/'+uid+'/calls',{headers:{Authorization:'Bearer '+token}}).then(function(r){return r.json()}).then(function(d){var ac=d.calls||[];var el=document.getElementById('fullCallsArea');if(!el)return;var ch='<div class="section-title">All Calls ('+ac.length+')</div><div style="max-height:400px;overflow-y:auto"><table><thead><tr><th>Date</th><th>Result</th></tr></thead><tbody>';ac.forEach(function(c){var b=c.result==='NO_TEST'?'active':c.result==='MUST_TEST'?'disabled':'pending';ch+='<tr><td>'+new Date(c.created_at).toLocaleString()+'</td><td><span class="badge '+b+'">'+c.result+'</span></td></tr>'});ch+='</tbody></table></div>';el.innerHTML=ch}).catch(function(){})}
 
 // Affiliate Transfer Issues — calls existing endpoints, no money logic here.
