@@ -54,6 +54,15 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
+// Node 20 terminates the process on an unhandled promise rejection by
+// default. Express 4 doesn't catch async route errors, so a single
+// uncaught await in any handler would otherwise kill the server — and
+// with it every scheduled morning call. Log loudly instead of dying;
+// the offending request times out but the process (and crons) survive.
+process.on('unhandledRejection', function(reason) {
+  console.error('[FATAL-AVERTED] Unhandled promise rejection:', reason && reason.stack ? reason.stack : reason);
+});
+
 const DEV_EMAILS = ['whatnissan@gmail.com', 'whatnissan@protonmail.com'];
 
 app.use('/webhook/stripe', express.raw({ type: 'application/json' }));
@@ -4758,23 +4767,27 @@ app.post('/api/checkout/custom', auth, rateLimit('checkout', 10, 5 * 60 * 1000),
     return res.status(500).json({ error: 'price_compute_below_minimum' });
   }
 
-  var session = await stripe.checkout.sessions.create({
-    payment_method_types: ['card'],
-    line_items: [{
-      price_data: {
-        currency: 'usd',
-        product_data: { name: 'ProbationCall - ' + credits + ' Credits (Custom)' },
-        unit_amount: priceCents
-      },
-      quantity: 1
-    }],
-    mode: 'payment',
-    success_url: process.env.BASE_URL + '/dashboard?success=true',
-    cancel_url: process.env.BASE_URL + '/dashboard?canceled=true',
-    metadata: { user_id: req.user.id, package_id: 'custom', credits: String(credits) }
-  });
-
-  res.json({ url: session.url });
+  try {
+    var session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      line_items: [{
+        price_data: {
+          currency: 'usd',
+          product_data: { name: 'ProbationCall - ' + credits + ' Credits (Custom)' },
+          unit_amount: priceCents
+        },
+        quantity: 1
+      }],
+      mode: 'payment',
+      success_url: process.env.BASE_URL + '/dashboard?success=true',
+      cancel_url: process.env.BASE_URL + '/dashboard?canceled=true',
+      metadata: { user_id: req.user.id, package_id: 'custom', credits: String(credits) }
+    });
+    res.json({ url: session.url });
+  } catch (e) {
+    console.error('[CHECKOUT] Custom checkout error:', e.message);
+    res.status(500).json({ error: 'Could not start checkout — please try again' });
+  }
 });
 
 // Mark onboarding complete
