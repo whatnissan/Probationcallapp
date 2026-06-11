@@ -146,3 +146,25 @@ test('doCrossCheck: multi-word items get no phonetic fallback', function() {
   var r = doCrossCheck('today is phaze won bee', 'UNKNOWN', ['Phase 1 B']);
   assert.strictEqual(r.match_method, 'no_match');
 });
+
+// Empty-transcript contract — the /webhook/recording Fort Bend path routes
+// empty transcripts through this exact flow (2026-06-11 Rosenberg incident:
+// empties used to dead-end before the retry orchestration). These pin the
+// states the retry/cutoff decision branch depends on.
+test('empty transcript: doCrossCheck lands in no_match when ground truth exists', function() {
+  var r = doCrossCheck('', 'UNKNOWN', ['Teal']);
+  assert.strictEqual(r.match_method, 'no_match');
+  assert.strictEqual(r.final_answer, null);
+});
+
+test('empty transcript: doCrossCheck lands in no_ground_truth when none exists', function() {
+  assert.strictEqual(doCrossCheck('', 'UNKNOWN', null).match_method, 'no_ground_truth');
+  assert.strictEqual(doCrossCheck('', 'UNKNOWN', []).match_method, 'no_ground_truth');
+});
+
+test('empty transcript: detection resolves to UNKNOWN-shaped values, never a color', function() {
+  assert.strictEqual(detectColor(''), null);
+  var p = detectPhaseColors('');
+  assert.strictEqual(p.phase1, null);
+  assert.strictEqual(p.phase2, null);
+});

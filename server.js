@@ -2514,7 +2514,18 @@ app.post('/webhook/recording', validateTwilio, async function(req, res) {
     
     console.log('[TRANSCRIBE] Result: "' + transcript + '"');
     
-    if (!transcript) {
+    if (!transcript && config.isFtbendDaily) {
+      // Empty transcript on a Fort Bend system call. Do NOT dead-end here —
+      // fall through to the Fort Bend branch below with the empty string:
+      // detectColor('') resolves to UNKNOWN and doCrossCheck('') resolves
+      // to no_match / no_ground_truth, which queues a fort_bend_retries
+      // row (within the window) or takes the cutoff path (ground-truth
+      // notify with disclaimer, else final-fail). Before this fix an empty
+      // Fort Bend transcript fired one admin SMS and silently dropped the
+      // whole morning: no retry row, so the poller never fired, and
+      // subscribers were never notified (2026-06-11 Rosenberg incident).
+      console.log('[TRANSCRIBE] Empty transcript on Fort Bend call', callId, '— routing into retry/cross-check flow');
+    } else if (!transcript) {
       console.log('[TRANSCRIBE] Empty transcript for', callId);
       // Retry if we haven't retried too many times
       var retryCount = config.transcribeRetry || 0;
@@ -4211,6 +4222,28 @@ async function notifyFtbendOfficeUsers(officeId, config) {
 // storeFtbendColor (no answer to store) and does NOT bill any credit.
 async function finalFailFortBendOffice(officeId, attemptCount, hotlineNumber) {
   var office = FTBEND_OFFICES[officeId] || { name: officeId, number: hotlineNumber };
+
+  // Admin alert — exactly one per office per failed morning, at the final
+  // outcome. (Per-attempt empty transcripts used to alert here-ish and then
+  // silently drop the morning; now attempts retry quietly and this is the
+  // single "the whole morning failed" signal.) Fires even with zero
+  // subscribers — a broken office pipeline is admin-relevant regardless.
+  try {
+    var ffAdmins = await supabase.from('profiles').select('id').eq('is_admin', true);
+    if (ffAdmins.data) {
+      for (var fa = 0; fa < ffAdmins.data.length; fa++) {
+        var ffSched = await supabase.from('user_schedules').select('notify_number').eq('user_id', ffAdmins.data[fa].id).single();
+        if (ffSched.data && ffSched.data.notify_number) {
+          await sendSMS(ffSched.data.notify_number,
+            '🚨 ADMIN: Fort Bend ' + office.name + ' got NO answer all morning (' + attemptCount + ' attempts, no finishprobation.com data). Hotline may be down.\n\nCheck probationcall.com/admin',
+            'ftbend_final_fail_admin').catch(function(e) { console.error('[FTBEND-RETRY] Admin final-fail SMS failed:', e.message); });
+        }
+      }
+    }
+  } catch (e) {
+    console.error('[FTBEND-RETRY] Admin final-fail alert error:', e.message);
+  }
+
   var result = await supabase.from('user_schedules')
     .select('*')
     .eq('county', 'ftbend')
