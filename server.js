@@ -757,6 +757,16 @@ function rateLimit(bucket, max, windowMs) {
   };
 }
 
+// Prune expired rate-limit entries hourly so the map can't grow without
+// bound. Every bucket's window is ≤ 5 minutes, so anything older than an
+// hour is dead weight.
+setInterval(function() {
+  var cutoff = Date.now() - 60 * 60 * 1000;
+  _rateBuckets.forEach(function(entry, key) {
+    if (entry.windowStart < cutoff) _rateBuckets.delete(key);
+  });
+}, 60 * 60 * 1000);
+
 // Twilio webhook authenticity — checks X-Twilio-Signature against the
 // exact public URL (incl. query string) + posted params. Two-stage rollout
 // via TWILIO_VALIDATE env var:
@@ -1261,8 +1271,16 @@ app.post('/api/redeem', auth, async function(req, res) {
   
   var existingResult = await supabase.from('promo_redemptions').select('*').eq('user_id', req.user.id).eq('promo_code_id', promo.id).single();
   if (existingResult.data) return res.status(400).json({ error: 'Already used' });
-  
-  await supabase.from('promo_redemptions').insert({ user_id: req.user.id, promo_code_id: promo.id });
+
+  // The insert is the real gate: with migration 012's unique index on
+  // (user_id, promo_code_id), a concurrent double-redeem loses here and
+  // never reaches the credit grant. The select above is just a friendly
+  // fast path.
+  var redemptionInsert = await supabase.from('promo_redemptions').insert({ user_id: req.user.id, promo_code_id: promo.id });
+  if (redemptionInsert.error) {
+    console.error('[PROMO] Redemption insert blocked for ' + req.user.id.slice(0, 8) + ' code=' + code.toUpperCase() + ':', redemptionInsert.error.message);
+    return res.status(400).json({ error: 'Already used' });
+  }
   await supabase.from('promo_codes').update({ times_used: promo.times_used + 1 }).eq('id', promo.id);
   await recordCreditAdd({
     userId: req.user.id,
