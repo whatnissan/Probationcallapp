@@ -92,6 +92,65 @@ const pendingCalls = new Map();
 const wsClients = new Set();
 const scheduledJobs = new Map();
 
+// ===== Durable pending-call state (M2.1) =====
+// The pendingCalls Map is the hot path and behaves exactly as before. We
+// ALSO mirror each call's config to the pending_calls table (migration 013)
+// so a process restart / Railway redeploy mid-call doesn't orphan it: the
+// webhooks fall back to the DB when the map misses. All DB ops are
+// best-effort — a persistence hiccup must never break a live call.
+// Serializers live in lib/pending.js (pure, round-trip unit-tested).
+const { pendingCallToRow, rowToPendingCall } = require('./lib/pending');
+
+async function savePendingCallDb(callId, c) {
+  if (!callId || !c) return;
+  try {
+    var r = await supabase.from('pending_calls').upsert(pendingCallToRow(callId, c), { onConflict: 'call_id' });
+    if (r.error) console.error('[PENDING] save failed for ' + callId + ':', r.error.message);
+  } catch (e) {
+    console.error('[PENDING] save threw for ' + callId + ':', e.message);
+  }
+}
+
+// Get a call's config: in-memory Map first (unchanged hot path), then DB.
+// On a DB hit (the map missed — almost always because the process restarted
+// after the call was placed) we rehydrate the Map so the remaining webhooks
+// for this call in this process hit memory.
+async function getPendingCall(callId) {
+  if (!callId) return null;
+  var mem = pendingCalls.get(callId);
+  if (mem) return mem;
+  try {
+    var r = await supabase.from('pending_calls').select('*').eq('call_id', callId).maybeSingle();
+    if (r.data) {
+      console.log('[PENDING] Recovered ' + callId + ' from DB (map missed — likely a restart)');
+      var cfg = rowToPendingCall(r.data);
+      pendingCalls.set(callId, cfg);
+      return cfg;
+    }
+  } catch (e) {
+    console.error('[PENDING] load threw for ' + callId + ':', e.message);
+  }
+  return null;
+}
+
+async function deletePendingCallDb(callId) {
+  if (!callId) return;
+  try { await supabase.from('pending_calls').delete().eq('call_id', callId); } catch (e) { /* best-effort */ }
+}
+
+// The per-call 10-minute cleanup timer is lost on restart, so orphaned
+// pending_calls rows (any older than 1 hour = a long-dead call) are swept
+// hourly. Keeps the table to roughly "calls in flight right now".
+setInterval(async function() {
+  try {
+    var cutoff = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    var r = await supabase.from('pending_calls').delete().lt('created_at', cutoff);
+    if (r.error) console.error('[PENDING] hourly sweep failed:', r.error.message);
+  } catch (e) {
+    console.error('[PENDING] hourly sweep threw:', e.message);
+  }
+}, 60 * 60 * 1000);
+
 const TWILIO_VOICE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
 // These have fallbacks to the historical hardcoded values so the deploy
 // keeps working unchanged — set the env vars in Railway to override.
@@ -2414,12 +2473,17 @@ async function initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notify
   
   pendingCalls.get(callId).callSid = call.sid;
   log(callId, 'Call SID: ' + call.sid, 'success');
-  
-  // Clean up old pending calls after 10 minutes
+
+  // Mirror to DB so a restart before the recording webhook doesn't orphan
+  // the call. Best-effort; await so the row exists before webhooks fire.
+  await savePendingCallDb(callId, pendingCalls.get(callId));
+
+  // Clean up old pending calls after 10 minutes (map + DB row).
   setTimeout(function() {
     pendingCalls.delete(callId);
+    deletePendingCallDb(callId);
   }, 10 * 60 * 1000);
-  
+
   return { success: true, callId: callId, callSid: call.sid };
 }
 
@@ -2427,11 +2491,11 @@ async function initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notify
 // (/twiml/result and /twiml/fallback). Empty-transcript retries now happen
 // inline in /webhook/recording when Deepgram returns an empty transcript.
 
-app.post('/twiml/answer', validateTwilio, function(req, res) {
+app.post('/twiml/answer', validateTwilio, async function(req, res) {
   var callId = req.query.callId;
-  var config = pendingCalls.get(callId);
+  var config = await getPendingCall(callId);
   var twiml = new twilio.twiml.VoiceResponse();
-  
+
   if (!config) { twiml.hangup(); return res.type('text/xml').send(twiml.toString()); }
   
   log(callId, 'Call answered, sending DTMF', 'success');
@@ -2467,10 +2531,10 @@ app.post('/webhook/recording', validateTwilio, async function(req, res) {
   }
 
   var mp3Url = recordingUrl + '.mp3';
-  var config = pendingCalls.get(callId);
-  
+  var config = await getPendingCall(callId);
+
   if (!config) return;
-  
+
   // Save recording URL first
   if (config.isFtbendDaily) {
     var now = new Date();
@@ -2928,7 +2992,7 @@ app.post('/webhook/status', validateTwilio, async function(req, res) {
   var callId = req.query.callId;
   var callStatus = req.body.CallStatus;
   log(callId, 'Status: ' + callStatus, 'info');
-  var config = pendingCalls.get(callId);
+  var config = await getPendingCall(callId);
   if (config) {
     config.status = callStatus;
     broadcastToClients({ type: 'status', callId: callId, status: callStatus });
@@ -4035,15 +4099,24 @@ async function ftbendCallOffice(officeId, office) {
     
     pendingCalls.get(callId).callSid = call.sid;
     console.log('[FTBEND] ' + office.name + ' call initiated: ' + call.sid);
+
+    // Mirror to DB so a restart before the recording webhook doesn't orphan
+    // this office's call (the daily/system path had NO cleanup or recovery
+    // before — a redeploy mid-morning silently lost the office).
+    await savePendingCallDb(callId, pendingCalls.get(callId));
+    setTimeout(function() {
+      pendingCalls.delete(callId);
+      deletePendingCallDb(callId);
+    }, 10 * 60 * 1000);
   } catch (e) {
     console.error('[FTBEND] ' + office.name + ' call failed:', e.message);
   }
 }
 
-app.post('/twiml/ftbend-answer', validateTwilio, function(req, res) {
+app.post('/twiml/ftbend-answer', validateTwilio, async function(req, res) {
   var callId = req.query.callId;
   var officeId = req.query.officeId;
-  var config = pendingCalls.get(callId);
+  var config = await getPendingCall(callId);
   var twiml = new twilio.twiml.VoiceResponse();
   
   console.log('[FTBEND] Call answered for office: ' + officeId);
