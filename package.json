@@ -14,7 +14,7 @@
     "dotenv": "^16.3.1",
     "double-metaphone": "^1.0.5",
     "express": "^4.18.2",
-    "node-cron": "^3.0.2",
+    "node-cron": "^4.2.1",
     "stripe": "^13.10.0",
     "twilio": "^5.12.2",
     "ws": "^8.14.2"
