@@ -168,3 +168,27 @@ test('empty transcript: detection resolves to UNKNOWN-shaped values, never a col
   assert.strictEqual(p.phase1, null);
   assert.strictEqual(p.phase2, null);
 });
+
+// 2026-06-11 Rosenberg 2 incident: perfect transcript + matching ground
+// truth looped forever on no_match because doCrossCheck substring-matched
+// "Phase 1" against the raw "phase one" transcript. These reproduce the
+// exact production transcripts and assert it now resolves.
+test('doCrossCheck: "phase one" transcript resolves against "Phase 1" ground truth (Rosenberg 2 loop)', function() {
+  var transcript = 'You have reached the Fort Bend County Drug Court Random UA line. Today is Prep and phase one. Remember that you will be charged a fee.';
+  var r = doCrossCheck(transcript, 'Phase 1', ['Prep', 'Phase 1']);
+  assert.strictEqual(r.match_method, 'substring');
+  assert.strictEqual(r.final_answer, 'Prep, Phase 1');
+});
+
+test('doCrossCheck: "prep in phase one" phrasing variant also resolves', function() {
+  var transcript = 'Today is Prep in phase one. Remember that you will be charged a fee.';
+  var r = doCrossCheck(transcript, 'Phase 1', ['Prep', 'Phase 1']);
+  assert.strictEqual(r.match_method, 'substring');
+  assert.strictEqual(r.final_answer, 'Prep, Phase 1');
+});
+
+test('"tin" is a known color (Fort Bend uses it; finishprobation publishes it)', function() {
+  assert.strictEqual(detectColor('today is tin'), 'Tin');
+  // Deepgram mishears the hotline's "Tin" as "ten" — map it back.
+  assert.strictEqual(detectColor('today is ten'), 'Tin');
+});
