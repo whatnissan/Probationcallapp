@@ -2,7 +2,8 @@
   "name": "probation-call-app",
   "version": "1.0.0",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test"
   },
   "engines": {
     "node": "20.x"
