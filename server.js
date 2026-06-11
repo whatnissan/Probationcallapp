@@ -420,25 +420,37 @@ async function deductCreditOnce(userId, idempotencyKey, options) {
   }
 
   try {
-    var pr = await supabase.from('profiles').select('credits, email').eq('id', userId).single();
+    // Email only — used to apply dev-user handling (dev accounts never
+    // deduct). The balance is no longer read here; the atomic RPC below
+    // both checks sufficiency and decrements in one locked statement.
+    var pr = await supabase.from('profiles').select('email').eq('id', userId).single();
     if (pr.error || !pr.data) {
       console.error('[CREDITS] Profile lookup failed for ' + userId.slice(0, 8) + ':', pr.error);
       return false;
     }
     var devUser = isDev(pr.data.email);
-    if (!devUser && (pr.data.credits || 0) < 1) {
-      console.log('[CREDITS] No credits to deduct for ' + userId.slice(0, 8));
-      return false;
-    }
 
     if (!devUser) {
-      var newCredits = pr.data.credits - 1;
-      var upd = await supabase.from('profiles').update({ credits: newCredits }).eq('id', userId);
-      if (upd.error) {
-        console.error('[CREDITS] Deduction update failed for ' + userId.slice(0, 8) + ':', upd.error);
+      // Atomic decrement-if-available + ledger insert. Returns the new
+      // balance, or null when credits were insufficient (or the profile
+      // vanished). The DB-side `credits >= 1` guard removes the lost-update
+      // window the old read-modify-write had.
+      var rpc = await supabase.rpc('deduct_credit_with_ledger', {
+        p_user_id: userId,
+        p_amount: 1,
+        p_source: 'call_deduction',
+        p_note: idempotencyKey
+      });
+      if (rpc.error) {
+        console.error('[CREDITS] deduct_credit_with_ledger RPC failed for ' + userId.slice(0, 8) + ':', rpc.error.message || rpc.error);
         return false;
       }
-      console.log('[CREDITS] Deducted 1 from ' + userId.slice(0, 8) + ' (' + pr.data.credits + ' -> ' + newCredits + ') key=' + idempotencyKey);
+      var newCredits = rpc.data;
+      if (newCredits === null || newCredits === undefined) {
+        console.log('[CREDITS] No credits to deduct for ' + userId.slice(0, 8));
+        return false;
+      }
+      console.log('[CREDITS] Deducted 1 from ' + userId.slice(0, 8) + ' (-> ' + newCredits + ') key=' + idempotencyKey);
       // A successful billable result resets both skip counters: the user is
       // back in good standing on credits AND the hotline accepted their PIN.
       await supabase.from('user_schedules').update({ no_credit_skip_count: 0, consecutive_pin_expired: 0 }).eq('user_id', userId);
