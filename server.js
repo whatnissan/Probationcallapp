@@ -757,6 +757,35 @@ function rateLimit(bucket, max, windowMs) {
   };
 }
 
+// Twilio webhook authenticity — checks X-Twilio-Signature against the
+// exact public URL (incl. query string) + posted params. Two-stage rollout
+// via TWILIO_VALIDATE env var:
+//   unset / 'log' → log failures but allow through (watch one full morning
+//                   of real callbacks before enforcing)
+//   'enforce'     → reject invalid signatures with 403
+//   'off'         → skip entirely (emergency hatch)
+// Without this, anyone who can guess an active callId can forge webhook
+// posts — including a RecordingUrl pointing at their own server.
+function validateTwilio(req, res, next) {
+  var mode = process.env.TWILIO_VALIDATE || 'log';
+  if (mode === 'off') return next();
+  var signature = req.headers['x-twilio-signature'] || '';
+  // Behind Railway's proxy req.protocol/host are unreliable — build the
+  // URL Twilio actually signed from BASE_URL (no trailing slash) + path.
+  var url = process.env.BASE_URL + req.originalUrl;
+  var valid = false;
+  try {
+    valid = twilio.validateRequest(process.env.TWILIO_AUTH_TOKEN, signature, url, req.body || {});
+  } catch (e) {
+    console.error('[TWILIO-VALIDATE] validation threw:', e.message);
+  }
+  if (!valid) {
+    console.error('[TWILIO-VALIDATE] ' + (mode === 'enforce' ? 'REJECTED' : 'FAILED (log-only)') + ' ' + req.method + ' ' + req.originalUrl + ' sig=' + (signature ? 'present' : 'missing'));
+    if (mode === 'enforce') return res.status(403).send('invalid signature');
+  }
+  next();
+}
+
 async function auth(req, res, next) {
   var authHeader = req.headers.authorization;
   var token = authHeader ? authHeader.replace('Bearer ', '') : null;
@@ -2380,7 +2409,7 @@ async function initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notify
 // (/twiml/result and /twiml/fallback). Empty-transcript retries now happen
 // inline in /webhook/recording when Deepgram returns an empty transcript.
 
-app.post('/twiml/answer', function(req, res) {
+app.post('/twiml/answer', validateTwilio, function(req, res) {
   var callId = req.query.callId;
   var config = pendingCalls.get(callId);
   var twiml = new twilio.twiml.VoiceResponse();
@@ -2399,7 +2428,7 @@ app.post('/twiml/answer', function(req, res) {
 // were removed — the current call flow uses post-call Deepgram transcription
 // in /webhook/recording instead. Re-add them only if <Gather> is reintroduced.
 
-app.post('/webhook/recording', async function(req, res) {
+app.post('/webhook/recording', validateTwilio, async function(req, res) {
   var callId = req.query.callId;
   var recordingUrl = req.body.RecordingUrl;
   
@@ -2407,7 +2436,18 @@ app.post('/webhook/recording', async function(req, res) {
   res.sendStatus(200);
   
   if (!recordingUrl || !callId) return;
-  
+
+  // Never attach Twilio credentials to a non-Twilio host. A forged webhook
+  // could otherwise set RecordingUrl to an attacker server and harvest the
+  // Basic-auth header from our transcription download below. Enforced
+  // unconditionally — legitimate RecordingUrls are always api.twilio.com.
+  var recHost = null;
+  try { recHost = new URL(recordingUrl).hostname; } catch (e) { /* malformed */ }
+  if (recHost !== 'api.twilio.com') {
+    console.error('[RECORDING] Rejecting RecordingUrl with unexpected host "' + recHost + '" for ' + callId);
+    return;
+  }
+
   var mp3Url = recordingUrl + '.mp3';
   var config = pendingCalls.get(callId);
   
@@ -2855,7 +2895,7 @@ cron.schedule('0 3 * * *', async function() {
 // connect or produce audio.
 var TWILIO_TERMINAL_FAILURES = ['failed', 'no-answer', 'busy', 'canceled'];
 
-app.post('/webhook/status', async function(req, res) {
+app.post('/webhook/status', validateTwilio, async function(req, res) {
   var callId = req.query.callId;
   var callStatus = req.body.CallStatus;
   log(callId, 'Status: ' + callStatus, 'info');
@@ -3876,7 +3916,7 @@ async function ftbendCallOffice(officeId, office) {
   }
 }
 
-app.post('/twiml/ftbend-answer', function(req, res) {
+app.post('/twiml/ftbend-answer', validateTwilio, function(req, res) {
   var callId = req.query.callId;
   var officeId = req.query.officeId;
   var config = pendingCalls.get(callId);
