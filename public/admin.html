@@ -27,6 +27,13 @@
 <span id="massTextStatus" style="color:#8892b0;font-size:0.85rem"></span>
 </div>
 <div id="massTextPreview" style="display:none;margin-top:10px;padding:10px;background:rgba(0,0,0,0.3);border-radius:6px;font-size:0.85rem;white-space:pre-wrap;color:#ccc"></div>
+<div style="margin-top:16px;padding-top:14px;border-top:1px solid rgba(255,255,255,0.08)">
+<div style="font-size:0.85rem;color:#8892b0;margin-bottom:8px">Fort Bend recovery — pull today's color from finishprobation.com and notify subscribers (no phone call). Use when an office is stuck empty.</div>
+<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+<button class="btn btn-teal" id="ftbendPopulate" style="padding:10px 20px">🎨 Populate Fort Bend from finishprobation</button>
+<span id="ftbendPopulateStatus" style="color:#8892b0;font-size:0.85rem"></span>
+</div>
+</div>
 </div>
 <div class="tabs"><div class="tab active" id="tabUsers">Users</div><div class="tab" id="tabPayouts">Payouts</div><div class="tab" id="tabPurchases">Purchases</div><div class="tab" id="tabCalls">Calls</div><div class="tab" id="tabPromos">Promos</div><div class="tab" id="tabTransfers">Transfers</div></div>
 <div id="usersTab" class="tab-content active"><div class="card"><h2>All Users (click to view) <button class="btn btn-sm btn-secondary" id="refreshBtn">Refresh</button> <span class="last-refresh" id="lastRefresh"></span></h2><div class="search-bar"><input type="text" id="userSearch" placeholder="Search..."><select id="userFilter"><option value="all">All</option><option value="active">Active</option><option value="disabled">Disabled</option><option value="admin">Admins</option><option value="scheduled">Scheduled</option><option value="locked">Locked to Affiliate</option></select></div><div style="max-height:500px;overflow-y:auto"><table><thead><tr><th class="sortable" data-sort="email">Email ↕</th><th class="sortable" data-sort="credits">Credits ↕</th><th>Locked To</th><th class="sortable" data-sort="schedule">Schedule ↕</th><th class="sortable" data-sort="calls">Calls ↕</th><th class="sortable" data-sort="spent">Spent ↕</th><th>Terms</th><th>Status</th><th class="sortable" data-sort="created">Created ↕</th><th class="sortable" data-sort="lastlogin">Last Login ↕</th></tr></thead><tbody id="usersTable"></tbody></table></div></div></div>
@@ -148,6 +155,16 @@ document.getElementById('sendMassText').onclick=function(){
     document.getElementById('massTextMsg').value='';
     document.getElementById('massTextPreview').style.display='none';
   }).catch(function(e){btn.disabled=false;btn.textContent='🚀 Send to All Active Users';document.getElementById('massTextStatus').textContent='Error: '+e.message});
+};
+document.getElementById('ftbendPopulate').onclick=function(){
+  if(!confirm("Pull today's color from finishprobation.com for ALL Fort Bend offices and notify subscribers? (no double-billing — safe to re-run)"))return;
+  var btn=this;btn.disabled=true;btn.textContent='Populating...';
+  var st=document.getElementById('ftbendPopulateStatus');st.textContent='Working...';
+  fetch('/api/admin/ftbend-populate-from-truth',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({})}).then(function(r){return r.json()}).then(function(d){
+    btn.disabled=false;btn.textContent='🎨 Populate Fort Bend from finishprobation';
+    if(d.error){st.textContent='Error: '+d.error;return}
+    st.innerHTML=(d.results||[]).map(function(x){var c=x.status==='populated'?'#22c55e':'#f59e0b';return '<span style="color:'+c+'">'+x.office+': '+x.status+(x.color?' ('+x.color+')':'')+'</span>'}).join(' | ');
+  }).catch(function(e){btn.disabled=false;btn.textContent='🎨 Populate Fort Bend from finishprobation';st.textContent='Error: '+e.message});
 };
 function loadFullCalls(uid){fetch('/api/admin/user/'+uid+'/calls',{headers:{Authorization:'Bearer '+token}}).then(function(r){return r.json()}).then(function(d){var ac=d.calls||[];var el=document.getElementById('fullCallsArea');if(!el)return;var ch='<div class="section-title">All Calls ('+ac.length+')</div><div style="max-height:400px;overflow-y:auto"><table><thead><tr><th>Date</th><th>Result</th></tr></thead><tbody>';ac.forEach(function(c){var b=c.result==='NO_TEST'?'active':c.result==='MUST_TEST'?'disabled':'pending';ch+='<tr><td>'+new Date(c.created_at).toLocaleString()+'</td><td><span class="badge '+b+'">'+c.result+'</span></td></tr>'});ch+='</tbody></table></div>';el.innerHTML=ch}).catch(function(){})}
 

@@ -2946,8 +2946,20 @@ app.post('/webhook/status', validateTwilio, async function(req, res) {
   // Ft Bend system calls and manual calls without a userId don't get
   // per-user handling. (Ft Bend failure handling is system-level and
   // outside the scope of this gap fix.)
-  if (config.isFtbendDaily || !config.userId) {
-    console.log('[STATUS] Terminal failure ' + callStatus + ' on Ft Bend / no-user call ' + callId + ' — skipping per-user notify/insert');
+  if (config.isFtbendDaily) {
+    // Fort Bend system-call terminal failure (busy/no-answer/failed/
+    // canceled). The recording webhook will NEVER fire for this call, so
+    // the cross-check + cutoff fallback that live there can't run. Queue a
+    // fort_bend_retries row so the per-minute poller takes over — it
+    // re-dials within the window and, past 9:30 CDT, runs the
+    // finishprobation cutoff fallback (store + notify with disclaimer, or
+    // final-fail). Without this the office stayed empty all day. Best-effort.
+    await queueFortBendRetryAfterFailure(config.officeId, config.callSid, callStatus)
+      .catch(function(e) { console.error('[STATUS] Ft Bend retry-queue failed for ' + config.officeId + ':', e.message); });
+    return;
+  }
+  if (!config.userId) {
+    console.log('[STATUS] Terminal failure ' + callStatus + ' on no-user call ' + callId + ' — skipping per-user notify/insert');
     return;
   }
 
@@ -3539,6 +3551,45 @@ app.post('/api/admin/trigger-ftbend', adminAuth, async function(req, res) {
   console.log('[FTBEND] Manual trigger by admin');
   ftbendDailyColorCall();
   res.json({ success: true, message: 'Fort Bend call triggered' });
+});
+
+// Admin recovery: populate an office (or all) DIRECTLY from
+// finishprobation.com — no phone call. This is the cutoff-with-ground-truth
+// path exposed on demand, for mornings where our own calls dead-ended and
+// the office is empty but finishprobation has published. Stores the color,
+// notifies subscribers (with the "verified via finishprobation" disclaimer),
+// and clears any stale fort_bend_retries row. Billing idempotency is the
+// same per-user/office/day key used by the normal path, so re-running can't
+// double-charge. Pass { office: 'rosenberg' } to target one, or omit for all.
+app.post('/api/admin/ftbend-populate-from-truth', adminAuth, async function(req, res) {
+  var only = req.body && req.body.office;
+  var officeIds = only ? [only] : Object.keys(FTBEND_OFFICES);
+  var out = [];
+  for (var i = 0; i < officeIds.length; i++) {
+    var officeId = officeIds[i];
+    var office = FTBEND_OFFICES[officeId];
+    if (!office) { out.push({ office: officeId, status: 'unknown_office' }); continue; }
+    var gt = await fetchFinishProbationGroundTruth(officeId).catch(function(e) { return { error: 'fetch_threw:' + e.message }; });
+    var groups = (gt && gt.testGroups && gt.testGroups.length > 0) ? gt.testGroups : null;
+    if (!groups) {
+      out.push({ office: officeId, status: 'no_ground_truth', detail: gt && gt.error });
+      continue;
+    }
+    var joined = groups.join(', ');
+    await storeFtbendColor(joined, gt.transcript || '(admin: finishprobation.com)', officeId, groups[0], groups[1] || null);
+    await notifyFtbendOfficeUsers(officeId, {
+      result: joined,
+      phase1: groups[0],
+      phase2: groups[1] || null,
+      hasPhases: !!office.hasPhases,
+      verifiedViaFinishProbation: true
+    });
+    // Clear any in-flight retry row so the poller doesn't also act on it.
+    await supabase.from('fort_bend_retries').delete().eq('office', officeId).then(function() {}, function() {});
+    console.log('[FTBEND] Admin populated ' + officeId + ' from finishprobation.com: ' + joined);
+    out.push({ office: officeId, status: 'populated', color: joined });
+  }
+  res.json({ success: true, results: out });
 });
 
 // Manually trigger a call for a specific user
@@ -4214,6 +4265,38 @@ async function notifyFtbendOfficeUsers(officeId, config) {
       }, delay);
     })(sched, delayMs, null, officeId, config);
   }
+}
+
+// Queue (or advance) a fort_bend_retries row for an office whose call
+// produced no usable result via a path that bypasses /webhook/recording —
+// specifically a Twilio terminal failure (busy/no-answer/failed/canceled),
+// where the recording webhook never fires. Setting next_attempt_at to now
+// makes the per-minute poller pick it up on its next tick: within the
+// window it re-dials; past the 9:30 CDT cutoff the poller's cutoff branch
+// runs the finishprobation fallback. attempt_number is advanced from any
+// existing row so the cutoff math stays honest.
+async function queueFortBendRetryAfterFailure(officeId, callSid, reason) {
+  if (!officeId || !FTBEND_OFFICES[officeId]) return;
+  var existing = await supabase.from('fort_bend_retries').select('*').eq('office', officeId).maybeSingle();
+  var row = (existing && existing.data) || null;
+  var attemptNumber = row ? row.attempt_number + 1 : 1;
+  var nowIso = new Date().toISOString();
+  var upsertData = {
+    office: officeId,
+    attempt_number: attemptNumber,
+    next_attempt_at: nowIso, // due immediately — poller fires next tick
+    last_call_sid: callSid || (row && row.last_call_sid) || null,
+    last_transcript: (row && row.last_transcript) || null,
+    last_our_detection: '(call failed: ' + (reason || 'unknown') + ')',
+    last_ground_truth: (row && row.last_ground_truth) || null,
+    updated_at: nowIso
+  };
+  var r = await supabase.from('fort_bend_retries').upsert(upsertData, { onConflict: 'office' });
+  if (r.error) {
+    console.error('[FTBEND-RETRY] Failed to queue retry after call failure for ' + officeId + ':', r.error.message);
+    return;
+  }
+  console.log('[FTBEND-RETRY] Queued retry for ' + officeId + ' after Twilio failure "' + reason + '" (attempt ' + attemptNumber + ', due now)');
 }
 
 // Cutoff_no_ground_truth path: 9:30 AM CDT reached and finishprobation.com
