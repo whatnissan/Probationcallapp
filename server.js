@@ -998,8 +998,11 @@ async function auth(req, res, next) {
     
     req.user = user;
     req.profile = profile;
-    // Track last login
-    supabase.from('profiles').update({ last_login: new Date().toISOString() }).eq('id', user.id);
+    // Track last login. Fire-and-forget, but supabase-js builders are lazy
+    // and only execute when awaited/then'd — without the .then() this
+    // statement was a no-op and last_login was never written.
+    supabase.from('profiles').update({ last_login: new Date().toISOString() }).eq('id', user.id)
+      .then(function() {}, function(e) { console.error('[AUTH] last_login update failed:', e.message); });
     next();
   } catch(e) {
     console.error('Auth error:', e);
@@ -3470,8 +3473,9 @@ async function adminAuth(req, res, next) {
     if (pr.data.is_disabled) return res.status(403).json({ error: 'Account disabled' });
     req.user = result.data.user;
     req.profile = pr.data;
-    // Track last login
-    supabase.from("profiles").update({ last_login: new Date().toISOString() }).eq("id", result.data.user.id);
+    // Track last login (.then() required — lazy builder, see auth middleware)
+    supabase.from("profiles").update({ last_login: new Date().toISOString() }).eq("id", result.data.user.id)
+      .then(function() {}, function(e) { console.error('[ADMIN-AUTH] last_login update failed:', e.message); });
     next();
   } catch(e) {
     res.status(500).json({ error: 'Auth error' });
