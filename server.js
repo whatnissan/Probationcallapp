@@ -386,10 +386,76 @@ async function recordCreditAdd(opts) {
   return rpc.data;
 }
 
-// Idempotency-keyed credit deduction. Returns true if a credit was deducted
-// (or would have been, for a dev user) — caller MUST then write billed_at on
-// the matching call_history row in the same insert. Returns false if we
-// skipped (already billed, no credits, or DB error).
+// One-per-day admin EMAIL when a credit deduction FAILS (as opposed to being
+// legitimately skipped). Deliberately email, not SMS: a Twilio outage is
+// itself a plausible cause of a bad morning, and an SMS-only alert would go
+// down with it. Throttled to one alert per calendar day (America/Chicago),
+// mirroring alertAdminEmailFailure, so a full-day billing outage is exactly
+// one email rather than one per call.
+//
+// This exists because migration 015 was deployed to code but never applied to
+// the database (2026-06-11 -> 2026-08-03): every deduction hit the RPC-error
+// branch, returned "don't bill", and NOTHING anywhere reported it. 242 real
+// user results went unbilled in silence. A failed deduction is now loud.
+var _billingAlertDate = null;
+async function alertAdminBillingFailure(userId, idempotencyKey, reason) {
+  try {
+    var today = formatLocalDay(new Date(), 'America/Chicago');
+    if (_billingAlertDate === today) return; // already alerted today
+    _billingAlertDate = today;
+    var admins = await supabase.from('profiles').select('email').eq('is_admin', true);
+    if (!admins.data || admins.data.length === 0) return;
+
+    var text = 'ADMIN: A credit deduction FAILED (not skipped).\n\n' +
+      'User: ' + String(userId).slice(0, 8) + '\n' +
+      'Key: ' + idempotencyKey + '\n' +
+      'Reason: ' + String(reason || 'unknown').slice(0, 300) + '\n\n' +
+      'The user was notified of their result but was NOT charged. Check that ' +
+      'deduct_credit_with_ledger exists in Supabase and that the schema cache is ' +
+      'current. Throttled to one email per day — there may be more failures today.';
+
+    // Table-based layout (CLAUDE.md rule 4 — Gmail mobile mangles divs).
+    var html = '<!DOCTYPE html><html><head><meta charset="utf-8"></head>' +
+      '<body style="margin:0;padding:0;background:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,sans-serif;">' +
+      '<table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f5;padding:20px 0;">' +
+      '<tr><td align="center">' +
+      '<table width="500" cellpadding="0" cellspacing="0" style="max-width:500px;background:#ffffff;border-radius:12px;border:1px solid #e4e4e7;">' +
+      '<tr><td style="background:#ef4444;color:#ffffff;padding:18px;font-size:18px;font-weight:bold;text-align:center;border-radius:12px 12px 0 0;">' +
+      'Credit deduction FAILED</td></tr>' +
+      '<tr><td style="padding:24px;color:#18181b;font-size:15px;line-height:1.6;white-space:pre-line;">' + text + '</td></tr>' +
+      '</table></td></tr></table></body></html>';
+
+    for (var i = 0; i < admins.data.length; i++) {
+      if (!admins.data[i].email) continue;
+      await brevoMail.send({
+        to: admins.data[i].email,
+        from: { email: FROM_EMAIL, name: 'ProbationCall' },
+        subject: 'ADMIN: credit deduction FAILED - users not being charged',
+        text: text,
+        html: html
+      }).catch(function(e) { console.error('[BILLING-ALERT] send failed:', e.message); });
+    }
+    console.log('[BILLING-ALERT] Admin emailed about billing failure (first failure today)');
+  } catch (e) {
+    console.error('[BILLING-ALERT] Failed to alert admin of billing failure:', e.message);
+  }
+}
+
+// Idempotency-keyed credit deduction. Returns a STATUS string, not a boolean:
+//
+//   'billed'              — a credit was deducted (or would have been, for a
+//                           dev user). Caller MUST write billed_at on the
+//                           matching call_history row in the same insert.
+//   'skipped_already'     — this key was already billed. Correct, expected.
+//   'skipped_no_credits'  — the user has no credits. Correct, expected.
+//   'failed'              — we could NOT bill: RPC error, profile lookup
+//                           failure, unverifiable idempotency, exception.
+//                           The caller must treat this as an incident and
+//                           alert; it means a free result went out.
+//
+// Only 'billed' authorizes writing billed_at. The 'failed' vs 'skipped_*'
+// split is the whole point: the previous boolean collapsed both into false,
+// which is how a 53-day total billing outage stayed invisible.
 //
 // Primary defense: a caller-supplied alreadyBilledCheck() that queries
 // call_history.billed_at — survives restart, redeploy, and pendingCalls being
@@ -398,30 +464,35 @@ async function recordCreditAdd(opts) {
 var _creditDeductionKeys = new Set();
 async function deductCreditOnce(userId, idempotencyKey, options) {
   options = options || {};
-  if (!userId || !idempotencyKey) return false;
+  if (!userId || !idempotencyKey) {
+    console.error('[CREDITS] FAILED — missing userId or idempotencyKey (key=' + idempotencyKey + ')');
+    return 'failed';
+  }
 
   // Fast-path (in-memory, lost on restart).
   if (_creditDeductionKeys.has(idempotencyKey)) {
-    console.log('[CREDITS] Skip (fast-path) for ' + userId.slice(0, 8) + ' key=' + idempotencyKey);
-    return false;
+    console.log('[CREDITS] skipped_already (fast-path) for ' + userId.slice(0, 8) + ' key=' + idempotencyKey);
+    return 'skipped_already';
   }
 
   // Durable check — the source of truth. Survives Railway redeploys and
   // process restarts, which the fast-path cannot.
   if (typeof options.alreadyBilledCheck !== 'function') {
-    console.error('[CREDITS] Refusing to deduct without alreadyBilledCheck for key=' + idempotencyKey);
-    return false;
+    console.error('[CREDITS] FAILED — refusing to deduct without alreadyBilledCheck for key=' + idempotencyKey);
+    return 'failed';
   }
   try {
     var already = await options.alreadyBilledCheck();
     if (already) {
-      console.log('[CREDITS] Skip (durable) for ' + userId.slice(0, 8) + ' key=' + idempotencyKey + ' — already billed');
+      console.log('[CREDITS] skipped_already (durable) for ' + userId.slice(0, 8) + ' key=' + idempotencyKey);
       _creditDeductionKeys.add(idempotencyKey);
-      return false;
+      return 'skipped_already';
     }
   } catch (e) {
-    console.error('[CREDITS] Durable check failed for ' + userId.slice(0, 8) + ' key=' + idempotencyKey + ':', e.message);
-    return false; // refuse to deduct when we can't verify
+    // Can't verify => can't safely bill. This is a FAILURE, not a skip:
+    // the user still gets their result, so it is revenue lost silently.
+    console.error('[CREDITS] FAILED — durable check errored for ' + userId.slice(0, 8) + ' key=' + idempotencyKey + ':', e.message);
+    return 'failed';
   }
 
   try {
@@ -430,8 +501,8 @@ async function deductCreditOnce(userId, idempotencyKey, options) {
     // both checks sufficiency and decrements in one locked statement.
     var pr = await supabase.from('profiles').select('email').eq('id', userId).single();
     if (pr.error || !pr.data) {
-      console.error('[CREDITS] Profile lookup failed for ' + userId.slice(0, 8) + ':', pr.error);
-      return false;
+      console.error('[CREDITS] FAILED — profile lookup failed for ' + userId.slice(0, 8) + ':', pr.error);
+      return 'failed';
     }
     var devUser = isDev(pr.data.email);
 
@@ -447,15 +518,16 @@ async function deductCreditOnce(userId, idempotencyKey, options) {
         p_note: idempotencyKey
       });
       if (rpc.error) {
-        console.error('[CREDITS] deduct_credit_with_ledger RPC failed for ' + userId.slice(0, 8) + ':', rpc.error.message || rpc.error);
-        return false;
+        // The exact branch that swallowed the 2026-06-11 outage. Now loud.
+        console.error('[CREDITS] FAILED — deduct_credit_with_ledger RPC failed for ' + userId.slice(0, 8) + ':', rpc.error.message || rpc.error);
+        return 'failed';
       }
       var newCredits = rpc.data;
       if (newCredits === null || newCredits === undefined) {
-        console.log('[CREDITS] No credits to deduct for ' + userId.slice(0, 8));
-        return false;
+        console.log('[CREDITS] skipped_no_credits for ' + userId.slice(0, 8) + ' key=' + idempotencyKey);
+        return 'skipped_no_credits';
       }
-      console.log('[CREDITS] Deducted 1 from ' + userId.slice(0, 8) + ' (-> ' + newCredits + ') key=' + idempotencyKey);
+      console.log('[CREDITS] billed 1 from ' + userId.slice(0, 8) + ' (-> ' + newCredits + ') key=' + idempotencyKey);
       // A successful billable result resets both skip counters: the user is
       // back in good standing on credits AND the hotline accepted their PIN.
       await supabase.from('user_schedules').update({ no_credit_skip_count: 0, consecutive_pin_expired: 0 }).eq('user_id', userId);
@@ -463,7 +535,7 @@ async function deductCreditOnce(userId, idempotencyKey, options) {
         sendLowCreditAlert(userId, newCredits, options.notifyNumber, options.notifyEmail, options.notifyMethod);
       }
     } else {
-      console.log('[CREDITS] Dev user ' + userId.slice(0, 8) + ' — no deduction; will still mark billed_at key=' + idempotencyKey);
+      console.log('[CREDITS] billed (dev user ' + userId.slice(0, 8) + ' — no deduction; still marking billed_at) key=' + idempotencyKey);
     }
 
     _creditDeductionKeys.add(idempotencyKey);
@@ -471,11 +543,11 @@ async function deductCreditOnce(userId, idempotencyKey, options) {
       var first = _creditDeductionKeys.values().next().value;
       _creditDeductionKeys.delete(first);
     }
-    // true = caller should write billed_at on the call_history insert
-    return true;
+    // 'billed' = caller should write billed_at on the call_history insert
+    return 'billed';
   } catch (e) {
-    console.error('[CREDITS] Exception deducting for ' + userId.slice(0, 8) + ':', e.message);
-    return false;
+    console.error('[CREDITS] FAILED — exception deducting for ' + userId.slice(0, 8) + ':', e.message);
+    return 'failed';
   }
 }
 
@@ -2900,7 +2972,8 @@ app.post('/webhook/recording', validateTwilio, async function(req, res) {
       // call before (across restarts/redeploys too) and skip.
       var shouldMarkBilled = false;
       if ((result === 'MUST_TEST' || result === 'NO_TEST') && config.userId) {
-        shouldMarkBilled = await deductCreditOnce(config.userId, 'call:' + (config.callSid || callId), {
+        var billKey = 'call:' + (config.callSid || callId);
+        var billStatus = await deductCreditOnce(config.userId, billKey, {
           notifyNumber: config.notifyNumber,
           notifyEmail: config.notifyEmail,
           notifyMethod: config.notifyMethod,
@@ -2915,6 +2988,15 @@ app.post('/webhook/recording', validateTwilio, async function(req, res) {
             return !!(r.data && r.data.length > 0);
           }
         });
+        shouldMarkBilled = (billStatus === 'billed');
+        console.log('[TRANSCRIBE] Billing status for ' + config.userId.slice(0, 8) + ' key=' + billKey + ': ' + billStatus);
+        if (billStatus === 'failed') {
+          // The user has already been notified above — this is a free result.
+          // Alert loudly; do NOT write billed_at, so a back-bill query can
+          // still find this row later.
+          await alertAdminBillingFailure(config.userId, billKey, 'Montgomery ' + result + ' — deduction failed')
+            .catch(function(e) { console.error('[TRANSCRIBE] billing alert failed:', e.message); });
+        }
       }
 
       config.result = result;
@@ -4561,7 +4643,8 @@ async function deliverFtbendNotification(row) {
 
   var shouldMarkFtBilled = false;
   if (!isUnknown) {
-    shouldMarkFtBilled = await deductCreditOnce(userId, 'ftbend:' + userId + ':' + oid + ':' + todayDate, {
+    var ftBillKey = 'ftbend:' + userId + ':' + oid + ':' + todayDate;
+    var ftBillStatus = await deductCreditOnce(userId, ftBillKey, {
       notifyNumber: s.notify_number,
       notifyEmail: s.notify_email,
       notifyMethod: s.notify_method,
@@ -4579,6 +4662,14 @@ async function deliverFtbendNotification(row) {
         return !!(r.data && r.data.length > 0);
       }
     });
+    shouldMarkFtBilled = (ftBillStatus === 'billed');
+    console.log('[FTBEND] Billing status for ' + userId.slice(0, 8) + ' key=' + ftBillKey + ': ' + ftBillStatus);
+    if (ftBillStatus === 'failed') {
+      // Notification already went out above — this is a free result. Alert,
+      // and leave billed_at NULL so the row stays findable for a back-bill.
+      await alertAdminBillingFailure(userId, ftBillKey, 'Fort Bend ' + oid + ' — deduction failed')
+        .catch(function(e) { console.error('[FTBEND] billing alert failed:', e.message); });
+    }
   }
   var ftRow = {
     user_id: userId,
