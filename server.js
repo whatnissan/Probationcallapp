@@ -231,15 +231,10 @@ function getCountyConfig(countyId) {
 const AFFILIATE_COMMISSION_PERCENT = 30;
 
 // Format phone to E.164 (+1XXXXXXXXXX)
-function formatPhone(phone) {
-  if (!phone) return phone;
-  var cleaned = phone.replace(/[^0-9]/g, '');
-  if (cleaned.length === 10) cleaned = '1' + cleaned;
-  if (cleaned.length === 11 && cleaned[0] === '1') {
-    return '+' + cleaned;
-  }
-  return phone.startsWith('+') ? phone : '+' + cleaned;
-}
+// formatPhone removed — its last caller (/api/schedule) moved to
+// normalizePhoneE164 in lib/validation.js. It passed malformed input
+// straight through rather than rejecting it, so leaving it in place was a
+// trap for the next caller. Use normalizePhoneE164.
 const MIN_PAYOUT_CENTS = 2000; // $20 minimum payout
 const REFERRED_BONUS_CREDITS = 5; // Bonus credits for new users who use referral
 
@@ -1051,15 +1046,27 @@ async function auth(req, res, next) {
           return res.status(500).json({ error: 'Account setup failed, please retry' });
         }
       } else {
-        await recordCreditAdd({
+        // The grant result MUST be checked. Discarding it meant that on an
+        // RPC failure the profile stayed at 0 credits while the object below
+        // reported startCredits — the API told the user they had credits the
+        // database did not have. Fall back to the real row instead of
+        // fabricating one.
+        var granted = await recordCreditAdd({
           userId: user.id,
           amount: startCredits,
           source: 'signup_bonus',
           note: isDev(user.email) ? 'Dev account starting credits' : 'New user starter credits'
         });
-        profile = { id: user.id, email: user.email, credits: startCredits, referral_code: referralCode };
-        // Send welcome email to new user (only the request that won the insert).
-        sendWelcomeEmail(user.email, startCredits, 'welcome').catch(function(e) { console.log('[WELCOME] Email failed:', e.message); });
+        if (granted === null) {
+          console.error('[AUTH] Signup bonus grant FAILED for ' + user.id.slice(0, 8) + ' — profile exists with 0 credits');
+          var rf2 = await supabase.from('profiles').select('*').eq('id', user.id).single();
+          if (!rf2.data) return res.status(500).json({ error: 'Account setup failed, please retry' });
+          profile = rf2.data; // truthful balance (0), not the assumed one
+        } else {
+          profile = { id: user.id, email: user.email, credits: granted, referral_code: referralCode };
+          // Welcome email only when the bonus actually landed.
+          sendWelcomeEmail(user.email, startCredits, 'welcome').catch(function(e) { console.log('[WELCOME] Email failed:', e.message); });
+        }
       }
     }
     
@@ -1369,26 +1376,46 @@ app.post('/api/apply-referral', auth, requireAffiliateEnabled, async function(re
   // shows up in credit history. Two writes, but the lock is an attribute
   // unrelated to credits — splitting is cleaner than smuggling both through
   // the RPC.
-  await supabase.from('profiles').update({
+  var lockUpd = await supabase.from('profiles').update({
     referred_by: code.toUpperCase()
   }).eq('id', req.user.id);
-  await recordCreditAdd({
+  if (lockUpd.error) {
+    console.error('[AFFILIATE] Referral lock failed for ' + req.user.id.slice(0, 8) + ':', lockUpd.error.message);
+    return res.status(500).json({ error: 'Could not apply referral code — please try again' });
+  }
+
+  var refGranted = await recordCreditAdd({
     userId: req.user.id,
     amount: REFERRED_BONUS_CREDITS,
     source: 'referral_bonus',
     note: 'Referral signup bonus (code ' + code.toUpperCase() + ')'
   });
-  
-  // Create referral record
-  await supabase.from('referrals').insert({
+  if (refGranted === null) {
+    // The grant is the point of the operation. Releasing the lock keeps the
+    // user able to retry — leaving it set would burn their one referral
+    // forever in exchange for nothing, silently.
+    console.error('[AFFILIATE] Referral bonus grant FAILED for ' + req.user.id.slice(0, 8) + ' — releasing lock so it can be retried');
+    var unlock = await supabase.from('profiles').update({ referred_by: null }).eq('id', req.user.id);
+    if (unlock.error) {
+      console.error('[AFFILIATE] Lock release ALSO failed for ' + req.user.id.slice(0, 8) + ' — manual fix needed:', unlock.error.message);
+    }
+    return res.status(500).json({ error: 'Could not apply referral code — please try again' });
+  }
+
+  // Create referral record. Non-fatal: the user already has their bonus and
+  // the lock is set, so a failure here is a reporting gap, not a money bug.
+  var refRow = await supabase.from('referrals').insert({
     referrer_id: referrer.id,
     referred_id: req.user.id,
     referral_code: code.toUpperCase(),
     status: 'signed_up'
   });
-  
-  console.log('[AFFILIATE] User ' + req.user.email + ' signed up with code ' + code);
-  
+  if (refRow.error) {
+    console.error('[AFFILIATE] referrals row insert failed for ' + req.user.id.slice(0, 8) + ' (bonus already granted):', refRow.error.message);
+  }
+
+  console.log('[AFFILIATE] User ' + req.user.email + ' signed up with code ' + code + ' (+' + REFERRED_BONUS_CREDITS + ' -> ' + refGranted + ')');
+
   res.json({ success: true, bonusCredits: REFERRED_BONUS_CREDITS });
 });
 
@@ -1518,13 +1545,31 @@ app.post('/api/redeem', auth, async function(req, res) {
     return res.status(400).json({ error: 'Already used' });
   }
   await supabase.from('promo_codes').update({ times_used: promo.times_used + 1 }).eq('id', promo.id);
-  await recordCreditAdd({
+
+  var promoGranted = await recordCreditAdd({
     userId: req.user.id,
     amount: promo.credits,
     source: 'promo',
     note: 'Promo code: ' + code.toUpperCase()
   });
-  
+  if (promoGranted === null) {
+    // Both claims (the redemption row and the use counter) are already
+    // committed. Unwind them, or the user has burned a single-use code and
+    // received nothing, with no way to retry and no error shown.
+    console.error('[PROMO] Grant FAILED for ' + req.user.id.slice(0, 8) + ' code=' + code.toUpperCase() + ' — unwinding redemption claim');
+    var delRedemption = await supabase.from('promo_redemptions')
+      .delete().eq('user_id', req.user.id).eq('promo_code_id', promo.id);
+    if (delRedemption.error) {
+      console.error('[PROMO] Redemption unwind FAILED for ' + req.user.id.slice(0, 8) + ' — manual fix needed:', delRedemption.error.message);
+    }
+    var decUse = await supabase.from('promo_codes').update({ times_used: promo.times_used }).eq('id', promo.id);
+    if (decUse.error) {
+      console.error('[PROMO] times_used unwind failed for code ' + code.toUpperCase() + ':', decUse.error.message);
+    }
+    return res.status(500).json({ error: 'Could not apply promo code — please try again' });
+  }
+
+  console.log('[PROMO] ' + req.user.id.slice(0, 8) + ' redeemed ' + code.toUpperCase() + ' (+' + promo.credits + ' -> ' + promoGranted + ')');
   res.json({ success: true, credits: promo.credits });
 });
 
