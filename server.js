@@ -19,6 +19,7 @@ const {
 } = require('./lib/detection');
 const { formatLocalDay, todayMD, wouldExceedCutoff, wouldExceedFtbendCutoff } = require('./lib/time');
 const { computeTieredPriceCents, MAX_EXACT_CREDITS } = require('./lib/pricing');
+const { isValidPin, isValidTimezone, isValidEmail, normalizePhoneE164 } = require('./lib/validation');
 
 
 // --- BREVO EMAIL VIA HTTP API ---
@@ -386,24 +387,39 @@ async function recordCreditAdd(opts) {
   return rpc.data;
 }
 
-// One-per-day admin EMAIL when a credit deduction FAILS (as opposed to being
-// legitimately skipped). Deliberately email, not SMS: a Twilio outage is
-// itself a plausible cause of a bad morning, and an SMS-only alert would go
-// down with it. Throttled to one alert per calendar day (America/Chicago),
-// mirroring alertAdminEmailFailure, so a full-day billing outage is exactly
-// one email rather than one per call.
+// One-per-day admin alert when a credit deduction FAILS (as opposed to being
+// legitimately skipped). Throttled to one alert per calendar day
+// (America/Chicago), mirroring alertAdminEmailFailure, so a full-day billing
+// outage is exactly one alert rather than one per call.
+//
+// DUAL-CHANNEL: email (Brevo) AND SMS (Twilio), independently — either one
+// arriving is sufficient. Neither leg can suppress the other: each is
+// awaited with its own .catch, and the throttle is set once for both. The
+// original version was email-only on the reasoning that a Twilio outage
+// shouldn't take the alert down with it. That reasoning still holds, but
+// Brevo has its own documented failure mode here (the Authorised-IPs
+// restriction vs Railway's dynamic egress IP — see alertAdminEmailFailure),
+// so betting the alert on either single channel is the weaker choice.
 //
 // This exists because migration 015 was deployed to code but never applied to
 // the database (2026-06-11 -> 2026-08-03): every deduction hit the RPC-error
 // branch, returned "don't bill", and NOTHING anywhere reported it. 242 real
 // user results went unbilled in silence. A failed deduction is now loud.
+// The throttle is armed only AFTER at least one channel actually delivers.
+// Marking the day as "alerted" up front (the pattern alertAdminEmailFailure
+// uses) means a day where BOTH channels fail burns the throttle and the
+// failure is never reported — the precise failure mode this whole commit
+// exists to eliminate. _billingAlertInFlight prevents two concurrent
+// failures from both sending while the first is still awaiting.
 var _billingAlertDate = null;
+var _billingAlertInFlight = false;
 async function alertAdminBillingFailure(userId, idempotencyKey, reason) {
+  if (_billingAlertInFlight) return;
   try {
     var today = formatLocalDay(new Date(), 'America/Chicago');
-    if (_billingAlertDate === today) return; // already alerted today
-    _billingAlertDate = today;
-    var admins = await supabase.from('profiles').select('email').eq('is_admin', true);
+    if (_billingAlertDate === today) return; // already delivered today
+    _billingAlertInFlight = true;
+    var admins = await supabase.from('profiles').select('id, email').eq('is_admin', true);
     if (!admins.data || admins.data.length === 0) return;
 
     var text = 'ADMIN: A credit deduction FAILED (not skipped).\n\n' +
@@ -412,7 +428,13 @@ async function alertAdminBillingFailure(userId, idempotencyKey, reason) {
       'Reason: ' + String(reason || 'unknown').slice(0, 300) + '\n\n' +
       'The user was notified of their result but was NOT charged. Check that ' +
       'deduct_credit_with_ledger exists in Supabase and that the schema cache is ' +
-      'current. Throttled to one email per day — there may be more failures today.';
+      'current. Throttled to one alert per day — there may be more failures today.';
+
+    // SMS is length-sensitive; send the short form rather than the email body.
+    var smsText = '🚨 ProbationCall ADMIN: credit deduction FAILED for user ' +
+      String(userId).slice(0, 8) + ' (' + String(reason || 'unknown').slice(0, 60) + '). ' +
+      'Result delivered but NOT charged. Check deduct_credit_with_ledger in Supabase. ' +
+      '1 alert/day — there may be more.';
 
     // Table-based layout (CLAUDE.md rule 4 — Gmail mobile mangles divs).
     var html = '<!DOCTYPE html><html><head><meta charset="utf-8"></head>' +
@@ -425,19 +447,55 @@ async function alertAdminBillingFailure(userId, idempotencyKey, reason) {
       '<tr><td style="padding:24px;color:#18181b;font-size:15px;line-height:1.6;white-space:pre-line;">' + text + '</td></tr>' +
       '</table></td></tr></table></body></html>';
 
+    var emailOk = 0, smsOk = 0;
     for (var i = 0; i < admins.data.length; i++) {
-      if (!admins.data[i].email) continue;
-      await brevoMail.send({
-        to: admins.data[i].email,
-        from: { email: FROM_EMAIL, name: 'ProbationCall' },
-        subject: 'ADMIN: credit deduction FAILED - users not being charged',
-        text: text,
-        html: html
-      }).catch(function(e) { console.error('[BILLING-ALERT] send failed:', e.message); });
+      var admin = admins.data[i];
+
+      // Leg 1 — email. Failure here must not skip the SMS below.
+      if (admin.email) {
+        var sent = await brevoMail.send({
+          to: admin.email,
+          from: { email: FROM_EMAIL, name: 'ProbationCall' },
+          subject: 'ADMIN: credit deduction FAILED - users not being charged',
+          text: text,
+          html: html
+        }).then(function() { return true; }, function(e) {
+          console.error('[BILLING-ALERT] email leg failed:', e.message);
+          return false;
+        });
+        if (sent) emailOk++;
+      }
+
+      // Leg 2 — SMS, to the admin's own notify_number (same lookup
+      // alertAdminEmailFailure uses). Independent of the email result.
+      var as = await supabase.from('user_schedules')
+        .select('notify_number').eq('user_id', admin.id).maybeSingle();
+      var adminNumber = as && as.data ? as.data.notify_number : null;
+      if (adminNumber) {
+        // sendSMS resolves {success:bool} rather than throwing; the rejection
+        // handler is belt-and-braces in case that ever changes.
+        var smsSent = await sendSMS(adminNumber, smsText, 'billing_failure_admin')
+          .then(function(r) { return !!(r && r.success === true); }, function(e) {
+            console.error('[BILLING-ALERT] sms leg failed:', e.message);
+            return false;
+          });
+        if (!smsSent) console.error('[BILLING-ALERT] sms leg did not send for admin ' + admin.id.slice(0, 8));
+        if (smsSent) smsOk++;
+      } else {
+        console.warn('[BILLING-ALERT] admin ' + admin.id.slice(0, 8) + ' has no notify_number — SMS leg skipped');
+      }
     }
-    console.log('[BILLING-ALERT] Admin emailed about billing failure (first failure today)');
+    if (emailOk > 0 || smsOk > 0) {
+      // At least one admin was actually reached — arm the daily throttle.
+      _billingAlertDate = today;
+      console.log('[BILLING-ALERT] Billing failure alerted (first today) — email ok=' + emailOk + ', sms ok=' + smsOk);
+    } else {
+      console.error('[BILLING-ALERT] BOTH CHANNELS FAILED — throttle NOT armed; the next failed deduction will retry the alert');
+    }
   } catch (e) {
     console.error('[BILLING-ALERT] Failed to alert admin of billing failure:', e.message);
+  } finally {
+    _billingAlertInFlight = false;
   }
 }
 
@@ -1336,10 +1394,16 @@ app.post('/api/apply-referral', auth, requireAffiliateEnabled, async function(re
 
 // Set payout email
 app.post('/api/affiliate/payout-email', auth, requireAffiliateEnabled, async function(req, res) {
-  var email = req.body.email;
+  var email = req.body.email ? String(req.body.email).trim() : '';
   if (!email) return res.status(400).json({ error: 'Email required' });
-  
-  await supabase.from('profiles').update({ payout_email: email }).eq('id', req.user.id);
+  // Rendered in the admin payouts table; was previously stored unvalidated.
+  if (!isValidEmail(email)) return res.status(400).json({ error: 'Invalid email address' });
+
+  var upd = await supabase.from('profiles').update({ payout_email: email }).eq('id', req.user.id);
+  if (upd.error) {
+    console.error('[AFFILIATE] payout_email update failed for ' + req.user.id.slice(0, 8) + ':', upd.error.message);
+    return res.status(500).json({ error: 'Could not save payout email' });
+  }
   res.json({ success: true });
 });
 
@@ -1545,18 +1609,53 @@ app.post('/api/schedule', auth, async function(req, res) {
   if (county !== 'ftbend' && (hour < MIN_HOUR || hour > MAX_HOUR || (hour === MAX_HOUR && minute > 59))) {
     return res.status(400).json({ error: 'Schedule time must be between 6:00 AM and 2:59 PM' });
   }
-  
+
+  // Validate every user-writable field BEFORE it reaches storage. These land
+  // in the admin panel's innerHTML and in the scheduler's timezone math; both
+  // previously accepted arbitrary strings. Escaping (421ea53) is the security
+  // boundary — this is the second layer, and it also keeps garbage out of the
+  // cutoff calculations. All 9 live schedules already satisfy these rules.
+  if (!isValidPin(req.body.pin)) {
+    return res.status(400).json({ error: 'PIN must be exactly 6 digits' });
+  }
+  var tz = req.body.timezone || 'America/Chicago';
+  if (!isValidTimezone(tz)) {
+    return res.status(400).json({ error: 'Unsupported timezone' });
+  }
+  // notify_email is optional (SMS-only users), but must be well-formed if sent.
+  var notifyEmail = req.body.notifyEmail ? String(req.body.notifyEmail).trim() : null;
+  if (notifyEmail && !isValidEmail(notifyEmail)) {
+    return res.status(400).json({ error: 'Invalid notification email address' });
+  }
+  // notify_number is likewise optional, but must normalize to US E.164.
+  var notifyNumber = null;
+  if (req.body.notifyNumber) {
+    notifyNumber = normalizePhoneE164(req.body.notifyNumber);
+    if (!notifyNumber) {
+      return res.status(400).json({ error: 'Invalid phone number — use a 10-digit US number' });
+    }
+  }
+  // A delivery method needs a matching destination, or the user silently
+  // gets nothing.
+  var notifyMethod = req.body.notifyMethod || 'email';
+  if ((notifyMethod === 'sms' || notifyMethod === 'both') && !notifyNumber) {
+    return res.status(400).json({ error: 'A phone number is required for SMS notifications' });
+  }
+  if ((notifyMethod === 'email' || notifyMethod === 'both') && !notifyEmail) {
+    return res.status(400).json({ error: 'An email address is required for email notifications' });
+  }
+
   var data = {
     user_id: req.user.id,
     county: req.body.county || 'montgomery',
     target_number: getCountyConfig(req.body.county || 'montgomery').number,
     pin: req.body.pin,
-    notify_number: formatPhone(req.body.notifyNumber),
-    notify_email: req.body.notifyEmail || null,
-    notify_method: req.body.notifyMethod || 'email',
+    notify_number: notifyNumber,
+    notify_email: notifyEmail,
+    notify_method: notifyMethod,
     hour: hour,
     minute: minute,
-    timezone: req.body.timezone || 'America/Chicago',
+    timezone: tz,
     quiet_mode: req.body.quietMode || false,
     ftbend_office: req.body.ftbend_office || 'missouri',
     enabled: true,
