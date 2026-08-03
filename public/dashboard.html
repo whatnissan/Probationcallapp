@@ -406,7 +406,14 @@ select option { background: #1a1a2e; color: #fff; }
         </table>
         <button class="btn btn-danger" style="margin-top:15px" onclick="deleteSchedule()">🗑️ Delete</button>
       </div>
-      <div class="info-box" id="noSchedInfo"><strong>No schedule.</strong> Set up auto-calls below.</div>
+      <!-- Shown whenever the user has no schedule row — including after
+           "Skip for now" and after a credit-depletion removal. This is the
+           only route back in once the onboarding modal is marked complete,
+           so it has to say plainly what to do. -->
+      <div class="info-box" id="noSchedInfo">
+        <strong>Set up your daily call</strong><br>
+        We're not checking the hotline for you yet. Fill in the form below and we'll start calling every morning and sending you the result.
+      </div>
       <form id="scheduleForm">
         <div class="form-group"><label>County</label><select id="schedCounty"><option value="montgomery">Montgomery County</option><option value="ftbend">Fort Bend County</option></select></div>
         <div class="form-group" id="ftbendOfficeGroup" style="display:none"><label>Fort Bend Office</label><select id="ftbendOffice"><option value="missouri">Missouri City</option><option value="rosenberg">Rosenberg (3669)</option><option value="rosenberg2">Rosenberg 2 (3671)</option></select><small style="display:block;margin-top:5px;color:#8892b0">Select the office/hotline you call</small></div>
@@ -1664,27 +1671,60 @@ function checkOnboarding(profile) {
   }
 }
 
+// Inline error helper — replaces alert() so the message appears next to the
+// field it's about instead of in a modal dialog the user has to dismiss.
+function onboardShowErr(id, msg) {
+  var el = document.getElementById(id);
+  if (!el) { alert(msg); return; }
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+function onboardClearErr(id) {
+  var el = document.getElementById(id);
+  if (el) el.style.display = 'none';
+}
+
 function onboardNext(step) {
   // Validate current step
   if (step === 2) {
     var county = document.getElementById('onboardCounty').value;
-    if (!county) { alert('Please select your county'); return; }
+    if (!county) { onboardShowErr('onboardErr1', 'Please select your county to continue.'); return; }
+    onboardClearErr('onboardErr1');
   }
   if (step === 3) {
     var county = document.getElementById('onboardCounty').value;
     if (county !== 'ftbend') {
-      var pin = document.getElementById('onboardPin').value;
-      if (!pin || pin.length !== 6) { alert('Please enter your 6-digit PIN'); return; }
+      var pin = document.getElementById('onboardPin').value.trim();
+      // Mirrors the server rule (lib/validation.js isValidPin) so the user
+      // gets the same answer here as they would after submitting.
+      if (!/^[0-9]{6}$/.test(pin)) {
+        onboardShowErr('onboardErr2', 'Your PIN is 6 digits, numbers only — check your probation paperwork.');
+        return;
+      }
     }
+    onboardClearErr('onboardErr2');
   }
   if (step === 4) {
     var method = document.getElementById('onboardMethod').value;
-    if (method === 'sms') {
-      var phone = document.getElementById('onboardPhone').value;
-      if (!phone) { alert('Please enter your phone number'); return; }
+    // 'both' needs a phone just as much as 'sms' — this previously checked
+    // only 'sms', so a "Both" user could continue with no number and the
+    // server would reject the schedule.
+    if (method === 'sms' || method === 'both') {
+      var phone = document.getElementById('onboardPhone').value.trim();
+      if (!phone) { onboardShowErr('onboardErr3', 'Please enter your phone number so we can text you.'); return; }
+      if (phone.replace(/[^0-9]/g, '').replace(/^1/, '').length !== 10) {
+        onboardShowErr('onboardErr3', 'Please enter a 10-digit US phone number.');
+        return;
+      }
+      var consent = document.getElementById('onboardSmsConsent');
+      if (consent && !consent.checked) {
+        onboardShowErr('onboardErr3', 'Please check the box to agree to receive SMS messages.');
+        return;
+      }
     }
+    onboardClearErr('onboardErr3');
   }
-  
+
   document.querySelectorAll('.onboard-step').forEach(function(el) { el.style.display = 'none'; });
   document.getElementById('onboardStep' + step).style.display = 'block';
   
@@ -1700,61 +1740,127 @@ function selectOnboardMethod(method) {
   document.querySelectorAll('#onboardingModal .method-option').forEach(function(el) { el.classList.remove('active'); });
   event.target.closest('.method-option').classList.add('active');
   document.getElementById('onboardMethod').value = method;
-  document.getElementById('onboardPhoneGroup').style.display = (method === 'sms' || method === 'both') ? 'block' : 'none';
+  var wantsSms = (method === 'sms' || method === 'both');
+  document.getElementById('onboardPhoneGroup').style.display = wantsSms ? 'block' : 'none';
+  // Consent is shown only when SMS is actually chosen — an email-only user
+  // should never be asked to agree to text-message terms. Previously the
+  // onboarding modal had no consent box at all, so anyone who picked SMS
+  // here agreed to nothing.
+  var box = document.getElementById('onboardSmsConsentBox');
+  if (box) box.style.display = wantsSms ? 'block' : 'none';
+  onboardClearErr('onboardErr3');
 }
 
-function completeOnboarding() {
+// "Skip for now" now actually skips. It previously called
+// completeOnboarding(), submitting the half-filled form — which is how users
+// ended up with onboarding_complete=true and no schedule. It marks onboarding
+// done (so the modal doesn't reappear every load) and leaves the dashboard's
+// setup card as the way back in.
+async function skipOnboarding() {
+  try {
+    await fetch('/api/profile/onboarding-complete', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + token }
+    });
+  } catch (e) {
+    // Non-fatal: worst case the modal shows again next load.
+    console.error('[ONBOARD] skip mark failed', e);
+  }
+  document.getElementById('onboardingModal').classList.remove('active');
+  loadUser();
+}
+
+function fmtCallTime(hour, minute) {
+  var h = parseInt(hour, 10), m = parseInt(minute, 10);
+  var ampm = h >= 12 ? 'PM' : 'AM';
+  var h12 = h % 12 === 0 ? 12 : h % 12;
+  return h12 + ':' + String(m).padStart(2, '0') + ' ' + ampm;
+}
+
+// Every request is awaited and its response checked. The old version fired
+// four fetches and ignored all of them, then unconditionally announced
+// "Setup complete! Your schedule is now active" — so a rejected schedule and
+// a successful one looked identical to the user, and onboarding_complete was
+// set either way. That is how 9 of 10 stalled accounts ended up marked
+// complete with nothing configured.
+async function completeOnboarding() {
   var county = document.getElementById('onboardCounty').value;
-  var pin = document.getElementById('onboardPin').value;
+  var pin = document.getElementById('onboardPin').value.trim();
   var color = document.getElementById('onboardColor').value;
   var method = document.getElementById('onboardMethod').value;
-  var phone = document.getElementById('onboardPhone').value;
+  var phone = document.getElementById('onboardPhone').value.trim();
   var endDate = document.getElementById('onboardEndDate').value;
+  var hour = document.getElementById('onboardHour').value;
+  var minute = document.getElementById('onboardMinute').value;
   var userEmail = document.getElementById('userEmail').textContent;
-  
-  // Save schedule with all the collected data
-  fetch('/api/schedule', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
-    body: JSON.stringify({
-      county: county,
-      pin: county === 'ftbend' ? '' : pin,
-      notifyNumber: phone || '',
-      notifyEmail: userEmail,
-      notifyMethod: method,
-      hour: 6 + Math.floor(Math.random() * 3),  // Random 6, 7, or 8
-      minute: Math.floor(Math.random() * (county === 'montgomery' ? 30 : 60)),  // 0-29 for 6-7am, 0-59 for 7-8am
-      timezone: 'America/Chicago',
-      quietMode: false
-    })
-  });
-  
-  // Save color if Ft Bend
+  var btn = document.getElementById('onboardFinishBtn');
+
+  onboardClearErr('onboardErr4');
+  if (btn) { btn.disabled = true; btn.textContent = 'Setting up…'; }
+
+  function fail(msg) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Finish setup'; }
+    onboardShowErr('onboardErr4', msg);
+  }
+
+  try {
+    var schedRes = await fetch('/api/schedule', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+      body: JSON.stringify({
+        county: county,
+        pin: county === 'ftbend' ? '' : pin,
+        notifyNumber: phone || '',
+        notifyEmail: userEmail,
+        notifyMethod: method,
+        hour: parseInt(hour, 10),
+        minute: parseInt(minute, 10),
+        timezone: 'America/Chicago',
+        quietMode: false
+      })
+    });
+    if (!schedRes.ok) {
+      // Surface the server's own message — it is written to be actionable
+      // ("Enter the 6-digit PIN from your probation paperwork").
+      var err = await schedRes.json().catch(function() { return {}; });
+      return fail(err.error || 'We couldn\'t save your schedule. Please check your details and try again.');
+    }
+  } catch (e) {
+    return fail('We couldn\'t reach the server. Check your connection and try again.');
+  }
+
+  // Fort Bend colour — non-fatal, the schedule is already saved.
   if (county === 'ftbend' && color) {
-    fetch('/api/profile/color', {
+    await fetch('/api/profile/color', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
       body: JSON.stringify({ color: color })
-    });
+    }).catch(function(e) { console.error('[ONBOARD] color save failed', e); });
   }
-  
-  // Save probation end date if provided
+
+  // Probation end date — optional and non-fatal.
   if (endDate) {
-    fetch('/api/profile/probation-end', {
+    await fetch('/api/profile/probation-end', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
       body: JSON.stringify({ endDate: endDate })
-    });
+    }).catch(function(e) { console.error('[ONBOARD] end date save failed', e); });
   }
-  
-  // Mark onboarding complete
-  fetch('/api/profile/onboarding-complete', {
+
+  // Only mark onboarding complete once the schedule actually saved.
+  await fetch('/api/profile/onboarding-complete', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }
-  });
-  
+    headers: { Authorization: 'Bearer ' + token }
+  }).catch(function(e) { console.error('[ONBOARD] complete mark failed', e); });
+
+  if (btn) { btn.disabled = false; btn.textContent = 'Finish setup'; }
   document.getElementById('onboardingModal').classList.remove('active');
-  alert('🎉 Setup complete! Your schedule is now active.');
+
+  var when = fmtCallTime(hour, minute);
+  var how = method === 'sms' ? 'text you' : (method === 'both' ? 'text and email you' : 'email you');
+  alert(county === 'ftbend'
+    ? 'You\'re all set. We\'ll check the Fort Bend hotline each morning and ' + how + ' the result around ' + when + '.'
+    : 'You\'re all set. We\'ll call the hotline for you every morning at ' + when + ' and ' + how + ' the result.');
   loadUser();
 }
 
@@ -2090,19 +2196,21 @@ function filterHistory(filter) {
           <option value="ftbend">Fort Bend County</option>
         </select>
       </div>
+      <div class="status error" id="onboardErr1" style="display:none;margin-bottom:10px"></div>
       <button class="btn" onclick="onboardNext(2)">Next →</button>
     </div>
     
     <div id="onboardStep2" class="onboard-step" style="display:none">
       <h3 style="margin-bottom:15px">Step 2: Your Details</h3>
       <div class="form-group" id="onboardPinGroup">
-        <label>Your Probation PIN (from your paperwork)</label>
-        <input type="text" id="onboardPin" maxlength="6" placeholder="123456" style="font-size:1.2rem;text-align:center;letter-spacing:5px"><small style="display:block;margin-top:8px;color:#8892b0">This is the 6-digit PIN given to you by Montgomery County Probation. Do NOT make one up.</small>
+        <label>Your Probation PIN</label>
+        <input type="text" id="onboardPin" maxlength="6" inputmode="numeric" placeholder="123456" style="font-size:1.2rem;text-align:center;letter-spacing:5px"><small style="display:block;margin-top:8px;color:#8892b0">Your 6-digit PIN from Montgomery County Probation — it's on your paperwork. If you can't find it, ask your officer before setting this up.</small>
       </div>
       <div class="form-group" id="onboardColorGroup" style="display:none">
         <label>Your Assigned Color</label>
         <input type="text" id="onboardColor" placeholder="e.g. Blue, Red, Green" style="font-size:1.1rem">
       </div>
+      <div class="status error" id="onboardErr2" style="display:none;margin-bottom:10px"></div>
       <button class="btn" onclick="onboardNext(3)">Next →</button>
     </div>
     
@@ -2118,17 +2226,51 @@ function filterHistory(filter) {
         <label>Phone Number</label>
         <input type="tel" id="onboardPhone" placeholder="+1234567890" onblur="formatPhoneNumber(this)">
       </div>
+      <!-- Carrier consent language is required and intentionally verbatim —
+           do not reword. Shown only when SMS or Both is selected. -->
+      <div class="consent-box" id="onboardSmsConsentBox" style="display:none">
+        <h4>📱 SMS Notification Consent</h4>
+        <p>By checking the box below, you agree to receive SMS text messages from ProbationCall. Message frequency: up to 1 per call. Msg &amp; data rates may apply. Reply STOP to unsubscribe.</p>
+        <label><input type="checkbox" id="onboardSmsConsent"><span>I agree to receive SMS messages and have read the <a href="/terms.html" target="_blank">Terms</a> and <a href="/privacy.html" target="_blank">Privacy Policy</a>.</span></label>
+      </div>
+      <div class="status error" id="onboardErr3" style="display:none;margin-top:10px"></div>
       <button class="btn" onclick="onboardNext(4)">Next →</button>
     </div>
-    
+
     <div id="onboardStep4" class="onboard-step" style="display:none">
-      <h3 style="margin-bottom:15px">Step 4: Probation End Date (Optional)</h3>
-      <p style="color:#8892b0;margin-bottom:15px">This helps you buy the exact credits you need.</p>
+      <h3 style="margin-bottom:15px">Step 4: When should we call?</h3>
+      <p style="color:#8892b0;margin-bottom:15px">We'll call the hotline for you at this time each morning and send your result right after.</p>
       <div class="form-group">
-        <input type="date" id="onboardEndDate">
+        <label>Call time</label>
+        <div style="display:flex;gap:10px;align-items:center">
+          <select id="onboardHour" style="flex:1">
+            <option value="6" selected>6 AM</option>
+            <option value="7">7 AM</option>
+            <option value="8">8 AM</option>
+            <option value="9">9 AM</option>
+            <option value="10">10 AM</option>
+            <option value="11">11 AM</option>
+            <option value="12">12 PM</option>
+            <option value="13">1 PM</option>
+            <option value="14">2 PM</option>
+          </select>
+          <select id="onboardMinute" style="flex:1">
+            <option value="0">:00</option>
+            <option value="15">:15</option>
+            <option value="30" selected>:30</option>
+            <option value="45">:45</option>
+          </select>
+        </div>
+        <small style="display:block;margin-top:8px;color:#8892b0">6:30 AM works for most people. You can change this anytime.</small>
       </div>
-      <button class="btn btn-green" onclick="completeOnboarding()">🎉 Complete Setup</button>
-      <button class="btn btn-secondary" onclick="completeOnboarding()" style="margin-top:10px">Skip for now</button>
+      <div class="form-group">
+        <label>Probation end date <span style="color:#8892b0">(optional)</span></label>
+        <input type="date" id="onboardEndDate">
+        <small style="display:block;margin-top:8px;color:#8892b0">Helps you buy the exact number of credits you need — nothing else.</small>
+      </div>
+      <div class="status error" id="onboardErr4" style="display:none;margin-bottom:10px"></div>
+      <button class="btn btn-green" id="onboardFinishBtn" onclick="completeOnboarding()">Finish setup</button>
+      <button class="btn btn-secondary" onclick="skipOnboarding()" style="margin-top:10px">Skip for now</button>
     </div>
   </div>
 </div>

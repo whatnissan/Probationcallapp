@@ -1808,16 +1808,34 @@ function rescheduleUser(userId, sched) {
         }
 
         var isDevUser = isDev(profile.email);
-        
+
         if (!isDevUser && profile.credits < 1) {
-          var skipCount = (sched.no_credit_skip_count || 0) + 1;
+          // H9 FIX. This used to read `sched.no_credit_skip_count` — but
+          // `sched` is the object captured in this closure when
+          // rescheduleUser ran (at boot, or on schedule save). The DB was
+          // updated below; the closure never was. So skipCount computed to 1
+          // EVERY day, never reached 2, and the schedule was never removed —
+          // the user got "will be removed tomorrow" every morning
+          // indefinitely, until a redeploy reloaded schedules and the next
+          // skip finally hit 2. Read the live value instead.
+          // (The Fort Bend equivalent in deliverFtbendNotification was never
+          // affected — it re-fetches the schedule row on every delivery.)
+          var freshSched = await supabase.from('user_schedules')
+            .select('no_credit_skip_count').eq('user_id', userId).maybeSingle();
+          if (freshSched.error) {
+            console.error('[SCHED] Could not read no_credit_skip_count for ' + userId.slice(0, 8) + ' — skipping without counting:', freshSched.error.message);
+            return;
+          }
+          if (!freshSched.data) return; // schedule deleted out from under us
+          var skipCount = (freshSched.data.no_credit_skip_count || 0) + 1;
+          console.log('[SCHED] No credits for ' + userId.slice(0, 8) + ' — skip ' + skipCount);
           if (skipCount >= 2) {
             await supabase.from('user_schedules').delete().eq('user_id', userId);
             if (scheduledJobs.has(userId)) { scheduledJobs.get(userId).stop(); scheduledJobs.delete(userId); }
-            await notify(sched.notify_number, sched.notify_email, sched.notify_method, '⚠️ Schedule Removed\n\nYour daily check-ins have stopped due to no credits remaining.\n\nPurchase credits and set up your schedule again at:\nprobationcall.com\n\n- ProbationCall.com', 'sched');
+            await notify(sched.notify_number, sched.notify_email, sched.notify_method, 'Your daily checks have stopped because your credits ran out.\n\nAdd credits and set your schedule back up at probationcall.com — it takes about a minute.\n\n- ProbationCall.com', 'sched');
           } else {
             await supabase.from('user_schedules').update({ no_credit_skip_count: skipCount }).eq('user_id', userId);
-            await notify(sched.notify_number, sched.notify_email, sched.notify_method, '⚠️ Call Skipped - Low Credits\n\nToday\'s check-in was skipped because you\'re out of credits. Your schedule will be removed tomorrow if credits are not added.\n\nPurchase credits now at:\nprobationcall.com\n\n- ProbationCall.com', 'sched');
+            await notify(sched.notify_number, sched.notify_email, sched.notify_method, 'Heads up — we couldn\'t check for you today because your credits ran out.\n\nAdd credits and we\'ll pick right back up tomorrow:\nprobationcall.com\n\n- ProbationCall.com', 'sched');
           }
 
           return;
@@ -1838,7 +1856,7 @@ function rescheduleUser(userId, sched) {
         // can also fail). Tells the user to verify manually if they don't
         // hear back, which is the right action.
         console.error('[SCHED] Error for ' + userId.slice(0,8) + '...:', e.message);
-        await notify(sched.notify_number, sched.notify_email, sched.notify_method, '⚠️ Call Issue\n\nYour scheduled check-in couldn\'t be completed this morning. Our system will automatically attempt a recovery call within the next hour.\n\nIf you don\'t hear back from us by mid-morning, please call the hotline yourself to verify your status.\n\n- ProbationCall.com', 'sched');
+        await notify(sched.notify_number, sched.notify_email, sched.notify_method, 'We couldn\'t get through to the hotline this morning.\n\nWe\'re trying again within the hour — if you don\'t hear from us by 10 AM, please call the hotline yourself to check.\n\n- ProbationCall.com', 'sched');
       }
     }, staggerDelay);
   }, { timezone: sched.timezone });
@@ -3126,7 +3144,7 @@ app.post('/webhook/recording', validateTwilio, async function(req, res) {
           // Handler decides whether to queue another retry or final-fail.
           await handleScheduledMorningNoResult(config, 'UNKNOWN', config.callSid, transcript, recordingUrl + '.mp3');
         } else {
-          await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, '⚠️ Could not determine result.\n\nHeard: "' + transcript.substring(0, 100) + '"\n\nPlease call the hotline to verify.\n\n- ProbationCall.com', callId);
+          await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, 'We couldn\'t make out today\'s announcement — sorry about that.\n\nHeard: "' + transcript.substring(0, 100) + '"\n\nPlease call the hotline to check.\n\n- ProbationCall.com', callId);
           // If this user has now had several UNKNOWNs in a row, pause their
           // schedule and alert them + admins. Catches non-PIN-expired
           // unparseable results (e.g. hotline wording changes).
@@ -4784,10 +4802,10 @@ async function deliverFtbendNotification(row) {
     console.log('[FTBEND] User ' + userId.slice(0, 8) + '... has no credits, skipping');
     if (skipCount >= 2) {
       await supabase.from('user_schedules').delete().eq('user_id', userId);
-      await notify(s.notify_number, s.notify_email, s.notify_method, '⚠️ Schedule Removed\n\nYour daily check-ins have stopped due to no credits remaining.\n\nPurchase credits and set up your schedule again at:\nprobationcall.com\n\n- ProbationCall.com', 'ftbend');
+      await notify(s.notify_number, s.notify_email, s.notify_method, 'Your daily checks have stopped because your credits ran out.\n\nAdd credits and set your schedule back up at probationcall.com — it takes about a minute.\n\n- ProbationCall.com', 'ftbend');
     } else {
       await supabase.from('user_schedules').update({ no_credit_skip_count: skipCount }).eq('user_id', userId);
-      await notify(s.notify_number, s.notify_email, s.notify_method, '⚠️ Call Skipped - Low Credits\n\nToday\'s check-in was skipped because you\'re out of credits. Your schedule will be removed tomorrow if credits are not added.\n\nPurchase credits now at:\nprobationcall.com\n\n- ProbationCall.com', 'ftbend');
+      await notify(s.notify_number, s.notify_email, s.notify_method, 'Heads up — we couldn\'t check for you today because your credits ran out.\n\nAdd credits and we\'ll pick right back up tomorrow:\nprobationcall.com\n\n- ProbationCall.com', 'ftbend');
     }
     await supabase.from('call_history').insert({ user_id: userId, target_number: FTBEND_OFFICES[oid] ? FTBEND_OFFICES[oid].number : COUNTIES.ftbend.number, result: 'NO_CREDITS', county: 'ftbend', ftbend_office: oid });
     return;
