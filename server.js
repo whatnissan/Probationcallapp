@@ -1372,16 +1372,27 @@ app.post('/api/apply-referral', auth, requireAffiliateEnabled, async function(re
     return res.status(400).json({ error: 'Cannot use your own referral code' });
   }
   
-  // Set the referral lock first, then grant the bonus via the ledger so it
-  // shows up in credit history. Two writes, but the lock is an attribute
-  // unrelated to credits — splitting is cleaner than smuggling both through
-  // the RPC.
+  // ATOMIC CLAIM. The referred_by check above reads req.profile, which was
+  // loaded at auth time, so two concurrent requests both saw null and both
+  // proceeded — each granting REFERRED_BONUS_CREDITS. The `.is(referred_by,
+  // null)` predicate moves the check into the UPDATE itself: concurrent
+  // callers serialize on the row lock and exactly one matches. .select()
+  // makes PostgREST return the affected rows so we can tell whether we won.
+  //
+  // Same shape as the signup double-grant fix in ad3f059 and the promo
+  // claim in migration 012. This path was the one left behind.
   var lockUpd = await supabase.from('profiles').update({
     referred_by: code.toUpperCase()
-  }).eq('id', req.user.id);
+  }).eq('id', req.user.id).is('referred_by', null).select('id');
   if (lockUpd.error) {
     console.error('[AFFILIATE] Referral lock failed for ' + req.user.id.slice(0, 8) + ':', lockUpd.error.message);
     return res.status(500).json({ error: 'Could not apply referral code — please try again' });
+  }
+  if (!lockUpd.data || lockUpd.data.length === 0) {
+    // Lost the race, or a code was applied between auth and here. Either
+    // way a bonus has already been granted — do NOT grant a second one.
+    console.log('[AFFILIATE] Referral claim lost for ' + req.user.id.slice(0, 8) + ' — already referred, no second bonus');
+    return res.status(400).json({ error: 'You already used a referral code' });
   }
 
   var refGranted = await recordCreditAdd({
@@ -1660,8 +1671,13 @@ app.post('/api/schedule', auth, async function(req, res) {
   // previously accepted arbitrary strings. Escaping (421ea53) is the security
   // boundary — this is the second layer, and it also keeps garbage out of the
   // cutoff calculations. All 9 live schedules already satisfy these rules.
-  if (!isValidPin(req.body.pin)) {
-    return res.status(400).json({ error: 'PIN must be exactly 6 digits' });
+  // PIN is Montgomery-only: Fort Bend is a color/phase announcement with no
+  // per-user PIN, and the client correctly sends '' for it. Validating
+  // unconditionally (as this did when first written) rejected every Fort Bend
+  // schedule with a 400 the onboarding UI never surfaced — the user was told
+  // "Setup complete!" while nothing was saved.
+  if (county !== 'ftbend' && !isValidPin(req.body.pin)) {
+    return res.status(400).json({ error: 'Enter the 6-digit PIN from your probation paperwork' });
   }
   var tz = req.body.timezone || 'America/Chicago';
   if (!isValidTimezone(tz)) {
@@ -1694,7 +1710,9 @@ app.post('/api/schedule', auth, async function(req, res) {
     user_id: req.user.id,
     county: req.body.county || 'montgomery',
     target_number: getCountyConfig(req.body.county || 'montgomery').number,
-    pin: req.body.pin,
+    // Store null rather than '' for Fort Bend so the column reflects
+    // "no PIN applies" instead of "empty PIN".
+    pin: county === 'ftbend' ? null : req.body.pin,
     notify_number: notifyNumber,
     notify_email: notifyEmail,
     notify_method: notifyMethod,
@@ -1924,7 +1942,19 @@ function extractInvoiceSubscriptionRefs(invoice) {
   var metaUserId =
     (subDetails && subDetails.metadata && subDetails.metadata.user_id)
     || null;
-  return { subId: subId, metaUserId: metaUserId };
+  // Shape flags returned alongside the ids: the unroutable-invoice log in
+  // handleSubscriptionInvoicePaid needs them, and they are local to this
+  // function. Referencing subDetails/firstLineParent from the caller threw
+  // a ReferenceError, which the outer catch swallowed into a generic
+  // "subDetails is not defined" — destroying the diagnostics for the one
+  // case they were written for.
+  return {
+    subId: subId,
+    metaUserId: metaUserId,
+    hasParent: !!invoice.parent,
+    hasSubscriptionDetails: !!subDetails,
+    hasFirstLineParent: !!firstLineParent
+  };
 }
 
 async function handleSubscriptionInvoicePaid(invoice, res) {
@@ -1940,9 +1970,9 @@ async function handleSubscriptionInvoicePaid(invoice, res) {
         'invoice=' + invoice.id,
         'billing_reason=' + invoice.billing_reason,
         'customer=' + invoice.customer,
-        'has_parent=' + !!invoice.parent,
-        'has_subscription_details=' + !!subDetails,
-        'has_first_line=' + !!firstLineParent);
+        'has_parent=' + refs.hasParent,
+        'has_subscription_details=' + refs.hasSubscriptionDetails,
+        'has_first_line=' + refs.hasFirstLineParent);
       return res.status(500).json({ error: 'subscription_link_missing' });
     }
 
