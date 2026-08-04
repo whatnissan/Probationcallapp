@@ -394,7 +394,14 @@ select option { background: #1a1a2e; color: #fff; }
     <div class="card">
       <h2>Daily Schedule</h2>
       <div class="schedule-details" id="scheduleDetails" style="display:none">
-        <h4>✅ Schedule Active</h4>
+        <h4 id="schedStatusHeading">✅ Schedule Active</h4>
+        <!-- Shown when the system paused this schedule for zero credits. The
+             config below is intact — adding credits restarts it automatically,
+             so this must NOT read like the old "schedule removed" state. -->
+        <div class="info-box" id="schedPausedInfo" style="display:none">
+          <strong>Your daily checks are paused — your credits ran out.</strong><br>
+          Everything below is saved. Add credits and we'll restart them automatically; you won't need to set anything up again.
+        </div>
         <table>
           <tr><td>Time:</td><td id="schedDisplayTime"></td></tr>
           <tr><td>Timezone:</td><td id="schedDisplayTZ"></td></tr>
@@ -1097,6 +1104,15 @@ function loadUser() {
         document.getElementById('schedDisplayMethod').textContent = (d.schedule.notify_method || 'email').toUpperCase();
         document.getElementById('scheduleDetails').style.display = 'block';
         document.getElementById('noSchedInfo').style.display = 'none';
+        // Paused schedules are still returned by /api/user (it doesn't filter
+        // on enabled), so distinguish the three states rather than showing
+        // "✅ Schedule Active" over a schedule that isn't running.
+        var schedPausedNoCredits = d.schedule.enabled === false && d.schedule.paused_reason === 'no_credits';
+        var schedOffByUser = d.schedule.enabled === false && !schedPausedNoCredits;
+        document.getElementById('schedStatusHeading').textContent =
+          schedPausedNoCredits ? '⏸ Checks paused — out of credits'
+          : (schedOffByUser ? '⏸ Checks turned off' : '✅ Schedule Active');
+        document.getElementById('schedPausedInfo').style.display = schedPausedNoCredits ? 'block' : 'none';
         document.getElementById('schedBtn').textContent = '💾 Update Schedule';
         document.getElementById('schedCounty').value = d.schedule.county || 'montgomery';
         // Show Ft Bend tab only if user has ftbend schedule, ftbend_access, or is admin

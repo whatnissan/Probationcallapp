@@ -379,7 +379,43 @@ async function recordCreditAdd(opts) {
     console.error('[CREDITS] add_credits_with_ledger RPC failed for ' + opts.userId.slice(0, 8) + ' source=' + opts.source + ':', rpc.error.message || rpc.error);
     return null;
   }
+  // Credits just landed — if this user's schedule was paused for running out,
+  // turn it back on. Hooked here rather than at each call site so EVERY grant
+  // path is covered: bundle purchase, subscription renewal, promo, referral,
+  // admin grant. Never fatal to the grant itself.
+  await resumePausedScheduleIfAny(opts.userId).catch(function(e) {
+    console.error('[RESUME] Auto-resume threw for ' + opts.userId.slice(0, 8) + ':', e.message);
+  });
   return rpc.data;
+}
+
+// Un-pause a schedule that WE paused for zero credits. Deliberately scoped to
+// paused_reason = 'no_credits' so a schedule the user switched off themselves
+// (enabled=false, paused_reason=null) is never silently switched back on by a
+// credit purchase. The .eq() predicates make the flip atomic: rows returned
+// means we won the transition, so the "you're back on" notice is sent exactly
+// once even if two grants land together.
+async function resumePausedScheduleIfAny(userId) {
+  if (!userId) return;
+  var r = await supabase.from('user_schedules')
+    .update({ enabled: true, paused_reason: null, no_credit_skip_count: 0 })
+    .eq('user_id', userId)
+    .eq('paused_reason', 'no_credits')
+    .select('*');
+  if (r.error) {
+    console.error('[RESUME] Could not resume schedule for ' + userId.slice(0, 8) + ':', r.error.message);
+    return;
+  }
+  if (!r.data || r.data.length === 0) return; // nothing was paused — normal
+  var sched = r.data[0];
+  console.log('[RESUME] Credits added — resumed paused schedule for ' + userId.slice(0, 8));
+  // Montgomery needs its cron job re-armed. Fort Bend users have no per-user
+  // job; they rejoin the fan-out automatically because notifyFtbendOfficeUsers
+  // selects on enabled = true.
+  if (sched.county !== 'ftbend') rescheduleUser(userId, sched);
+  await notify(sched.notify_number, sched.notify_email, sched.notify_method,
+    'You\'re back on.\n\nYour credits have been topped up and your daily checks have restarted — nothing else for you to do.\n\n- ProbationCall.com', 'resume')
+    .catch(function(e) { console.error('[RESUME] notify failed for ' + userId.slice(0, 8) + ':', e.message); });
 }
 
 // One-per-day admin alert when a credit deduction FAILS (as opposed to being
@@ -584,7 +620,10 @@ async function deductCreditOnce(userId, idempotencyKey, options) {
       // A successful billable result resets both skip counters: the user is
       // back in good standing on credits AND the hotline accepted their PIN.
       await supabase.from('user_schedules').update({ no_credit_skip_count: 0, consecutive_pin_expired: 0 }).eq('user_id', userId);
-      if (newCredits <= 2 && options.notifyNumber !== undefined) {
+      // Threshold 3, not 2: with pause-on-first-zero the warning is the only
+      // thing standing between a user and a paused morning, and 3 gives a
+      // weekend's margin to top up.
+      if (newCredits <= 3 && options.notifyNumber !== undefined) {
         sendLowCreditAlert(userId, newCredits, options.notifyNumber, options.notifyEmail, options.notifyMethod);
       }
     } else {
@@ -1810,34 +1849,33 @@ function rescheduleUser(userId, sched) {
         var isDevUser = isDev(profile.email);
 
         if (!isDevUser && profile.credits < 1) {
-          // H9 FIX. This used to read `sched.no_credit_skip_count` — but
-          // `sched` is the object captured in this closure when
-          // rescheduleUser ran (at boot, or on schedule save). The DB was
-          // updated below; the closure never was. So skipCount computed to 1
-          // EVERY day, never reached 2, and the schedule was never removed —
-          // the user got "will be removed tomorrow" every morning
-          // indefinitely, until a redeploy reloaded schedules and the next
-          // skip finally hit 2. Read the live value instead.
-          // (The Fort Bend equivalent in deliverFtbendNotification was never
-          // affected — it re-fetches the schedule row on every delivery.)
-          var freshSched = await supabase.from('user_schedules')
-            .select('no_credit_skip_count').eq('user_id', userId).maybeSingle();
-          if (freshSched.error) {
-            console.error('[SCHED] Could not read no_credit_skip_count for ' + userId.slice(0, 8) + ' — skipping without counting:', freshSched.error.message);
+          // PAUSE, never delete. This used to count two zero-credit mornings
+          // and then DELETE the row — destroying the PIN, county, notify
+          // method and time. Buying credits afterwards restored nothing and
+          // nothing prompted a rebuild, so depletion was effectively account
+          // death: 7 of 18 real users ended up there, one of whom had paid.
+          //
+          // The 2-skip counter is gone with it. With pause-and-resume there
+          // is nothing to escalate to — pause on the first zero-credit
+          // morning and resume the moment credits land
+          // (resumePausedScheduleIfAny, hooked into every grant).
+          //
+          // .eq('enabled', true) makes the flip a transition: rows returned
+          // means we are the one who paused it, so the notice goes out once.
+          var pauseUpd = await supabase.from('user_schedules')
+            .update({ enabled: false, paused_reason: 'no_credits' })
+            .eq('user_id', userId)
+            .eq('enabled', true)
+            .select('user_id');
+          if (scheduledJobs.has(userId)) { scheduledJobs.get(userId).stop(); scheduledJobs.delete(userId); }
+          if (pauseUpd.error) {
+            console.error('[SCHED] Pause failed for ' + userId.slice(0, 8) + ':', pauseUpd.error.message);
             return;
           }
-          if (!freshSched.data) return; // schedule deleted out from under us
-          var skipCount = (freshSched.data.no_credit_skip_count || 0) + 1;
-          console.log('[SCHED] No credits for ' + userId.slice(0, 8) + ' — skip ' + skipCount);
-          if (skipCount >= 2) {
-            await supabase.from('user_schedules').delete().eq('user_id', userId);
-            if (scheduledJobs.has(userId)) { scheduledJobs.get(userId).stop(); scheduledJobs.delete(userId); }
-            await notify(sched.notify_number, sched.notify_email, sched.notify_method, 'Your daily checks have stopped because your credits ran out.\n\nAdd credits and set your schedule back up at probationcall.com — it takes about a minute.\n\n- ProbationCall.com', 'sched');
-          } else {
-            await supabase.from('user_schedules').update({ no_credit_skip_count: skipCount }).eq('user_id', userId);
-            await notify(sched.notify_number, sched.notify_email, sched.notify_method, 'Heads up — we couldn\'t check for you today because your credits ran out.\n\nAdd credits and we\'ll pick right back up tomorrow:\nprobationcall.com\n\n- ProbationCall.com', 'sched');
+          if (pauseUpd.data && pauseUpd.data.length > 0) {
+            console.log('[SCHED] No credits for ' + userId.slice(0, 8) + ' — schedule PAUSED (config kept)');
+            await notify(sched.notify_number, sched.notify_email, sched.notify_method, 'Your daily checks are paused — your credits ran out.\n\nAdd credits and we\'ll restart them automatically. You won\'t need to set anything up again:\nprobationcall.com\n\n- ProbationCall.com', 'sched');
           }
-
           return;
         }
         
@@ -3563,12 +3601,12 @@ async function sendWelcomeEmail(email, credits, callId) {
 
 // === LOW CREDIT ALERT ===
 async function sendLowCreditAlert(userId, remainingCredits, notifyNumber, notifyEmail, notifyMethod) {
-  if (remainingCredits > 2 || remainingCredits < 0) return;
+  if (remainingCredits > 3 || remainingCredits < 0) return;
   var message;
   if (remainingCredits <= 1) {
-    message = '🚨 Low Credits Warning!\n\nYou only have ' + remainingCredits + ' credit(s) left! After that, your daily check-ins STOP and you could miss a required test.\n\nPurchase credits now at:\nprobationcall.com\n\n- ProbationCall.com';
+    message = 'You have ' + remainingCredits + ' credit' + (remainingCredits === 1 ? '' : 's') + ' left.\n\nWhen it runs out your daily checks pause, and you could miss a required test. Topping up takes a minute:\nprobationcall.com\n\n- ProbationCall.com';
   } else {
-    message = '⚠️ Credits Running Low\n\nYou have ' + remainingCredits + ' credits remaining. Running out means missed check-ins.\n\nPurchase credits at:\nprobationcall.com\n\n- ProbationCall.com';
+    message = 'You\'re down to ' + remainingCredits + ' credits.\n\nWhen they run out your daily checks pause until you top up:\nprobationcall.com\n\n- ProbationCall.com';
   }
   console.log('[LOW-CREDIT] Alerting user ' + userId.slice(0,8) + '... (' + remainingCredits + ' credits left)');
   if (notifyNumber) {
@@ -4798,14 +4836,20 @@ async function deliverFtbendNotification(row) {
   }
   var isDevUser = isDev(profile.email);
   if (!isDevUser && profile.credits < 1) {
-    var skipCount = (s.no_credit_skip_count || 0) + 1;
-    console.log('[FTBEND] User ' + userId.slice(0, 8) + '... has no credits, skipping');
-    if (skipCount >= 2) {
-      await supabase.from('user_schedules').delete().eq('user_id', userId);
-      await notify(s.notify_number, s.notify_email, s.notify_method, 'Your daily checks have stopped because your credits ran out.\n\nAdd credits and set your schedule back up at probationcall.com — it takes about a minute.\n\n- ProbationCall.com', 'ftbend');
-    } else {
-      await supabase.from('user_schedules').update({ no_credit_skip_count: skipCount }).eq('user_id', userId);
-      await notify(s.notify_number, s.notify_email, s.notify_method, 'Heads up — we couldn\'t check for you today because your credits ran out.\n\nAdd credits and we\'ll pick right back up tomorrow:\nprobationcall.com\n\n- ProbationCall.com', 'ftbend');
+    // PAUSE, never delete — same policy as the Montgomery path above, and
+    // the same removal of the 2-skip counter. Fort Bend needs no cron
+    // teardown: users rejoin/leave the fan-out purely via enabled, which
+    // notifyFtbendOfficeUsers and this function both filter on.
+    console.log('[FTBEND] User ' + userId.slice(0, 8) + '... has no credits — pausing schedule (config kept)');
+    var ftPause = await supabase.from('user_schedules')
+      .update({ enabled: false, paused_reason: 'no_credits' })
+      .eq('user_id', userId)
+      .eq('enabled', true)
+      .select('user_id');
+    if (ftPause.error) {
+      console.error('[FTBEND] Pause failed for ' + userId.slice(0, 8) + ':', ftPause.error.message);
+    } else if (ftPause.data && ftPause.data.length > 0) {
+      await notify(s.notify_number, s.notify_email, s.notify_method, 'Your daily checks are paused — your credits ran out.\n\nAdd credits and we\'ll restart them automatically. You won\'t need to set anything up again:\nprobationcall.com\n\n- ProbationCall.com', 'ftbend');
     }
     await supabase.from('call_history').insert({ user_id: userId, target_number: FTBEND_OFFICES[oid] ? FTBEND_OFFICES[oid].number : COUNTIES.ftbend.number, result: 'NO_CREDITS', county: 'ftbend', ftbend_office: oid });
     return;
@@ -5329,7 +5373,11 @@ cron.schedule('45 * * * *', async function() {
     
     if (!isDevUser && profile.credits < 1) {
       console.log('[RECOVERY] User ' + sched.user_id.slice(0,8) + '... has no credits, skipping');
-      await notify(sched.notify_number, sched.notify_email, sched.notify_method, '⚠️ ProbationCall: Your scheduled call was missed and you have no credits!\n\nPlease purchase credits at probationcall.com\n\n- ProbationCall.com', 'recovery');
+      // Near-unreachable now: a zero-credit user is paused by the morning
+      // cron and this poller selects enabled = true. Kept as a backstop for
+      // the case where credits hit zero after the morning run (e.g. an admin
+      // adjustment), with copy aligned to the pause language.
+      await notify(sched.notify_number, sched.notify_email, sched.notify_method, 'We missed today\'s check and your credits have run out.\n\nAdd credits and we\'ll restart your daily checks automatically:\nprobationcall.com\n\n- ProbationCall.com', 'recovery');
       await supabase.from('call_history').insert({ user_id: sched.user_id, target_number: sched.target_number, pin_used: sched.pin, result: 'NO_CREDITS' });
       continue;
     }
