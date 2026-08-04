@@ -3990,6 +3990,204 @@ app.post('/api/admin/user/:id/disable', adminAuth, async function(req, res) {
   }
 });
 
+// === ADMIN USER DETAIL ===
+// One composed view of everything known about a user. The admin list is keyed
+// on email; Google gives us a real name via auth.users.user_metadata and the
+// panel never showed it, so every screen read as an email address rather than
+// a person. Read-only.
+app.get('/api/admin/user/:id/detail', adminAuth, async function(req, res) {
+  var uid = req.params.id;
+  try {
+    var prof = await supabase.from('profiles').select('*').eq('id', uid).maybeSingle();
+    if (prof.error) return res.status(500).json({ error: prof.error.message });
+    if (!prof.data) return res.status(404).json({ error: 'User not found' });
+
+    // Identity from the auth record — full_name/avatar are Google OAuth claims.
+    var identity = {};
+    try {
+      var au = await supabase.auth.admin.getUserById(uid);
+      var u = au && au.data ? au.data.user : null;
+      var meta = (u && u.user_metadata) || {};
+      identity = {
+        full_name: meta.full_name || meta.name || null,
+        avatar_url: meta.avatar_url || meta.picture || null,
+        provider: (u && u.app_metadata && u.app_metadata.provider) || null,
+        created_at: u ? u.created_at : null,
+        last_sign_in_at: u ? u.last_sign_in_at : null,
+        email_confirmed: !!(u && u.email_confirmed_at)
+      };
+    } catch (e) {
+      console.error('[ADMIN-DETAIL] auth lookup failed for ' + uid.slice(0, 8) + ':', e.message);
+    }
+
+    var sched = await supabase.from('user_schedules').select('*').eq('user_id', uid).maybeSingle();
+    var purch = await supabase.from('purchases').select('*').eq('user_id', uid).order('created_at', { ascending: false });
+    var ledger = await supabase.from('credit_transactions').select('*').eq('user_id', uid).order('created_at', { ascending: false }).limit(50);
+    var calls = await supabase.from('call_history').select('result, billed_at, created_at').eq('user_id', uid).order('created_at', { ascending: false }).limit(500);
+
+    var rows = calls.data || [];
+    var counts = {};
+    rows.forEach(function(c) { counts[c.result] = (counts[c.result] || 0) + 1; });
+    var billable = rows.filter(function(c) {
+      return c.result === 'MUST_TEST' || c.result === 'NO_TEST' ||
+        /^COLOR:|^P1:/.test(c.result || '');
+    });
+
+    res.json({
+      profile: prof.data,
+      identity: identity,
+      schedule: sched.data || null,
+      purchases: purch.data || [],
+      ledger: ledger.data || [],
+      activity: {
+        total_calls: rows.length,
+        by_result: counts,
+        billable_total: billable.length,
+        // Unbilled billable results are the residue of the 015 outage; showing
+        // it per user makes any future recurrence visible from the panel.
+        billable_unbilled: billable.filter(function(c) { return !c.billed_at; }).length,
+        last_result: rows.length ? rows[0].result : null,
+        last_call_at: rows.length ? rows[0].created_at : null
+      },
+      totals: {
+        spent_cents: (purch.data || []).reduce(function(a, p) { return a + (p.amount_cents || 0); }, 0),
+        refunded_cents: (purch.data || []).reduce(function(a, p) { return a + (p.refund_amount_cents || 0); }, 0)
+      }
+    });
+  } catch (e) {
+    console.error('[ADMIN-DETAIL] failed for ' + uid + ':', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// === ADMIN REFUND ===
+// Full refunds only. Deliberately does NOT cancel the subscription or reverse
+// affiliate commission: Stripe fires charge.refunded once the refund lands and
+// handleChargeRefunded already does both. Duplicating them here would race it.
+//
+// Credit clawback is on by default. Pass { goodwill: true } to refund the money
+// and leave the credits — for cases where the customer received no service and
+// taking the credits back would add insult to injury.
+//
+// Idempotency has two layers, mirroring the grant path: purchases.refunded_at
+// is our claim, and Stripe's own charge_already_refunded is the backstop that
+// survives a crash between creating the refund and recording it.
+app.post('/api/admin/refund/:purchaseId', adminAuth, async function(req, res) {
+  var purchaseId = req.params.purchaseId;
+  var goodwill = req.body && req.body.goodwill === true;
+  var adminEmail = (req.profile && req.profile.email) || 'unknown';
+
+  try {
+    var pr = await supabase.from('purchases').select('*').eq('id', purchaseId).maybeSingle();
+    if (pr.error) {
+      console.error('[REFUND] Lookup failed for purchase ' + purchaseId + ':', pr.error.message);
+      return res.status(500).json({ error: 'Could not load that purchase' });
+    }
+    var purchase = pr.data;
+    if (!purchase) return res.status(404).json({ error: 'Purchase not found' });
+
+    // Layer 1 — our own claim. Safe no-op with a clear message.
+    if (purchase.refunded_at) {
+      return res.json({
+        success: true,
+        already_refunded: true,
+        refunded_at: purchase.refunded_at,
+        refund_amount_cents: purchase.refund_amount_cents,
+        credits_clawed: purchase.refund_credits_clawed,
+        message: 'Already refunded on ' + new Date(purchase.refunded_at).toLocaleDateString()
+      });
+    }
+
+    // Resolve the payment intent. Bundles carry it directly; subscription rows
+    // may only have the invoice, whose PI moved under invoice.parent in the
+    // 2025-11-17 schema change (same fallback the webhook uses).
+    var paymentIntent = purchase.stripe_payment_intent || null;
+    if (!paymentIntent && purchase.stripe_invoice_id) {
+      try {
+        var inv = await stripe.invoices.retrieve(purchase.stripe_invoice_id);
+        paymentIntent = inv.payment_intent ||
+          (inv.parent && inv.parent.payment_settings && inv.parent.payment_settings.payment_intent) || null;
+      } catch (e) {
+        console.error('[REFUND] Could not retrieve invoice ' + purchase.stripe_invoice_id + ':', e.message);
+      }
+    }
+    if (!paymentIntent && purchase.stripe_session_id) {
+      try {
+        var sess = await stripe.checkout.sessions.retrieve(purchase.stripe_session_id);
+        paymentIntent = sess.payment_intent || null;
+      } catch (e) {
+        console.error('[REFUND] Could not retrieve session ' + purchase.stripe_session_id + ':', e.message);
+      }
+    }
+    if (!paymentIntent) {
+      return res.status(400).json({ error: 'No Stripe payment could be found for this purchase — refund it from the Stripe Dashboard.' });
+    }
+
+    // Layer 2 — Stripe. An already-refunded charge is success, not failure.
+    var refund = null;
+    try {
+      refund = await stripe.refunds.create({ payment_intent: paymentIntent });
+    } catch (e) {
+      if (e && (e.code === 'charge_already_refunded')) {
+        console.log('[REFUND] Stripe reports payment ' + paymentIntent + ' already refunded — recording it locally');
+      } else {
+        console.error('[REFUND] Stripe refund failed for purchase ' + purchaseId + ':', e.message);
+        return res.status(500).json({ error: 'Stripe refused the refund: ' + e.message });
+      }
+    }
+
+    // Claw back credits BEFORE marking refunded, so a failure here leaves the
+    // row retryable rather than silently "done" with the credits still out.
+    // Uses the capped RPC directly — NOT recordCreditAdd (rejects negatives and
+    // would trigger auto-resume) and NOT deductCreditOnce (would text the
+    // customer a low-credit warning seconds after their refund).
+    var clawed = 0;
+    if (!goodwill && purchase.credits_purchased > 0) {
+      var rpc = await supabase.rpc('deduct_credits_capped', {
+        p_user_id: purchase.user_id,
+        p_amount: purchase.credits_purchased,
+        p_source: 'refund_clawback',
+        p_note: 'Refund of purchase ' + purchaseId + ' by ' + adminEmail
+      });
+      if (rpc.error) {
+        console.error('[REFUND] Clawback FAILED for purchase ' + purchaseId + ' (money already refunded):', rpc.error.message);
+        return res.status(500).json({ error: 'Refund issued but credit clawback failed — check the ledger before retrying.' });
+      }
+      clawed = rpc.data || 0;
+      if (clawed < purchase.credits_purchased) {
+        console.log('[REFUND] Partial clawback for ' + String(purchase.user_id).slice(0, 8) + ': took ' + clawed + ' of ' + purchase.credits_purchased + ' (rest already spent)');
+      }
+    }
+
+    var upd = await supabase.from('purchases').update({
+      refunded_at: new Date().toISOString(),
+      refund_amount_cents: purchase.amount_cents,
+      refund_stripe_id: refund ? refund.id : null,
+      refund_performed_by: adminEmail,
+      refund_credits_clawed: clawed
+    }).eq('id', purchaseId);
+    if (upd.error) {
+      console.error('[REFUND] Could not record refund on purchase ' + purchaseId + ':', upd.error.message);
+      return res.status(500).json({ error: 'Refund issued but not recorded — do not retry; fix the purchases row manually.' });
+    }
+
+    console.log('[REFUND] ' + adminEmail + ' refunded purchase ' + purchaseId +
+      ' ($' + ((purchase.amount_cents || 0) / 100).toFixed(2) + ') for ' + String(purchase.user_id).slice(0, 8) +
+      ' — credits clawed: ' + clawed + (goodwill ? ' (goodwill, clawback skipped)' : ''));
+
+    res.json({
+      success: true,
+      refund_amount_cents: purchase.amount_cents,
+      credits_clawed: clawed,
+      credits_requested: goodwill ? 0 : purchase.credits_purchased,
+      goodwill: goodwill
+    });
+  } catch (e) {
+    console.error('[REFUND] Unhandled error for purchase ' + purchaseId + ':', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post('/api/admin/trigger-ftbend', adminAuth, async function(req, res) {
   console.log('[FTBEND] Manual trigger by admin');
   ftbendDailyColorCall();
