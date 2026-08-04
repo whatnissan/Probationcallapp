@@ -4457,7 +4457,7 @@ app.post('/api/admin/support/:id/close', adminAuth, async function(req, res) {
 // === MASS SEND (email / text / both) ===
 // Test and staff accounts never receive a mass send. Kept as emails rather
 // than ids so it reads plainly and survives a database reset.
-var MASS_SEND_EXCLUDE = ['whatnissan@gmail.com', 'whatnissan@protonmail.com', 'dmlafortune@gmail.com'];
+var MASS_SEND_EXCLUDE = ['whatnissan@gmail.com', 'whatnissan@protonmail.com', 'dmlafortune@gmail.com', 'integragsr1225@gmail.com'];
 
 // Resolve a segment to concrete recipients, with per-channel eligibility.
 // "active" for an announcement is deliberately broad: the users WITHOUT a
