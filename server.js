@@ -17,7 +17,7 @@ const {
   validateFtbendColor, detectColor, detectPhaseColors, detectPinExpired,
   phoneticMatch, doCrossCheck
 } = require('./lib/detection');
-const { formatLocalDay, todayMD, wouldExceedCutoff, wouldExceedFtbendCutoff } = require('./lib/time');
+const { formatLocalDay, todayMD, wouldExceedCutoff, wouldExceedFtbendCutoff, ftbendRetryDelayMs } = require('./lib/time');
 const { computeTieredPriceCents, MAX_EXACT_CREDITS } = require('./lib/pricing');
 const { isValidPin, isValidTimezone, isValidEmail, normalizePhoneE164 } = require('./lib/validation');
 
@@ -3076,7 +3076,11 @@ app.post('/webhook/recording', validateTwilio, async function(req, res) {
         // no_ground_truth or no_match. Two sub-paths: within window → upsert
         // retry; past cutoff → cutoff_with_ground_truth or
         // cutoff_no_ground_truth final-fail.
-        var nextAt = new Date(Date.now() + 5 * 60 * 1000);
+        // H1 backoff: 5 / 10 / 20 / 30 minutes by attempt, instead of a flat
+        // 5 minutes forever. Caps a stuck office at ~10 calls per morning
+        // rather than ~52. The 9:30 cutoff below still ends the sequence.
+        var retryDelayMs = ftbendRetryDelayMs(thisAttemptNumber);
+        var nextAt = new Date(Date.now() + retryDelayMs);
         if (wouldExceedFtbendCutoff(nextAt, 'America/Chicago')) {
           // CUTOFF — try one last ground-truth fetch if we don't already have one.
           var cutoffGT = (groundTruthArr && groundTruthArr.length > 0) ? groundTruthArr : null;
@@ -3123,7 +3127,9 @@ app.post('/webhook/recording', validateTwilio, async function(req, res) {
           await supabase.from('fort_bend_retries').upsert(upsertData, { onConflict: 'office' }).then(function() {}, function(e) {
             console.error('[FTBEND-RETRY] upsert failed for ' + officeId + ':', e.message);
           });
-          console.log('[FTBEND-RETRY] Queued retry for ' + officeId + ' at ' + nextAt.toISOString() + ' (attempt ' + thisAttemptNumber + ' resolved as ' + crossCheck.match_method + ', next will be ' + (thisAttemptNumber + 1) + ')');
+          console.log('[FTBEND-RETRY] Queued retry for ' + officeId + ' at ' + nextAt.toISOString() +
+            ' (+' + Math.round(retryDelayMs / 60000) + 'm backoff; attempt ' + thisAttemptNumber +
+            ' resolved as ' + crossCheck.match_method + ', next will be ' + (thisAttemptNumber + 1) + ')');
         }
       }
 
@@ -5130,10 +5136,16 @@ async function queueFortBendRetryAfterFailure(officeId, callSid, reason) {
   var row = (existing && existing.data) || null;
   var attemptNumber = row ? row.attempt_number + 1 : 1;
   var nowIso = new Date().toISOString();
+  // First failure re-dials immediately: the recording webhook never fires for
+  // a terminal Twilio status, so there is nothing else to recover the morning.
+  // Repeat failures back off on the same H1 schedule — a hotline that is down
+  // or refusing our number must not be dialled every poller tick.
+  var failDelayMs = attemptNumber <= 1 ? 0 : ftbendRetryDelayMs(attemptNumber - 1);
+  var dueAt = new Date(Date.now() + failDelayMs).toISOString();
   var upsertData = {
     office: officeId,
     attempt_number: attemptNumber,
-    next_attempt_at: nowIso, // due immediately — poller fires next tick
+    next_attempt_at: dueAt,
     last_call_sid: callSid || (row && row.last_call_sid) || null,
     last_transcript: (row && row.last_transcript) || null,
     last_our_detection: '(call failed: ' + (reason || 'unknown') + ')',
@@ -5145,7 +5157,8 @@ async function queueFortBendRetryAfterFailure(officeId, callSid, reason) {
     console.error('[FTBEND-RETRY] Failed to queue retry after call failure for ' + officeId + ':', r.error.message);
     return;
   }
-  console.log('[FTBEND-RETRY] Queued retry for ' + officeId + ' after Twilio failure "' + reason + '" (attempt ' + attemptNumber + ', due now)');
+  console.log('[FTBEND-RETRY] Queued retry for ' + officeId + ' after Twilio failure "' + reason +
+    '" (attempt ' + attemptNumber + ', due ' + (failDelayMs === 0 ? 'now' : 'in ' + Math.round(failDelayMs / 60000) + 'm') + ')');
 }
 
 // Cutoff_no_ground_truth path: 9:30 AM CDT reached and finishprobation.com

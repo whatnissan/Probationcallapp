@@ -34,3 +34,36 @@ test('todayMD: M/D shape with no leading zeros', function() {
   assert.match(todayMD(CHI), /^\d{1,2}\/\d{1,2}$/);
   assert.match(todayMD(), /^\d{1,2}\/\d{1,2}$/); // default TZ path
 });
+
+// --- H1: Fort Bend retry backoff ---
+const { ftbendRetryDelayMs, FTBEND_RETRY_BACKOFF_MINUTES } = require('../lib/time');
+
+test('ftbendRetryDelayMs: 5 / 10 / 20 / 30 by attempt, then holds at 30', function() {
+  assert.strictEqual(ftbendRetryDelayMs(1), 5 * 60 * 1000);
+  assert.strictEqual(ftbendRetryDelayMs(2), 10 * 60 * 1000);
+  assert.strictEqual(ftbendRetryDelayMs(3), 20 * 60 * 1000);
+  assert.strictEqual(ftbendRetryDelayMs(4), 30 * 60 * 1000);
+  assert.strictEqual(ftbendRetryDelayMs(9), 30 * 60 * 1000);
+  assert.strictEqual(ftbendRetryDelayMs(38), 30 * 60 * 1000); // the observed runaway
+});
+
+test('ftbendRetryDelayMs: junk input falls back to the first interval', function() {
+  assert.strictEqual(ftbendRetryDelayMs(0), 5 * 60 * 1000);
+  assert.strictEqual(ftbendRetryDelayMs(-3), 5 * 60 * 1000);
+  assert.strictEqual(ftbendRetryDelayMs(null), 5 * 60 * 1000);
+  assert.strictEqual(ftbendRetryDelayMs(undefined), 5 * 60 * 1000);
+  assert.strictEqual(ftbendRetryDelayMs('abc'), 5 * 60 * 1000);
+});
+
+test('backoff bounds a morning to ~10 attempts, not ~52', function() {
+  // 05:05 -> 09:30 cutoff is 265 minutes.
+  var elapsed = 0, attempts = 0;
+  while (elapsed < 265 && attempts < 100) {
+    attempts++;
+    elapsed += ftbendRetryDelayMs(attempts) / 60000;
+  }
+  assert.ok(attempts <= 12, 'expected <=12 attempts in the window, got ' + attempts);
+  assert.ok(attempts >= 8, 'expected >=8 attempts (still responsive), got ' + attempts);
+  // The old flat-5-minute schedule would have allowed 53.
+  assert.strictEqual(Math.ceil(265 / 5), 53);
+});
