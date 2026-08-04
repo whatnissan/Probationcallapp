@@ -185,6 +185,12 @@ const FROM_EMAIL = process.env.FROM_EMAIL || 'alerts@probationcall.com';
 const MASS_FROM_EMAIL = process.env.MASS_FROM_EMAIL || 'support@probationcall.com';
 const SUPPORT_REPLY_TO = process.env.SUPPORT_REPLY_TO || 'whatnissan@gmail.com';
 
+// What a user sees when something breaks on OUR side. Internal errors
+// (database, network, provider) are logged in full and never returned:
+// they are not actionable, they read as alarming, and they leak schema.
+// Validation messages stay specific — those the user can act on.
+const GENERIC_SERVER_ERROR = 'Something went wrong on our end — please try again in a moment.';
+
 // Time restrictions: 6:00 AM to 2:59 PM
 const MIN_HOUR = 6;
 const MAX_HOUR = 14;
@@ -1803,8 +1809,14 @@ app.post('/api/schedule', auth, async function(req, res) {
   }
   
   if (result.error) {
-    console.error('[SCHEDULE] Error:', result.error);
-    return res.status(500).json({ error: result.error.message || 'Database error' });
+    // Log the real error; never return it. This branch is how a Fort Bend
+    // signup was shown the raw Postgres text 'null value in column "pin" of
+    // relation "user_schedules" violates not-null constraint' — meaningless
+    // to a user, alarming to a nervous one, and it leaks the schema.
+    // Validation messages above stay specific because they are actionable;
+    // internal failures are not.
+    console.error('[SCHEDULE] Save failed for ' + req.user.id.slice(0, 8) + ':', result.error);
+    return res.status(500).json({ error: GENERIC_SERVER_ERROR });
   }
 
   // Persistent "this user is Fort Bend" memory. Set ftbend_access=true so
@@ -5854,11 +5866,19 @@ app.post('/api/profile/probation-end', auth, async function(req, res) {
 app.post('/api/profile/color', auth, async function(req, res) {
   var color = req.body.color;
   if (!color) return res.status(400).json({ error: 'Color required' });
-  
-  await supabase.from('profiles').update({ 
-    user_color: color.toLowerCase() 
+
+  // The result was previously discarded and success returned unconditionally.
+  // For Fort Bend the colour is not optional decoration — without it
+  // deliverFtbendNotification cannot say "your colour was called" and the
+  // user silently receives generic announcements forever. A failed save has
+  // to be a failed save.
+  var upd = await supabase.from('profiles').update({
+    user_color: String(color).toLowerCase().trim()
   }).eq('id', req.user.id);
-  
+  if (upd.error) {
+    console.error('[PROFILE] Colour save failed for ' + req.user.id.slice(0, 8) + ':', upd.error);
+    return res.status(500).json({ error: GENERIC_SERVER_ERROR });
+  }
   res.json({ success: true });
 });
 
