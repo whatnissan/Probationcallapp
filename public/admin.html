@@ -71,7 +71,7 @@
 </div>
 <div class="modal" id="userModal"><div class="modal-content"><button class="modal-close" id="closeUserModal">x</button><h2 style="color:#00d9ff" id="userModalTitle">User</h2><div id="userIdentityBar" style="display:none;align-items:center;gap:12px;margin:-8px 0 16px"></div><div id="userModalContent"></div></div></div>
 <div class="modal" id="creditsModal"><div class="modal-content" style="max-width:400px"><button class="modal-close" id="closeCreditsModal">x</button><h2>Manage Credits</h2><p style="color:#8892b0;margin:15px 0">User: <span id="creditsEmail" style="color:#fff"></span><br>Current: <span id="creditsCurrent" style="color:#00d9ff"></span></p><input type="hidden" id="creditsUid"><div class="form-group"><label>Action</label><select id="creditsAction"><option value="add">Add</option><option value="remove">Remove</option><option value="set">Set To</option></select></div><div class="form-group"><label>Amount</label><input type="number" id="creditsAmount" value="10" min="0"></div><button class="btn btn-success" style="width:100%;padding:12px" id="applyCredits">Apply</button></div></div>
-<div class="modal" id="promoModal"><div class="modal-content" style="max-width:400px"><button class="modal-close" id="closePromoModal">x</button><h2>New Promo</h2><div class="form-group"><label>Code</label><input type="text" id="promoCode" style="text-transform:uppercase"></div><div class="form-group"><label>Credits</label><input type="number" id="promoCredits" value="5" min="1"></div><div class="form-group"><label>Max Uses</label><input type="number" id="promoMax" value="100" min="1"></div><button class="btn btn-primary" style="width:100%;padding:12px" id="createPromo">Create</button></div></div>
+<div class="modal" id="refundModal"><div class="modal-content" style="max-width:440px"><button class="modal-close" id="closeRefundModal">x</button><h2 style="color:#ef4444">Refund payment</h2><div id="refundSummary" style="margin:15px 0;color:#8892b0;font-size:0.9rem;line-height:1.7"></div><input type="hidden" id="refundPurchaseId"><div class="consent-box" style="border-color:rgba(239,68,68,0.35);background:rgba(239,68,68,0.08)"><label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;color:#fff;font-size:0.88rem"><input type="checkbox" id="refundClawback" checked style="width:18px;height:18px;margin-top:2px;flex-shrink:0"><span>Also reclaim the <b id="refundCreditCount">0</b> credits this purchase granted.<br><span style="color:#8892b0;font-size:0.8rem">Untick to refund the money and let the user keep their credits (goodwill). Already-spent credits are never taken below zero.</span></span></label></div><div id="refundStatus" class="status" style="display:none;margin-top:12px"></div><div style="display:flex;gap:10px;margin-top:18px"><button class="btn btn-secondary" style="flex:1" id="refundCancelBtn">Cancel</button><button class="btn btn-danger" style="flex:1" id="refundConfirmBtn">Refund</button></div><p style="color:#8892b0;font-size:0.75rem;margin-top:10px">Cancel closes this dialog and does nothing. Only the red Refund button moves money.</p></div></div><div class="modal" id="promoModal"><div class="modal-content" style="max-width:400px"><button class="modal-close" id="closePromoModal">x</button><h2>New Promo</h2><div class="form-group"><label>Code</label><input type="text" id="promoCode" style="text-transform:uppercase"></div><div class="form-group"><label>Credits</label><input type="number" id="promoCredits" value="5" min="1"></div><div class="form-group"><label>Max Uses</label><input type="number" id="promoMax" value="100" min="1"></div><button class="btn btn-primary" style="width:100%;padding:12px" id="createPromo">Create</button></div></div>
 <script>
 var SUPA_URL="https://xvpuqeaowvlkcyywgaaq.supabase.co",SUPA_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh2cHVxZWFvd3Zsa2N5eXdnYWFxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQyNzc1MjcsImV4cCI6MjA3OTg1MzUyN30.y90odNDSU0zZcVGMK9C39gSFDL9NJcy5E4yBkgcFc8w",sb=window.supabase.createClient(SUPA_URL,SUPA_KEY),token,D={users:[],schedules:[],calls:[],purchases:[],payouts:[],promos:[]};var sortCol="created",sortDir=-1;
 function $(x){return document.getElementById(x.replace("#",""))}
@@ -91,7 +91,7 @@ document.getElementById("refreshBtn").addEventListener("click", function(e) {
         alert("Error: " + err.message);
     });
 });
-$("userSearch").onkeyup=filter;document.querySelectorAll(".sortable").forEach(function(th){th.onclick=function(){var col=this.dataset.sort;if(sortCol===col){sortDir*=-1}else{sortCol=col;sortDir=-1}filter()}});$("userFilter").onchange=filter;$("newPromoBtn").onclick=function(){$("promoModal").classList.add("active")};$("closeUserModal").onclick=function(){$("userModal").classList.remove("active")};$("closeCreditsModal").onclick=function(){$("creditsModal").classList.remove("active")};$("closePromoModal").onclick=function(){$("promoModal").classList.remove("active")};$("applyCredits").onclick=doCredits;$("createPromo").onclick=doPromo;["Users","Payouts","Purchases","Calls","Promos","Transfers"].forEach(function(t){$("tab"+t).onclick=function(){document.querySelectorAll(".tab").forEach(function(x){x.classList.remove("active")});document.querySelectorAll(".tab-content").forEach(function(x){x.classList.remove("active")});this.classList.add("active");$(t.toLowerCase()+"Tab").classList.add("active");if(t==="Transfers")loadTransfers()}})}
+$("userSearch").onkeyup=filter;document.querySelectorAll(".sortable").forEach(function(th){th.onclick=function(){var col=this.dataset.sort;if(sortCol===col){sortDir*=-1}else{sortCol=col;sortDir=-1}filter()}});$("userFilter").onchange=filter;$("newPromoBtn").onclick=function(){$("promoModal").classList.add("active")};$("closeUserModal").onclick=function(){$("userModal").classList.remove("active")};$("closeCreditsModal").onclick=function(){$("creditsModal").classList.remove("active")};$("closePromoModal").onclick=function(){$("promoModal").classList.remove("active")};$("closeRefundModal").onclick=closeRefundModal;$("refundCancelBtn").onclick=closeRefundModal;$("refundConfirmBtn").onclick=doRefund;$("applyCredits").onclick=doCredits;$("createPromo").onclick=doPromo;["Users","Payouts","Purchases","Calls","Promos","Transfers"].forEach(function(t){$("tab"+t).onclick=function(){document.querySelectorAll(".tab").forEach(function(x){x.classList.remove("active")});document.querySelectorAll(".tab-content").forEach(function(x){x.classList.remove("active")});this.classList.add("active");$(t.toLowerCase()+"Tab").classList.add("active");if(t==="Transfers")loadTransfers()}})}
 async function load(){
     window.adminSysStats=null;fetch("/api/system-stats",{headers:{Authorization:"Bearer "+token}}).then(function(r){return r.json();}).then(function(ss){window.adminSysStats=(ss&&ss.scheduledAvg)?ss:null;}).catch(function(){});
     var r=await fetch("/api/admin/dashboard",{headers:{Authorization:"Bearer "+token}});
@@ -185,41 +185,67 @@ function renderPurchases(purchases){var h="";purchases.forEach(function(p){
 // Refund confirmation. Shows exactly who/what/when/how much before anything
 // moves — an admin panel that refunds on a single click is a mis-click away
 // from taking money out of the business.
+// Refund confirmation as a real modal with an explicit clawback checkbox.
+//
+// This replaces a two-stage confirm() where the second dialog's Cancel meant
+// "refund without clawback" — a money action where Cancel still moved money.
+// That inversion caused an unintended 30-credit reclaim on the first live
+// refund. Here Cancel means ABORT, always: only the red Refund button issues
+// anything, and the clawback choice is a checkbox rather than a button.
 function confirmRefund(purchaseId){
   var p=(D.purchases||[]).find(function(x){return String(x.id)===String(purchaseId)});
   if(!p){alert('Could not find that purchase — reload and try again.');return}
   var amt=(p.amount_cents/100).toFixed(2);
-  var lines=[
-    'Refund this payment?','',
-    'User:    '+(p.user_email||'?'),
-    'Amount:  $'+amt,
-    'Date:    '+new Date(p.created_at).toLocaleString(),
-    'Package: '+p.package_name,
-    'Credits granted by this purchase: '+(p.credits_purchased||0),
-    '','This refunds the full amount in Stripe and cannot be undone here.'
-  ].join('\n');
-  if(!confirm(lines))return;
-  // Second prompt only for the clawback choice, so the default (reclaim) is
-  // never applied silently to a goodwill case.
-  var goodwill=confirm('Reclaim the '+(p.credits_purchased||0)+' credits this purchase granted?\n\nOK = reclaim credits (normal refund)\nCancel = leave credits with the user (goodwill)')===false;
-  doRefund(purchaseId,goodwill);
+  $('refundPurchaseId').value=p.id;
+  $('refundCreditCount').textContent=(p.credits_purchased||0);
+  $('refundClawback').checked=true;              // reclaim is the default
+  $('refundClawback').disabled=!(p.credits_purchased>0);
+  $('refundSummary').innerHTML=
+    '<b>User:</b> '+esc(p.user_email||'?')+'<br>'+
+    '<b>Amount:</b> <span style="color:#22c55e">$'+esc(amt)+'</span><br>'+
+    '<b>Date:</b> '+esc(new Date(p.created_at).toLocaleString())+'<br>'+
+    '<b>Package:</b> '+esc(p.package_name)+'<br>'+
+    '<b>Credits granted:</b> '+esc(String(p.credits_purchased||0))+
+    '<br><br><span style="color:#f59e0b">Refunds the full amount in Stripe. This cannot be undone from here.</span>';
+  var st=$('refundStatus'); st.style.display='none'; st.textContent='';
+  $('refundConfirmBtn').disabled=false;
+  $('refundConfirmBtn').textContent='Refund';
+  $('refundModal').classList.add('active');
 }
 
-function doRefund(purchaseId,goodwill){
+function closeRefundModal(){$('refundModal').classList.remove('active')}
+
+function doRefund(){
+  var purchaseId=$('refundPurchaseId').value;
+  var clawback=$('refundClawback').checked;
+  var btn=$('refundConfirmBtn'), st=$('refundStatus');
+  if(btn.disabled)return;                        // double-click guard
+  btn.disabled=true; btn.textContent='Refunding…';
+  st.style.display='none';
   fetch('/api/admin/refund/'+encodeURIComponent(purchaseId),{
     method:'POST',
     headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},
-    body:JSON.stringify({goodwill:!!goodwill})
+    body:JSON.stringify({goodwill:!clawback})
   }).then(function(r){return r.json().then(function(d){return{ok:r.ok,d:d}})})
    .then(function(res){
-     if(!res.ok){alert('Refund failed: '+((res.d&&res.d.error)||'unknown error'));return}
+     if(!res.ok){
+       btn.disabled=false; btn.textContent='Refund';
+       st.className='status error'; st.style.display='block';
+       st.textContent='Refund failed: '+((res.d&&res.d.error)||'unknown error');
+       return;
+     }
+     closeRefundModal();
      if(res.d.already_refunded){alert(res.d.message||'Already refunded.');load();return}
      alert('Refunded $'+((res.d.refund_amount_cents||0)/100).toFixed(2)+'.\n\n'+
        (res.d.goodwill?'Credits left with the user (goodwill).':
         ('Credits reclaimed: '+res.d.credits_clawed+
          (res.d.credits_clawed<res.d.credits_requested?(' of '+res.d.credits_requested+' — the rest had already been spent.'):'.'))));
      load();
-   }).catch(function(e){alert('Refund request failed: '+e.message)});
+   }).catch(function(e){
+     btn.disabled=false; btn.textContent='Refund';
+     st.className='status error'; st.style.display='block';
+     st.textContent='Refund request failed: '+e.message;
+   });
 }
 function renderCalls(calls){var h="";calls.slice(0,500).forEach(function(c){var b=c.result==="NO_TEST"?"active":c.result==="MUST_TEST"?"disabled":"pending";h+="<tr><td>"+esc(c.user_email||"?")+"</td><td><span class='badge "+b+"'>"+esc(c.result)+"</span></td><td>"+new Date(c.created_at).toLocaleString()+"</td></tr>"});$("callsTable").innerHTML=h||"<tr><td colspan=3 class='text-muted'>No calls</td></tr>"}
 function renderPromos(promos){var h="";promos.forEach(function(p){h+="<tr><td class='mono text-cyan' style='font-weight:700'>"+p.code+"</td><td>"+p.credits+"</td><td>"+p.times_used+"/"+p.max_uses+"</td><td><button class='btn btn-sm btn-danger' onclick=\"delPromo('"+p.id+"')\">Del</button></td></tr>"});$("promosTable").innerHTML=h||"<tr><td colspan=4 class='text-muted'>No promos</td></tr>"}
