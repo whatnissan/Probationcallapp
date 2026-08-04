@@ -89,9 +89,15 @@ small{color:#666;font-size:0.75rem}
 .package-credits{font-size:2rem;font-weight:700;color:#fff}
 .package-price{font-size:1.1rem;color:#00d9ff;margin-top:5px}
 .package-save{font-size:0.75rem;color:#22c55e;margin-top:5px}
-.modal{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.9);display:none;align-items:center;justify-content:center;z-index:100;padding:20px;overflow-y:auto}
+/* align-items:flex-start + margin:auto on the child, NOT align-items:center.
+   A centered flex child taller than its scroll container has its TOP clipped
+   and made unreachable — you can scroll down but never back up to the
+   heading. Step 3 with SMS selected (method picker + phone + consent box +
+   error + button) is now tall enough to hit this on a small phone.
+   margin:auto still centres the modal whenever it does fit. */
+.modal{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.9);display:none;align-items:flex-start;justify-content:center;z-index:100;padding:20px;overflow-y:auto}
 .modal.active{display:flex}
-.modal-content{background:#1a1a2e;border-radius:16px;padding:30px;max-width:500px;width:100%}
+.modal-content{background:#1a1a2e;border-radius:16px;padding:30px;max-width:500px;width:100%;margin:auto}
 .modal-close{float:right;background:none;border:none;color:#fff;font-size:1.5rem;cursor:pointer}
 .promo-input{display:flex;gap:10px;margin-top:15px}
 .promo-input input{flex:1}
@@ -1084,7 +1090,13 @@ function loadUser() {
       
       if (d.schedule) {
         var t = formatTime(d.schedule.hour, d.schedule.minute);
-        document.getElementById('scheduleBannerText').textContent = 'Daily at ' + t;
+        // "Daily at 6:30 AM" leaves the new user's actual question unanswered:
+        // is anyone checking for me next? State which morning is next, and
+        // only while the schedule is genuinely running.
+        var bannerRunning = d.schedule.enabled !== false;
+        document.getElementById('scheduleBannerText').textContent = bannerRunning
+          ? 'Daily at ' + t + ' — next check ' + firstCheckWhen(d.schedule.hour, d.schedule.minute)
+          : 'Daily at ' + t + ' — paused';
         document.getElementById('scheduleBannerTime').textContent = t;
         document.getElementById('scheduleBanner').classList.add('active');
         document.getElementById('noSchedule').classList.remove('active');
@@ -1700,6 +1712,44 @@ function onboardClearErr(id) {
   if (el) el.style.display = 'none';
 }
 
+// Step navigation without validation, so a wrong turn is recoverable. Before
+// this there was no way back: picking the wrong county at step 1 stranded the
+// user, and their only escape was reloading the page.
+function onboardBack(step) {
+  document.querySelectorAll('.onboard-step').forEach(function(el) { el.style.display = 'none'; });
+  document.getElementById('onboardStep' + step).style.display = 'block';
+  if (step === 2) applyOnboardCountyUI();
+}
+
+// Everything that depends on which county was picked, in one place so step 2
+// and step 4 can never disagree about it.
+function applyOnboardCountyUI() {
+  var ftbend = document.getElementById('onboardCounty').value === 'ftbend';
+  document.getElementById('onboardPinGroup').style.display = ftbend ? 'none' : 'block';
+  document.getElementById('onboardColorGroup').style.display = ftbend ? 'block' : 'none';
+
+  // Fort Bend users are NOT called individually — the 5:05 AM system call
+  // reads the county hotline and their chosen time is when we notify them.
+  // Saying "when should we call?" to them was simply wrong.
+  document.getElementById('onboardStep4Heading').textContent =
+    ftbend ? 'Step 4: When should we text you?' : 'Step 4: When should we call?';
+  document.getElementById('onboardStep4Blurb').textContent = ftbend
+    ? 'We check the Fort Bend hotline first thing each morning. Pick when you\'d like your result sent.'
+    : 'We\'ll call the hotline for you at this time each morning and send your result right after.';
+  document.getElementById('onboardTimeLabel').textContent = ftbend ? 'Send my result at' : 'Call time';
+  document.getElementById('onboardTimeHint').textContent = ftbend
+    ? 'Most people pick 6:30 AM. You can change this anytime.'
+    : '6:30 AM works for most people. You can change this anytime.';
+  // 5 AM is only meaningful (and only permitted) for Fort Bend.
+  var h5 = document.getElementById('onboardHour5');
+  if (h5) {
+    h5.style.display = ftbend ? '' : 'none';
+    if (!ftbend && document.getElementById('onboardHour').value === '5') {
+      document.getElementById('onboardHour').value = '6';
+    }
+  }
+}
+
 function onboardNext(step) {
   // Validate current step
   if (step === 2) {
@@ -1715,6 +1765,16 @@ function onboardNext(step) {
       // gets the same answer here as they would after submitting.
       if (!/^[0-9]{6}$/.test(pin)) {
         onboardShowErr('onboardErr2', 'Your PIN is 6 digits, numbers only — check your probation paperwork.');
+        return;
+      }
+    } else {
+      // Fort Bend previously let the colour through blank. A blank colour is
+      // not a validation nicety: without it we cannot say "your colour was
+      // called", so the user silently receives generic "today's colour is X"
+      // messages forever and has to work it out themselves every morning.
+      var colour = document.getElementById('onboardColor').value.trim();
+      if (colour.length < 3) {
+        onboardShowErr('onboardErr2', 'Please enter the colour your officer assigned you — we need it to tell you whether today is your day.');
         return;
       }
     }
@@ -1743,13 +1803,10 @@ function onboardNext(step) {
 
   document.querySelectorAll('.onboard-step').forEach(function(el) { el.style.display = 'none'; });
   document.getElementById('onboardStep' + step).style.display = 'block';
-  
-  // Show/hide PIN vs Color based on county
-  if (step === 2) {
-    var county = document.getElementById('onboardCounty').value;
-    document.getElementById('onboardPinGroup').style.display = county === 'ftbend' ? 'none' : 'block';
-    document.getElementById('onboardColorGroup').style.display = county === 'ftbend' ? 'block' : 'none';
-  }
+
+  // County-dependent UI is applied on entry to step 2 AND kept correct for
+  // step 4, which also reads the county.
+  if (step === 2) applyOnboardCountyUI();
 }
 
 function selectOnboardMethod(method) {
@@ -1773,6 +1830,8 @@ function selectOnboardMethod(method) {
 // done (so the modal doesn't reappear every load) and leaves the dashboard's
 // setup card as the way back in.
 async function skipOnboarding() {
+  var sb = document.getElementById('onboardSkipBtn');
+  if (sb) { if (sb.disabled) return; sb.disabled = true; } // double-tap guard
   try {
     await fetch('/api/profile/onboarding-complete', {
       method: 'POST',
@@ -1791,6 +1850,18 @@ function fmtCallTime(hour, minute) {
   var ampm = h >= 12 ? 'PM' : 'AM';
   var h12 = h % 12 === 0 ? 12 : h % 12;
   return h12 + ':' + String(m).padStart(2, '0') + ' ' + ampm;
+}
+
+// "Every morning at 6:30" does not answer the only question a nervous new
+// user actually has: is anyone checking for me TOMORROW, or did I just miss
+// today? The cron fires at the next occurrence of the chosen time, so compute
+// which one that is and say it outright. Uses America/Chicago because every
+// schedule is stored in that zone.
+function firstCheckWhen(hour, minute) {
+  var h = parseInt(hour, 10), m = parseInt(minute, 10);
+  var nowChi = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }));
+  var nowMins = nowChi.getHours() * 60 + nowChi.getMinutes();
+  return (h * 60 + m) > nowMins ? 'today' : 'tomorrow';
 }
 
 // Every request is awaited and its response checked. The old version fired
@@ -1873,10 +1944,12 @@ async function completeOnboarding() {
   document.getElementById('onboardingModal').classList.remove('active');
 
   var when = fmtCallTime(hour, minute);
+  var firstWhen = firstCheckWhen(hour, minute);
   var how = method === 'sms' ? 'text you' : (method === 'both' ? 'text and email you' : 'email you');
-  alert(county === 'ftbend'
-    ? 'You\'re all set. We\'ll check the Fort Bend hotline each morning and ' + how + ' the result around ' + when + '.'
-    : 'You\'re all set. We\'ll call the hotline for you every morning at ' + when + ' and ' + how + ' the result.');
+  alert((county === 'ftbend'
+    ? 'You\'re all set.\n\nWe check the Fort Bend hotline every morning and ' + how + ' the result at ' + when + '.'
+    : 'You\'re all set.\n\nWe call the hotline for you every morning at ' + when + ' and ' + how + ' the result.')
+    + '\n\nYour first check is ' + firstWhen + '. You have 5 free checks to start — nothing else to do.');
   loadUser();
 }
 
@@ -2225,8 +2298,10 @@ function filterHistory(filter) {
       <div class="form-group" id="onboardColorGroup" style="display:none">
         <label>Your Assigned Color</label>
         <input type="text" id="onboardColor" placeholder="e.g. Blue, Red, Green" style="font-size:1.1rem">
+        <small style="display:block;margin-top:8px;color:#8892b0">The colour your probation officer assigned you. We compare it to the colour announced each morning and tell you whether it's your day.</small>
       </div>
       <div class="status error" id="onboardErr2" style="display:none;margin-bottom:10px"></div>
+      <button class="btn btn-secondary" onclick="onboardBack(1)">← Back</button>
       <button class="btn" onclick="onboardNext(3)">Next →</button>
     </div>
     
@@ -2250,16 +2325,22 @@ function filterHistory(filter) {
         <label><input type="checkbox" id="onboardSmsConsent"><span>I agree to receive SMS messages and have read the <a href="/terms.html" target="_blank">Terms</a> and <a href="/privacy.html" target="_blank">Privacy Policy</a>.</span></label>
       </div>
       <div class="status error" id="onboardErr3" style="display:none;margin-top:10px"></div>
+      <button class="btn btn-secondary" onclick="onboardBack(2)">← Back</button>
       <button class="btn" onclick="onboardNext(4)">Next →</button>
     </div>
 
     <div id="onboardStep4" class="onboard-step" style="display:none">
-      <h3 style="margin-bottom:15px">Step 4: When should we call?</h3>
-      <p style="color:#8892b0;margin-bottom:15px">We'll call the hotline for you at this time each morning and send your result right after.</p>
+      <h3 style="margin-bottom:15px" id="onboardStep4Heading">Step 4: When should we call?</h3>
+      <p style="color:#8892b0;margin-bottom:15px" id="onboardStep4Blurb">We'll call the hotline for you at this time each morning and send your result right after.</p>
       <div class="form-group">
-        <label>Call time</label>
+        <label id="onboardTimeLabel">Call time</label>
         <div style="display:flex;gap:10px;align-items:center">
           <select id="onboardHour" style="flex:1">
+            <!-- 5 AM is Fort Bend only: their result comes from the 5:05 AM
+                 system call, so an earlier notification is meaningful. It is
+                 hidden for Montgomery, whose own /api/schedule rejects
+                 anything before 6:00. -->
+            <option value="5" id="onboardHour5" style="display:none">5 AM</option>
             <option value="6" selected>6 AM</option>
             <option value="7">7 AM</option>
             <option value="8">8 AM</option>
@@ -2277,7 +2358,7 @@ function filterHistory(filter) {
             <option value="45">:45</option>
           </select>
         </div>
-        <small style="display:block;margin-top:8px;color:#8892b0">6:30 AM works for most people. You can change this anytime.</small>
+        <small style="display:block;margin-top:8px;color:#8892b0" id="onboardTimeHint">6:30 AM works for most people. You can change this anytime.</small>
       </div>
       <div class="form-group">
         <label>Probation end date <span style="color:#8892b0">(optional)</span></label>
@@ -2285,8 +2366,10 @@ function filterHistory(filter) {
         <small style="display:block;margin-top:8px;color:#8892b0">Helps you buy the exact number of credits you need — nothing else.</small>
       </div>
       <div class="status error" id="onboardErr4" style="display:none;margin-bottom:10px"></div>
+      <button class="btn btn-secondary" onclick="onboardBack(3)">← Back</button>
       <button class="btn btn-green" id="onboardFinishBtn" onclick="completeOnboarding()">Finish setup</button>
-      <button class="btn btn-secondary" onclick="skipOnboarding()" style="margin-top:10px">Skip for now</button>
+      <button class="btn btn-secondary" id="onboardSkipBtn" onclick="skipOnboarding()" style="margin-top:10px">Skip for now</button>
+      <p style="color:#8892b0;font-size:0.8rem;margin-top:10px">You have 5 free checks to start — no card needed.</p>
     </div>
   </div>
 </div>
