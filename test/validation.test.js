@@ -61,3 +61,23 @@ test('normalizePhoneE164: returns null on anything it cannot normalize', functio
   assert.strictEqual(normalizePhoneE164(null), null);
   assert.strictEqual(normalizePhoneE164(undefined), null);
 });
+
+// --- support message bounds ---
+const { isValidSupportSubject, isValidSupportBody } = require('../lib/validation');
+
+test('isValidSupportSubject: 3-120 chars, trimmed', function() {
+  assert.strictEqual(isValidSupportSubject('Help'), true);
+  assert.strictEqual(isValidSupportSubject('  Help  '), true);
+  assert.strictEqual(isValidSupportSubject('ab'), false);
+  assert.strictEqual(isValidSupportSubject('   '), false);
+  assert.strictEqual(isValidSupportSubject('x'.repeat(121)), false);
+  assert.strictEqual(isValidSupportSubject(null), false);
+});
+
+test('isValidSupportBody: 10-4000 chars, trimmed', function() {
+  assert.strictEqual(isValidSupportBody('My PIN stopped working today'), true);
+  assert.strictEqual(isValidSupportBody('too short'), false);
+  assert.strictEqual(isValidSupportBody('   \n  '), false);
+  assert.strictEqual(isValidSupportBody('x'.repeat(4001)), false);
+  assert.strictEqual(isValidSupportBody(undefined), false);
+});

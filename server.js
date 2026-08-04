@@ -19,7 +19,7 @@ const {
 } = require('./lib/detection');
 const { formatLocalDay, todayMD, wouldExceedCutoff, wouldExceedFtbendCutoff, ftbendRetryDelayMs } = require('./lib/time');
 const { computeTieredPriceCents, MAX_EXACT_CREDITS } = require('./lib/pricing');
-const { isValidPin, isValidTimezone, isValidEmail, normalizePhoneE164 } = require('./lib/validation');
+const { isValidPin, isValidTimezone, isValidEmail, normalizePhoneE164, isValidSupportSubject, isValidSupportBody } = require('./lib/validation');
 const { toSmsText, smsSegmentInfo, looksLikeEmailContent, renderBrandedEmail } = require('./lib/messaging');
 
 
@@ -1122,7 +1122,12 @@ async function auth(req, res, next) {
     
     // Admin kill-switch. Checked here so a disabled account is locked out
     // of every authed endpoint, not just hidden in the admin UI.
-    if (profile.is_disabled) {
+    //
+    // Exception: routes wrapped in authAllowDisabled. The message a disabled
+    // user sees is "Account disabled. Contact support." — so support itself
+    // has to remain reachable, or that instruction is a dead end and the
+    // people most likely to need help are the ones who cannot ask for it.
+    if (profile.is_disabled && !req._allowDisabled) {
       return res.status(403).json({ error: 'Account disabled. Contact support.' });
     }
 
@@ -1150,6 +1155,13 @@ async function auth(req, res, next) {
     console.error('Auth error:', e);
     res.status(500).json({ error: 'Auth error' });
   }
+}
+
+// Same as auth(), but lets a disabled account through. Used ONLY by the
+// support endpoint — see the kill-switch comment above.
+function authAllowDisabled(req, res, next) {
+  req._allowDisabled = true;
+  return auth(req, res, next);
 }
 
 app.get('/', function(req, res) { res.sendFile(path.join(__dirname, 'public', 'index.html')); });
@@ -4265,6 +4277,179 @@ app.post('/api/admin/refund/:purchaseId', adminAuth, async function(req, res) {
     });
   } catch (e) {
     console.error('[REFUND] Unhandled error for purchase ' + purchaseId + ':', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// === IN-APP SUPPORT ===
+// authAllowDisabled, not auth: a disabled account is told "Contact support",
+// so support must stay reachable or that instruction is a dead end.
+app.post('/api/support', authAllowDisabled, rateLimit('support', 3, 60 * 60 * 1000), async function(req, res) {
+  var subject = ((req.body && req.body.subject) || '').trim();
+  var body = ((req.body && req.body.body) || '').trim();
+
+  if (!isValidSupportSubject(subject)) {
+    return res.status(400).json({ error: 'Give your message a short subject (3-120 characters).' });
+  }
+  if (!isValidSupportBody(body)) {
+    return res.status(400).json({ error: 'Tell us a little more — at least 10 characters, up to 4000.' });
+  }
+
+  try {
+    var ins = await supabase.from('support_messages').insert({
+      user_id: req.user.id,
+      user_email: req.user.email,
+      subject: subject,
+      body: body,
+      status: 'open'
+    }).select('id, created_at').single();
+    if (ins.error) {
+      console.error('[SUPPORT] insert failed for ' + req.user.id.slice(0, 8) + ':', ins.error.message);
+      return res.status(500).json({ error: 'We could not save your message. Please try again.' });
+    }
+
+    // Answer the user first; alerting the admin must never delay or fail
+    // their submission.
+    res.json({ success: true, id: ins.data.id, replyTo: req.user.email });
+
+    alertAdminNewSupportMessage({
+      id: ins.data.id, userId: req.user.id, email: req.user.email,
+      subject: subject, body: body
+    }).catch(function(e) { console.error('[SUPPORT] admin alert failed:', e.message); });
+  } catch (e) {
+    console.error('[SUPPORT] unhandled:', e.message);
+    res.status(500).json({ error: 'We could not save your message. Please try again.' });
+  }
+});
+
+// Dual-channel, per-event, NO daily throttle — unlike the billing alert. At
+// this volume a support message is rare and time-sensitive; collapsing two in
+// one day into one alert would hide the second.
+async function alertAdminNewSupportMessage(msg) {
+  var admins = await supabase.from('profiles').select('id, email').eq('is_admin', true);
+  if (!admins.data || !admins.data.length) return;
+
+  // Context the admin needs to triage without opening the panel.
+  var ctx = { credits: null, schedule: 'none', county: null };
+  try {
+    var pr = await supabase.from('profiles').select('credits').eq('id', msg.userId).maybeSingle();
+    if (pr.data) ctx.credits = pr.data.credits;
+    var sc = await supabase.from('user_schedules').select('enabled, paused_reason, county').eq('user_id', msg.userId).maybeSingle();
+    if (sc.data) {
+      ctx.county = sc.data.county;
+      ctx.schedule = sc.data.enabled ? 'active'
+        : (sc.data.paused_reason === 'no_credits' ? 'paused (no credits)' : 'auto-paused');
+    }
+  } catch (e) { /* context is a nicety; never block the alert */ }
+
+  var summary = msg.email + '\n' +
+    'Schedule: ' + ctx.schedule + (ctx.county ? ' (' + ctx.county + ')' : '') + ' · Credits: ' + ctx.credits + '\n\n' +
+    'Subject: ' + msg.subject + '\n\n' + msg.body;
+
+  var html = renderBrandedEmail({
+    subject: 'Support: ' + msg.subject,
+    body: 'From: ' + msg.email + '\n' +
+      'Schedule: ' + ctx.schedule + (ctx.county ? ' (' + ctx.county + ')' : '') + '\n' +
+      'Credits: ' + ctx.credits + '\n\n' + msg.body + '\n\nReply from the Support tab in the admin panel.'
+  });
+
+  var smsText = 'ProbationCall support: ' + msg.email +
+    ' (' + ctx.schedule + ', ' + ctx.credits + ' credits) — "' +
+    String(msg.subject).slice(0, 60) + '". Reply in the admin panel.';
+
+  for (var i = 0; i < admins.data.length; i++) {
+    var a = admins.data[i];
+    if (a.email) {
+      await brevoMail.send({
+        to: a.email,
+        from: { email: MASS_FROM_EMAIL, name: 'ProbationCall Support' },
+        replyTo: { email: msg.email, name: msg.email },   // reply goes to the USER
+        subject: 'Support: ' + msg.subject,
+        text: summary, html: html.html
+      }).catch(function(e) { console.error('[SUPPORT] admin email failed:', e.message); });
+    }
+    var as = await supabase.from('user_schedules').select('notify_number').eq('user_id', a.id).maybeSingle();
+    if (as && as.data && as.data.notify_number) {
+      await sendSMS(as.data.notify_number, smsText, 'support_new').catch(function(e) {
+        console.error('[SUPPORT] admin sms failed:', e.message);
+      });
+    }
+  }
+  console.log('[SUPPORT] #' + msg.id + ' from ' + msg.email + ' — admins alerted');
+}
+
+app.get('/api/admin/support', adminAuth, async function(req, res) {
+  try {
+    var q = supabase.from('support_messages').select('*').order('created_at', { ascending: false }).limit(200);
+    if (req.query.status) q = q.eq('status', req.query.status);
+    var r = await q;
+    if (r.error) return res.status(500).json({ error: r.error.message });
+    var open = (r.data || []).filter(function(m) { return m.status === 'open'; }).length;
+    res.json({ messages: r.data || [], openCount: open });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/admin/support/:id/reply', adminAuth, async function(req, res) {
+  var id = req.params.id;
+  var reply = ((req.body && req.body.reply) || '').trim();
+  var adminEmail = (req.profile && req.profile.email) || 'unknown';
+  if (reply.length < 2) return res.status(400).json({ error: 'Write a reply first.' });
+
+  try {
+    var m = await supabase.from('support_messages').select('*').eq('id', id).maybeSingle();
+    if (m.error) return res.status(500).json({ error: m.error.message });
+    if (!m.data) return res.status(404).json({ error: 'Message not found' });
+    if (m.data.status === 'answered') {
+      return res.status(400).json({ error: 'Already answered on ' + new Date(m.data.answered_at).toLocaleDateString() });
+    }
+
+    var rendered = renderBrandedEmail({
+      subject: 'Re: ' + m.data.subject,
+      body: reply + '\n\n———\nYour original message:\n' + m.data.body
+    });
+
+    // Send BEFORE marking answered. Marking first would let a failed send
+    // look handled — the same silent-success shape as the billing outage.
+    var sent = await brevoMail.send({
+      to: m.data.user_email,
+      from: { email: MASS_FROM_EMAIL, name: 'ProbationCall Support' },
+      replyTo: { email: SUPPORT_REPLY_TO, name: 'ProbationCall Support' },
+      subject: 'Re: ' + m.data.subject,
+      text: rendered.text, html: rendered.html
+    }).then(function() { return true; }, function(e) {
+      console.error('[SUPPORT] reply send failed for #' + id + ':', e.message);
+      return false;
+    });
+    if (!sent) return res.status(500).json({ error: 'Could not send the email — not marked answered, try again.' });
+
+    var upd = await supabase.from('support_messages').update({
+      status: 'answered', reply_body: reply,
+      answered_at: new Date().toISOString(), answered_by: adminEmail
+    }).eq('id', id);
+    if (upd.error) {
+      console.error('[SUPPORT] reply sent but not recorded for #' + id + ':', upd.error.message);
+      return res.status(500).json({ error: 'Reply was emailed but not recorded — do not resend; fix the row manually.' });
+    }
+    console.log('[SUPPORT] #' + id + ' answered by ' + adminEmail);
+    res.json({ success: true });
+  } catch (e) {
+    console.error('[SUPPORT] reply unhandled for #' + id + ':', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/admin/support/:id/close', adminAuth, async function(req, res) {
+  try {
+    var upd = await supabase.from('support_messages').update({
+      status: 'closed',
+      answered_at: new Date().toISOString(),
+      answered_by: (req.profile && req.profile.email) || 'unknown'
+    }).eq('id', req.params.id);
+    if (upd.error) return res.status(500).json({ error: upd.error.message });
+    res.json({ success: true });
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });

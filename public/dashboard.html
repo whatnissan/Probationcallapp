@@ -291,7 +291,7 @@ select option { background: #1a1a2e; color: #fff; }
     <div class="nav-right">
       
       <a href="/admin" id="adminLink" style="display:none;background:#ef4444;color:#fff;padding:8px 14px;border-radius:6px;text-decoration:none;font-weight:600;font-size:0.85rem">Admin</a><span id="userEmail" style="color:#8892b0;font-size:0.85rem"></span>
-      <button class="logout-btn" onclick="logout()">Sign Out</button>
+      <button class="logout-btn" onclick="logout()">Sign Out</button><button class="btn btn-secondary" onclick="openSupport()" style="margin-left:8px">💬 Help</button>
     </div>
   </nav>
   
@@ -1123,7 +1123,7 @@ function loadUser() {
         var schedOffByUser = d.schedule.enabled === false && !schedPausedNoCredits;
         document.getElementById('schedStatusHeading').textContent =
           schedPausedNoCredits ? '⏸ Checks paused — out of credits'
-          : (schedOffByUser ? '⏸ Checks turned off' : '✅ Schedule Active');
+          : (schedOffByUser ? '⏸ Checks paused automatically' : '✅ Schedule Active');
         document.getElementById('schedPausedInfo').style.display = schedPausedNoCredits ? 'block' : 'none';
         document.getElementById('schedBtn').textContent = '💾 Update Schedule';
         document.getElementById('schedCounty').value = d.schedule.county || 'montgomery';
@@ -2237,6 +2237,37 @@ function filterHistory(filter) {
   event.target.classList.add("active");
   renderCallHistory(filter);
 }
+
+// --- Contact support ---
+document.addEventListener('DOMContentLoaded',function(){
+  var c=document.getElementById('closeSupportModal'); if(c)c.onclick=closeSupportModal;
+  var b=document.getElementById('sendSupportBtn'); if(b)b.onclick=sendSupportMessage;
+});
+function openSupport(){
+  $('supportErr').style.display='none';
+  $('supportSubject').value='';$('supportBody').value='';
+  var b=$('sendSupportBtn'); b.disabled=false; b.textContent='Send message';
+  $('supportModal').classList.add('active');
+}
+function closeSupportModal(){$('supportModal').classList.remove('active')}
+function sendSupportMessage(){
+  var subject=$('supportSubject').value.trim(), body=$('supportBody').value.trim();
+  var err=$('supportErr'), btn=$('sendSupportBtn');
+  function fail(m){err.textContent=m;err.style.display='block';btn.disabled=false;btn.textContent='Send message'}
+  // Mirror the server rules so the answer is the same before and after submit.
+  if(subject.length<3)return fail('Give your message a short subject.');
+  if(body.length<10)return fail('Tell us a little more — at least 10 characters.');
+  err.style.display='none';btn.disabled=true;btn.textContent='Sending…';
+  fetch('/api/support',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},
+    body:JSON.stringify({subject:subject,body:body})})
+   .then(function(r){return r.json().then(function(d){return{ok:r.ok,d:d}})})
+   .then(function(res){
+     if(!res.ok)return fail((res.d&&res.d.error)||'Could not send. Please try again.');
+     closeSupportModal();
+     alert('Message sent.\n\nWe will reply to '+(res.d.replyTo||'the email on your account')+'.');
+   }).catch(function(){fail('Could not reach the server. Check your connection and try again.')});
+}
+
 </script>
 
 <!-- PROBATION MODAL -->
@@ -2272,7 +2303,7 @@ function filterHistory(filter) {
 </div>
 
 <!-- ONBOARDING MODAL -->
-<div class="modal" id="onboardingModal">
+<div class="modal" id="supportModal"><div class="modal-content" style="max-width:460px"><button class="modal-close" id="closeSupportModal">&times;</button><h2 style="margin-bottom:6px">Contact support</h2><p style="color:#8892b0;font-size:0.85rem;margin-bottom:16px">Tell us what is going on and we will email you back. Usually same day.</p><div class="form-group"><label>Subject</label><input type="text" id="supportSubject" maxlength="120" placeholder="My PIN stopped working"></div><div class="form-group"><label>Message</label><textarea id="supportBody" rows="6" maxlength="4000" placeholder="What happened, and when did you first notice it?" style="width:100%;padding:10px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#fff;resize:vertical;font-family:inherit"></textarea></div><div class="status error" id="supportErr" style="display:none;margin-bottom:10px"></div><button class="btn btn-primary" id="sendSupportBtn" style="width:100%;padding:12px">Send message</button><p style="color:#8892b0;font-size:0.78rem;margin-top:10px;text-align:center">We reply to the email on your account.</p></div></div><div class="modal" id="onboardingModal">
   <div class="modal-content" style="max-width:500px">
     <h2 style="color:#00d9ff;margin-bottom:20px">👋 Welcome to ProbationCall!</h2>
     
