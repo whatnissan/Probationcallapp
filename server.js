@@ -3433,7 +3433,16 @@ async function notify(phone, email, method, message, callId) {
     return await sendEmail(email, message, callId);
   }
   if (method === 'sms' && phone) {
-    return await sendSMS(phone, message, callId);
+    var smsResult = await sendSMS(phone, message, callId);
+    // C2 fallback. An SMS-only user who replied STOP would otherwise receive
+    // NOTHING — while the credit is still deducted, because billing keys off
+    // the result being detected, not delivered. If we hold an email address,
+    // use it rather than let a MUST_TEST vanish.
+    if (smsResult && smsResult.opted_out && email) {
+      log(callId, 'SMS opted out — falling back to email', 'info');
+      return await sendEmail(email, message, callId);
+    }
+    return smsResult;
   }
   if (method === 'both') {
     var results = [];
@@ -3520,16 +3529,68 @@ async function sendEmail(to, message, callId) {
 }
 
 
-async function sendSMS(to, message, callId) {
+// C2 — has this handset opted out of SMS? One indexed read on the phone.
+// Fails OPEN: if the check itself errors we still send, because silently
+// swallowing a MUST_TEST notification is worse than one message to someone
+// Twilio is already blocking anyway.
+async function isSmsOptedOut(phone) {
+  var e164 = normalizePhoneE164(phone) || phone;
+  if (!e164) return false;
   try {
-    var msg = await twilioClient.messages.create({ 
-      messagingServiceSid: MESSAGING_SERVICE_SID, 
-      to: to, 
-      body: message 
+    var r = await supabase.from('sms_opt_outs').select('phone').eq('phone', e164).maybeSingle();
+    if (r.error) {
+      console.error('[SMS-OPTOUT] check failed for ' + String(e164).slice(-4) + ':', r.error.message);
+      return false;
+    }
+    return !!r.data;
+  } catch (e) {
+    console.error('[SMS-OPTOUT] check threw:', e.message);
+    return false;
+  }
+}
+
+// Record an opt-out. Idempotent via upsert on the phone primary key.
+async function recordSmsOptOut(phone, source, keyword) {
+  var e164 = normalizePhoneE164(phone) || phone;
+  if (!e164) return;
+  var userId = null;
+  try {
+    var sch = await supabase.from('user_schedules').select('user_id').eq('notify_number', e164).maybeSingle();
+    if (sch.data) userId = sch.data.user_id;
+  } catch (e) { /* best effort — an opt-out from an unknown number still counts */ }
+  var up = await supabase.from('sms_opt_outs').upsert({
+    phone: e164, user_id: userId, opted_out_at: new Date().toISOString(),
+    source: source || 'stop_keyword', last_keyword: keyword || null
+  }, { onConflict: 'phone' });
+  if (up.error) console.error('[SMS-OPTOUT] could not record opt-out for ' + String(e164).slice(-4) + ':', up.error.message);
+  else console.log('[SMS-OPTOUT] ' + String(e164).slice(-4) + ' opted OUT (source=' + source + ')');
+  return userId;
+}
+
+async function sendSMS(to, message, callId) {
+  // Refuse before calling Twilio. Twilio would reject with 21610 anyway, but
+  // checking here keeps the log honest and avoids a pointless API round trip.
+  if (await isSmsOptedOut(to)) {
+    log(callId, 'SMS suppressed — recipient opted out', 'error');
+    return { success: false, error: 'opted_out', opted_out: true };
+  }
+  try {
+    var msg = await twilioClient.messages.create({
+      messagingServiceSid: MESSAGING_SERVICE_SID,
+      to: to,
+      body: message
     });
     log(callId, 'SMS sent: ' + msg.sid, 'success');
     return { success: true, sid: msg.sid };
   } catch (e) {
+    // 21610 = Twilio's "this number has replied STOP". Authoritative — record
+    // it so we stop trying, whether or not we ever saw the inbound webhook
+    // (Advanced Opt-Out can absorb the STOP before it reaches us).
+    if (e && (e.code === 21610 || e.code === '21610')) {
+      log(callId, 'SMS blocked: recipient opted out (Twilio 21610)', 'error');
+      await recordSmsOptOut(to, 'twilio_21610', null).catch(function() {});
+      return { success: false, error: 'opted_out', opted_out: true };
+    }
     log(callId, 'SMS failed: ' + e.message, 'error');
     return { success: false, error: e.message };
   }
@@ -4191,6 +4252,75 @@ app.post('/api/admin/refund/:purchaseId', adminAuth, async function(req, res) {
   } catch (e) {
     console.error('[REFUND] Unhandled error for purchase ' + purchaseId + ':', e.message);
     res.status(500).json({ error: e.message });
+  }
+});
+
+// === C2: INBOUND SMS — STOP / START ===
+// Point the Twilio number (or Messaging Service) inbound webhook at
+// POST https://www.probationcall.com/webhook/sms-incoming
+//
+// Twilio's Advanced Opt-Out already blocks the handset at their end and sends
+// its own confirmation. This handler is the APP's record, so we stop calling
+// sendSMS for a number that can no longer receive, and so the admin panel
+// shows the truth. We deliberately do NOT reply with our own SMS — Twilio has
+// already sent one, and a second would be both redundant and a compliance
+// smell. Empty TwiML is the correct response.
+var SMS_STOP_WORDS = ['STOP', 'STOPALL', 'UNSUBSCRIBE', 'CANCEL', 'END', 'QUIT'];
+var SMS_START_WORDS = ['START', 'UNSTOP', 'YES'];
+
+app.post('/webhook/sms-incoming', validateTwilio, async function(req, res) {
+  // Always answer Twilio immediately with empty TwiML; do the work after.
+  res.type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+
+  try {
+    var from = req.body && req.body.From;
+    var bodyRaw = (req.body && req.body.Body) || '';
+    var keyword = String(bodyRaw).trim().toUpperCase().replace(/[^A-Z]/g, '');
+    if (!from) return;
+
+    var e164 = normalizePhoneE164(from) || from;
+    console.log('[SMS-IN] from ' + String(e164).slice(-4) + ' keyword="' + keyword + '"');
+
+    if (SMS_STOP_WORDS.indexOf(keyword) >= 0) {
+      var userId = await recordSmsOptOut(e164, 'stop_keyword', keyword);
+      // Confirm by EMAIL, not SMS — we can no longer text them, and this is
+      // the only channel left to explain what just changed.
+      if (userId) {
+        var sch = await supabase.from('user_schedules').select('notify_email, notify_method').eq('user_id', userId).maybeSingle();
+        var email = (sch.data && sch.data.notify_email) || null;
+        if (!email) {
+          var pr = await supabase.from('profiles').select('email').eq('id', userId).maybeSingle();
+          email = pr.data ? pr.data.email : null;
+        }
+        if (email) {
+          var method = (sch.data && sch.data.notify_method) || 'sms';
+          var stillEmailed = (method === 'email' || method === 'both');
+          await sendEmail(email,
+            'Text messages stopped.\n\n' +
+            'You replied STOP, so we won\'t text you again.\n\n' +
+            (stillEmailed
+              ? 'You\'ll still get your daily check-in result by email — nothing else changes.'
+              : 'Heads up: SMS was your only way of getting results. Open probationcall.com and switch to email so you don\'t miss a test day.') +
+            '\n\nChanged your mind? Reply START to the same number and texts resume.\n\n- ProbationCall.com',
+            'sms_opt_out').catch(function(e) { console.error('[SMS-IN] opt-out email failed:', e.message); });
+        }
+      }
+      return;
+    }
+
+    if (SMS_START_WORDS.indexOf(keyword) >= 0) {
+      var del = await supabase.from('sms_opt_outs').delete().eq('phone', e164).select('phone');
+      if (del.error) { console.error('[SMS-IN] could not clear opt-out for ' + String(e164).slice(-4) + ':', del.error.message); return; }
+      if (del.data && del.data.length) console.log('[SMS-OPTOUT] ' + String(e164).slice(-4) + ' opted back IN (keyword=' + keyword + ')');
+      else console.log('[SMS-IN] START from ' + String(e164).slice(-4) + ' but no opt-out on file — nothing to clear');
+      return;
+    }
+
+    // Anything else is a human replying to a notification. We do not ingest
+    // inbound conversation; log it so it is at least visible.
+    console.log('[SMS-IN] Non-keyword reply from ' + String(e164).slice(-4) + ': ' + String(bodyRaw).slice(0, 120));
+  } catch (e) {
+    console.error('[SMS-IN] handler error:', e.message);
   }
 });
 
