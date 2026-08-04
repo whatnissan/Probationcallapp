@@ -20,6 +20,7 @@ const {
 const { formatLocalDay, todayMD, wouldExceedCutoff, wouldExceedFtbendCutoff, ftbendRetryDelayMs } = require('./lib/time');
 const { computeTieredPriceCents, MAX_EXACT_CREDITS } = require('./lib/pricing');
 const { isValidPin, isValidTimezone, isValidEmail, normalizePhoneE164 } = require('./lib/validation');
+const { toSmsText, smsSegmentInfo, looksLikeEmailContent, renderBrandedEmail } = require('./lib/messaging');
 
 
 // --- BREVO EMAIL VIA HTTP API ---
@@ -36,13 +37,17 @@ const brevoMail = {
           "api-key": process.env.BREVO_KEY,
           "content-type": "application/json"
         },
-        body: JSON.stringify({
+        body: JSON.stringify(Object.assign({
           sender: { name: fromName, email: fromEmail },
           to: [{ email: msg.to }],
           subject: msg.subject,
           textContent: msg.text || "",
           htmlContent: msg.html || msg.text
-        })
+        // replyTo was previously dropped on the floor. Mail sent from
+        // support@probationcall.com needs it: that address is authenticated
+        // for SENDING but is not a mailbox, so without a Reply-To a customer
+        // hitting Reply gets a bounce and we never learn they tried.
+        }, msg.replyTo ? { replyTo: (typeof msg.replyTo === "object" ? msg.replyTo : { email: msg.replyTo }) } : {}))
       });
       if (response.ok) {
         console.log("[EMAIL] ✅ Sent successfully to", msg.to);
@@ -173,6 +178,12 @@ const TWILIO_VOICE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
 const MESSAGING_SERVICE_SID = process.env.TWILIO_MESSAGING_SERVICE_SID || 'MG8adbb793f6b8c100da6770f6f0707258';
 const WHATSAPP_NUMBER = process.env.TWILIO_WHATSAPP_NUMBER || 'whatsapp:+15558965863';
 const FROM_EMAIL = process.env.FROM_EMAIL || 'alerts@probationcall.com';
+// Mass sends and support replies go out as support@ — a monitored-looking
+// address rather than alerts@. probationcall.com is DNS-authenticated in
+// Brevo, so any address at the domain sends without separate verification.
+// support@ is not a real mailbox, so replies are steered to SUPPORT_REPLY_TO.
+const MASS_FROM_EMAIL = process.env.MASS_FROM_EMAIL || 'support@probationcall.com';
+const SUPPORT_REPLY_TO = process.env.SUPPORT_REPLY_TO || 'whatnissan@gmail.com';
 
 // Time restrictions: 6:00 AM to 2:59 PM
 const MIN_HOUR = 6;
@@ -3743,7 +3754,10 @@ app.post('/api/admin/mass-text', adminAuth, async function(req, res) {
     var schedules = result.data || [];
     
     var sent = 0, failed = 0, skipped = 0;
-    var fullMessage = message.trim() + '\n\n- ProbationCall.com';
+    // Same cleanup path as the mass mailer: strips email-shaped artefacts
+    // (Subject: lines, HTML, markdown), normalises breaks, and appends the
+    // brand line exactly once even if the admin typed it themselves.
+    var fullMessage = toSmsText(message);
     
     for (var i = 0; i < schedules.length; i++) {
       var s = schedules[i];
@@ -4251,6 +4265,163 @@ app.post('/api/admin/refund/:purchaseId', adminAuth, async function(req, res) {
     });
   } catch (e) {
     console.error('[REFUND] Unhandled error for purchase ' + purchaseId + ':', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// === MASS SEND (email / text / both) ===
+// Test and staff accounts never receive a mass send. Kept as emails rather
+// than ids so it reads plainly and survives a database reset.
+var MASS_SEND_EXCLUDE = ['whatnissan@gmail.com', 'whatnissan@protonmail.com', 'dmlafortune@gmail.com'];
+
+// Resolve a segment to concrete recipients, with per-channel eligibility.
+// "active" for an announcement is deliberately broad: the users WITHOUT a
+// schedule are the most valuable audience for a "we're live" message, not the
+// least. Narrower segments exist for targeted sends later.
+async function resolveMassRecipients(segment) {
+  var profs = await supabase.from('profiles').select('id, email, is_disabled');
+  if (profs.error) throw new Error('profiles: ' + profs.error.message);
+  var scheds = await supabase.from('user_schedules').select('user_id, enabled, notify_number');
+  if (scheds.error) throw new Error('user_schedules: ' + scheds.error.message);
+  var optOuts = await supabase.from('sms_opt_outs').select('phone');
+  if (optOuts.error) throw new Error('sms_opt_outs: ' + optOuts.error.message);
+
+  var schedBy = {};
+  (scheds.data || []).forEach(function(s) { schedBy[s.user_id] = s; });
+  var optedOut = {};
+  (optOuts.data || []).forEach(function(o) { optedOut[o.phone] = true; });
+
+  var out = [];
+  (profs.data || []).forEach(function(p) {
+    var email = (p.email || '').toLowerCase();
+    if (!email) return;
+    if (MASS_SEND_EXCLUDE.indexOf(email) >= 0) return;
+    if (p.is_disabled) return;
+    var sched = schedBy[p.id] || null;
+    if (segment === 'active_schedule' && !(sched && sched.enabled)) return;
+    if (segment === 'never_configured' && sched) return;
+    var phone = sched && sched.notify_number ? sched.notify_number : null;
+    out.push({
+      user_id: p.id,
+      email: p.email,
+      phone: phone,
+      // A number we cannot text is not a recipient. Counting it would
+      // promise a reach the send cannot deliver.
+      smsEligible: !!(phone && !optedOut[phone])
+    });
+  });
+  return out;
+}
+
+// Counts + a server-rendered preview, so what the admin approves is produced
+// by the same code that will send.
+app.post('/api/admin/mass-preview', adminAuth, async function(req, res) {
+  try {
+    var segment = (req.body && req.body.segment) || 'all';
+    var body = (req.body && req.body.body) || '';
+    var subject = (req.body && req.body.subject) || '';
+    var recips = await resolveMassRecipients(segment);
+    var smsBody = toSmsText(body);
+    var seg = smsSegmentInfo(smsBody);
+    var shape = looksLikeEmailContent(body);
+    var rendered = renderBrandedEmail({ subject: subject, body: body });
+    res.json({
+      segment: segment,
+      counts: {
+        total: recips.length,
+        email: recips.filter(function(r) { return !!r.email; }).length,
+        sms: recips.filter(function(r) { return r.smsEligible; }).length,
+        smsNoNumber: recips.filter(function(r) { return !r.phone; }).length,
+        smsOptedOut: recips.filter(function(r) { return r.phone && !r.smsEligible; }).length
+      },
+      sms: { body: smsBody, segments: seg },
+      emailHtml: rendered.html,
+      emailText: rendered.text,
+      warnings: shape.isEmailShaped ? shape.reasons : []
+    });
+  } catch (e) {
+    console.error('[MASS-SEND] preview failed:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/admin/mass-send', adminAuth, async function(req, res) {
+  var channel = (req.body && req.body.channel) || 'email';
+  var segment = (req.body && req.body.segment) || 'all';
+  var subject = ((req.body && req.body.subject) || '').trim();
+  var body = ((req.body && req.body.body) || '').trim();
+  var adminEmail = (req.profile && req.profile.email) || 'unknown';
+
+  if (['email', 'text', 'both'].indexOf(channel) < 0) return res.status(400).json({ error: 'Invalid channel' });
+  if (!body) return res.status(400).json({ error: 'Message body is required' });
+  if ((channel === 'email' || channel === 'both') && !subject) {
+    return res.status(400).json({ error: 'Email sends need a subject' });
+  }
+
+  try {
+    var recips = await resolveMassRecipients(segment);
+    if (!recips.length) return res.status(400).json({ error: 'That segment has no recipients' });
+
+    var smsBody = toSmsText(body);
+    var rendered = renderBrandedEmail({ subject: subject, body: body });
+    var wantEmail = channel === 'email' || channel === 'both';
+    var wantSms = channel === 'text' || channel === 'both';
+    var emailTargets = wantEmail ? recips.filter(function(r) { return !!r.email; }) : [];
+    var smsTargets = wantSms ? recips.filter(function(r) { return r.smsEligible; }) : [];
+
+    var sendRow = await supabase.from('mass_sends').insert({
+      channel: channel, segment: segment,
+      subject: subject || null, body: body,
+      sms_body: wantSms ? smsBody : null,
+      sent_by: adminEmail,
+      email_intended: emailTargets.length, sms_intended: smsTargets.length
+    }).select('id').single();
+    if (sendRow.error) {
+      console.error('[MASS-SEND] could not record send:', sendRow.error.message);
+      return res.status(500).json({ error: 'Could not record the send — nothing was sent.' });
+    }
+    var sendId = sendRow.data.id;
+
+    var results = [];
+    var emailSent = 0, smsSent = 0;
+
+    for (var i = 0; i < emailTargets.length; i++) {
+      var r = emailTargets[i];
+      var ok = await brevoMail.send({
+        to: r.email,
+        from: { email: MASS_FROM_EMAIL, name: 'ProbationCall' },
+        replyTo: { email: SUPPORT_REPLY_TO, name: 'ProbationCall' },
+        subject: subject, text: rendered.text, html: rendered.html
+      }).then(function() { return { ok: true }; }, function(e) { return { ok: false, error: e.message }; });
+      if (ok.ok) emailSent++;
+      results.push({ mass_send_id: sendId, user_id: r.user_id, channel: 'email', destination: r.email,
+        status: ok.ok ? 'sent' : 'failed', error: ok.ok ? null : String(ok.error).slice(0, 300) });
+      await new Promise(function(z) { setTimeout(z, 120); });
+    }
+
+    for (var j = 0; j < smsTargets.length; j++) {
+      var t = smsTargets[j];
+      var sres = await sendSMS(t.phone, smsBody, 'mass_send');
+      if (sres && sres.success) smsSent++;
+      results.push({ mass_send_id: sendId, user_id: t.user_id, channel: 'sms', destination: t.phone,
+        status: (sres && sres.success) ? 'sent' : (sres && sres.opted_out ? 'skipped' : 'failed'),
+        error: (sres && sres.success) ? null : String((sres && sres.error) || 'unknown').slice(0, 300) });
+      await new Promise(function(z) { setTimeout(z, 200); });
+    }
+
+    if (results.length) {
+      var ins = await supabase.from('mass_send_recipients').insert(results);
+      if (ins.error) console.error('[MASS-SEND] recipient rows failed (messages already sent):', ins.error.message);
+    }
+    await supabase.from('mass_sends').update({ email_sent: emailSent, sms_sent: smsSent }).eq('id', sendId);
+
+    console.log('[MASS-SEND] ' + adminEmail + ' sent ' + channel + '/' + segment +
+      ' — email ' + emailSent + '/' + emailTargets.length + ', sms ' + smsSent + '/' + smsTargets.length);
+    res.json({ success: true, id: sendId, channel: channel, segment: segment,
+      email: { intended: emailTargets.length, sent: emailSent },
+      sms: { intended: smsTargets.length, sent: smsSent } });
+  } catch (e) {
+    console.error('[MASS-SEND] failed:', e.message);
     res.status(500).json({ error: e.message });
   }
 });

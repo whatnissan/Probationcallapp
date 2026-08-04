@@ -17,16 +17,27 @@
 <div class="global-trends" id="globalTrends"><h3>📊 System-Wide Test Patterns</h3><div class="trends-grid"><div class="trend-stat"><div class="val" id="gtAvgInterval">--</div><div class="lbl">Avg Days Between Tests</div></div><div class="trend-stat"><div class="val" id="gtTotalTests">--</div><div class="lbl">Total MUST_TEST</div></div><div class="trend-stat"><div class="val" id="gtTestRate">--</div><div class="lbl">Tests/Month (avg)</div></div><div class="trend-stat"><div class="val" id="gtMostLikely">--</div><div class="lbl">Most Likely Day</div></div></div><div style="margin-top:15px;text-align:center"><div style="font-size:0.8rem;color:#8892b0;margin-bottom:8px">Test Likelihood by Day (All Users)</div><div class="pattern-row" id="gtPatternRow"></div><div style="font-size:0.65rem;color:#666;margin-top:8px">🟢 Low chance · 🟡 Medium · 🔴 High chance</div></div></div>
 <div class="montgomery-analytics" id="montgomeryAnalytics" style="display:none"><h3>🔬 Montgomery County Deep Analytics</h3><div class="analytics-grid"><div class="analytics-stat"><div class="val" id="maSystemInterval">--</div><div class="lbl">System Avg Interval</div></div><div class="analytics-stat"><div class="val" id="maMedianInterval">--</div><div class="lbl">Median Interval</div></div><div class="analytics-stat"><div class="val" id="maTotalUsers">--</div><div class="lbl">Users with Tests</div></div><div class="analytics-stat"><div class="val" id="maConsecPct">--</div><div class="lbl">Back-to-Back Tests</div></div></div><div style="margin-bottom:20px"><h4 style="color:#00d9ff;font-size:0.9rem;margin-bottom:10px;text-align:center">📅 Test Likelihood by Day of Week</h4><div class="day-heat" id="maDayHeat"></div></div><div style="margin-bottom:20px"><h4 style="color:#00d9ff;font-size:0.9rem;margin-bottom:10px;text-align:center">📆 Test Likelihood by Week of Month</h4><div class="day-heat" id="maWeekHeat"></div></div><div><h4 style="color:#00d9ff;font-size:0.9rem;margin-bottom:10px;text-align:center">⏱️ Most Common Test Intervals</h4><div id="maIntervalChart"></div></div></div>
 <div class="card" style="margin-bottom:15px;border:1px solid rgba(239,68,68,0.3);background:rgba(239,68,68,0.05)">
-<h2 style="color:#ef4444">📢 Mass Text All Users</h2>
+<h2 style="color:#ef4444">📢 Message All Users</h2>
+<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+<div style="flex:1;min-width:150px"><label style="display:block;font-size:0.78rem;color:#8892b0;margin-bottom:4px">Channel</label>
+<select id="massChannel" style="width:100%;padding:9px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#fff"><option value="email">Email</option><option value="text">Text</option><option value="both">Both</option></select></div>
+<div style="flex:1;min-width:190px"><label style="display:block;font-size:0.78rem;color:#8892b0;margin-bottom:4px">Recipients</label>
+<select id="massSegment" style="width:100%;padding:9px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#fff"><option value="all">All users</option><option value="active_schedule">With an active schedule</option><option value="never_configured">Signed up, never configured</option></select></div>
+</div>
+<div class="form-group" id="massSubjectGroup" style="margin-bottom:10px"><label style="display:block;font-size:0.78rem;color:#8892b0;margin-bottom:4px">Email subject</label>
+<input type="text" id="massSubject" maxlength="140" placeholder="ProbationCall is live" style="width:100%;padding:10px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#fff"></div>
 <div style="margin-bottom:10px">
-<textarea id="massTextMsg" rows="3" style="width:100%;padding:10px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#fff;resize:vertical;font-family:inherit" placeholder="Type your message here... (ProbationCall.com branding added automatically)"></textarea>
+<label style="display:block;font-size:0.78rem;color:#8892b0;margin-bottom:4px">Message</label>
+<textarea id="massTextMsg" rows="12" style="width:100%;min-height:220px;padding:12px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#fff;resize:vertical;font-family:inherit;line-height:1.5" placeholder="Write your message. Plain text — the branded layout is applied automatically for email, and the ProbationCall.com sign-off is added once for text."></textarea>
+<div id="massCounts" style="font-size:0.78rem;color:#8892b0;margin-top:6px"></div>
 </div>
 <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-<button class="btn btn-danger" id="sendMassText" style="padding:10px 20px">🚀 Send to All Active Users</button>
 <button class="btn btn-secondary" id="previewMassText" style="padding:10px 20px">👁️ Preview</button>
+<button class="btn btn-danger" id="sendMassText" style="padding:10px 20px" disabled>🚀 Send</button>
 <span id="massTextStatus" style="color:#8892b0;font-size:0.85rem"></span>
 </div>
-<div id="massTextPreview" style="display:none;margin-top:10px;padding:10px;background:rgba(0,0,0,0.3);border-radius:6px;font-size:0.85rem;white-space:pre-wrap;color:#ccc"></div>
+<div id="massWarn" style="display:none;margin-top:10px;padding:10px 12px;border-radius:6px;background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.4);color:#f59e0b;font-size:0.83rem"></div>
+<div id="massTextPreview" style="display:none;margin-top:12px"></div>
 <div style="margin-top:16px;padding-top:14px;border-top:1px solid rgba(255,255,255,0.08)">
 <div style="font-size:0.85rem;color:#8892b0;margin-bottom:8px">Fort Bend — trigger a live hotline call. Result runs through detection + the finishprobation cross-check; if the call can't confirm it re-dials until a clear result or the 9:30 AM CDT cutoff, then resolves from finishprobation.</div>
 <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
@@ -154,8 +165,9 @@ function loadUserIdentity(uid){
       if(t.refunded_cents)sub.push('<span style="color:#f59e0b">$'+(t.refunded_cents/100).toFixed(2)+' refunded</span>');
       // Surfaces any recurrence of the 015-class silent billing failure.
       if(a.billable_unbilled)sub.push('<span style="color:#ef4444">'+a.billable_unbilled+' unbilled results</span>');
+      // The name lives in the modal title only. Repeating it here showed it
+      // twice, an inch apart, which read as a rendering bug.
       bar.innerHTML=avatar+'<div style="min-width:0">'+
-        (name?'<div style="font-size:1.05rem;font-weight:600;color:#fff">'+esc(name)+'</div>':'')+
         '<div class="text-muted" style="font-size:0.78rem">'+sub.join(' · ')+'</div></div>';
       bar.style.display='flex';
       if(name)$('userModalTitle').textContent=name+' — '+d.profile.email;
@@ -273,27 +285,113 @@ function calcUserStats(calls,sysStats){var tests=calls.filter(function(c){return
 function calcGlobalTrends(){var tests=D.calls.filter(function(c){return c.result==="MUST_TEST"}).sort(function(a,b){return new Date(a.created_at)-new Date(b.created_at)});if(tests.length<2){document.getElementById("globalTrends").style.display="none";return}document.getElementById("globalTrends").style.display="block";var userTests={};tests.forEach(function(t){if(!userTests[t.user_id])userTests[t.user_id]=[];userTests[t.user_id].push(t)});var allIntervals=[];Object.keys(userTests).forEach(function(uid){var ut=userTests[uid].sort(function(a,b){return new Date(a.created_at)-new Date(b.created_at)});for(var i=1;i<ut.length;i++){var days=Math.round((new Date(ut[i].created_at)-new Date(ut[i-1].created_at))/(1000*60*60*24));if(days>0&&days<60)allIntervals.push(days)}});var avgInt=allIntervals.length>0?(allIntervals.reduce(function(a,b){return a+b},0)/allIntervals.length).toFixed(1):"--";var dayCount=[0,0,0,0,0,0,0];tests.forEach(function(t){dayCount[new Date(t.created_at).getDay()]++});var maxDay=Math.max.apply(null,dayCount);var dayNames=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];var dayNamesShort=["S","M","T","W","T","F","S"];var mostLikely=dayNames[dayCount.indexOf(maxDay)];var first=tests[0];var last=tests[tests.length-1];var totalDays=Math.max(1,Math.round((new Date(last.created_at)-new Date(first.created_at))/(1000*60*60*24)));var testsPerMonth=((tests.length/totalDays)*30).toFixed(1);document.getElementById("gtAvgInterval").textContent=avgInt;document.getElementById("gtTotalTests").textContent=tests.length;document.getElementById("gtTestRate").textContent=testsPerMonth;document.getElementById("gtMostLikely").textContent=mostLikely;var patternHtml="";for(var d=0;d<7;d++){var pct=maxDay>0?(dayCount[d]/maxDay):0;var cls=pct>=0.7?"high":pct>=0.3?"med":"low";patternHtml+="<div class=\"pattern-day "+cls+"\" title=\""+dayNames[d]+": "+dayCount[d]+" tests\">"+dayNamesShort[d]+"</div>"}document.getElementById("gtPatternRow").innerHTML=patternHtml}
 function loadMontgomeryAnalytics(){fetch("/api/admin/montgomery-analytics",{headers:{Authorization:"Bearer "+token}}).then(function(r){return r.json()}).then(function(d){if(d.error||!d.totalTests){document.getElementById("montgomeryAnalytics").style.display="none";return}document.getElementById("montgomeryAnalytics").style.display="block";document.getElementById("maSystemInterval").textContent=d.avgSystemInterval+"d";document.getElementById("maMedianInterval").textContent=d.medianInterval+"d";document.getElementById("maTotalUsers").textContent=d.totalUsers;document.getElementById("maConsecPct").textContent=d.consecutiveTestPct+"%";var dayHtml="";d.dayPatterns.forEach(function(p){dayHtml+="<div class='day "+p.likelihood+"'><div class='name'>"+p.day+"</div><div class='count'>"+p.count+" ("+p.pct+"%)</div></div>"});document.getElementById("maDayHeat").innerHTML=dayHtml;var weekHtml="";d.weekPatterns.forEach(function(p){var cls=parseFloat(p.pct)>25?"high":parseFloat(p.pct)>15?"medium":"low";weekHtml+="<div class='day "+cls+"'><div class='name'>"+p.week.split(" ")[0]+" "+p.week.split(" ")[1]+"</div><div class='count'>"+p.count+" ("+p.pct+"%)</div></div>"});document.getElementById("maWeekHeat").innerHTML=weekHtml;var intHtml="<div style='display:flex;flex-wrap:wrap;gap:8px;justify-content:center'>";d.topIntervals.slice(0,6).forEach(function(i){intHtml+="<div style='background:rgba(0,217,255,0.1);border:1px solid rgba(0,217,255,0.3);border-radius:8px;padding:10px 15px;text-align:center'><span style='font-size:1.2rem;font-weight:700;color:#00d9ff'>"+i.days+"d</span><span style='font-size:0.7rem;color:#8892b0;margin-left:5px'>("+i.count+"x)</span></div>"});intHtml+="</div>";document.getElementById("maIntervalChart").innerHTML=intHtml}).catch(function(){document.getElementById("montgomeryAnalytics").style.display="none"})}
 
-document.getElementById('previewMassText').onclick=function(){
-  var msg=document.getElementById('massTextMsg').value.trim();
-  if(!msg){alert('Type a message first');return}
-  var preview=msg+'\n\n- ProbationCall.com';
-  document.getElementById('massTextPreview').textContent=preview;
-  document.getElementById('massTextPreview').style.display='block';
+
+// Mass send. Preview is SERVER-rendered by the same code that will send, so
+// what the admin approves is byte-for-byte what recipients get — a
+// client-side approximation would drift from the real formatter.
+var massPreviewed = false;
+
+function massChannelWants(){
+  var c = $('massChannel').value;
+  return { email: c==='email'||c==='both', sms: c==='text'||c==='both' };
+}
+function massSyncUI(){
+  var w = massChannelWants();
+  $('massSubjectGroup').style.display = w.email ? 'block' : 'none';
+  // Any edit invalidates the preview — you cannot approve one message and
+  // send another.
+  massPreviewed = false;
+  $('sendMassText').disabled = true;
+  $('massTextPreview').style.display='none';
+  $('massWarn').style.display='none';
+  $('massTextStatus').textContent='Preview required before sending.';
+}
+['massChannel','massSegment','massSubject','massTextMsg'].forEach(function(id){
+  var el=$(id); if(!el) return;
+  el.addEventListener(id==='massChannel'||id==='massSegment' ? 'change' : 'input', massSyncUI);
+});
+
+$('previewMassText').onclick=function(){
+  var body=$('massTextMsg').value.trim();
+  if(!body){alert('Write a message first');return}
+  var w=massChannelWants();
+  if(w.email && !$('massSubject').value.trim()){alert('Email sends need a subject');return}
+  $('massTextStatus').textContent='Building preview…';
+  fetch('/api/admin/mass-preview',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},
+    body:JSON.stringify({segment:$('massSegment').value,body:body,subject:$('massSubject').value})})
+   .then(function(r){return r.json()}).then(function(d){
+     if(d.error){$('massTextStatus').textContent='Error: '+d.error;return}
+     var c=d.counts, parts=[];
+     if(w.email) parts.push('<b style="color:#22c55e">'+c.email+'</b> by email');
+     if(w.sms){
+       parts.push('<b style="color:#22c55e">'+c.sms+'</b> by text');
+       var excl=[];
+       if(c.smsNoNumber) excl.push(c.smsNoNumber+' no number');
+       if(c.smsOptedOut) excl.push(c.smsOptedOut+' opted out');
+       if(excl.length) parts.push('<span style="color:#8892b0">('+excl.join(', ')+' excluded)</span>');
+     }
+     $('massCounts').innerHTML='Will reach '+parts.join(' · ')+' — segment total '+c.total+'.';
+
+     var html='';
+     if(w.sms){
+       var seg=d.sms.segments;
+       var segColour = seg.segments>1 ? '#f59e0b' : '#22c55e';
+       html += '<div style="font-size:0.78rem;color:#8892b0;margin-bottom:6px">Text — exactly what recipients see</div>'+
+         '<div style="max-width:300px;background:#0b141a;border:1px solid rgba(255,255,255,0.12);border-radius:18px;padding:14px 16px;margin-bottom:6px">'+
+         '<div style="background:#1f6feb;color:#fff;border-radius:16px;padding:10px 13px;font-size:0.86rem;line-height:1.45;white-space:pre-wrap;word-break:break-word">'+esc(d.sms.body)+'</div></div>'+
+         '<div style="font-size:0.76rem;color:'+segColour+';margin-bottom:12px">'+
+         seg.characters+' chars · '+seg.encoding+' · <b>'+seg.segments+' segment'+(seg.segments===1?'':'s')+'</b>'+
+         (seg.segments>1?' — this will arrive as '+seg.segments+' separate texts and bills as '+seg.segments+'.':' — fits in one text.')+
+         '</div>';
+     }
+     if(w.email){
+       html += '<div style="font-size:0.78rem;color:#8892b0;margin-bottom:6px">Email — rendered</div>'+
+         '<iframe id="massEmailFrame" style="width:100%;height:460px;border:1px solid rgba(255,255,255,0.12);border-radius:8px;background:#fff"></iframe>';
+     }
+     $('massTextPreview').innerHTML=html;
+     $('massTextPreview').style.display='block';
+     if(w.email){
+       // srcdoc keeps the rendered HTML sandboxed away from the admin page.
+       var f=document.getElementById('massEmailFrame');
+       if(f) f.srcdoc=d.emailHtml;
+     }
+
+     if(w.sms && d.warnings && d.warnings.length){
+       $('massWarn').innerHTML='<b>This looks like email content, not a text message.</b><br>'+
+         d.warnings.map(function(x){return '• '+esc(x)}).join('<br>')+
+         '<br><br>It has been cleaned up for SMS (see the preview above) — check it reads properly before sending.';
+       $('massWarn').style.display='block';
+     } else { $('massWarn').style.display='none'; }
+
+     massPreviewed=true;
+     $('sendMassText').disabled=false;
+     $('massTextStatus').textContent='Preview ready — check it, then send.';
+   }).catch(function(e){$('massTextStatus').textContent='Error: '+e.message});
 };
-document.getElementById('sendMassText').onclick=function(){
-  var msg=document.getElementById('massTextMsg').value.trim();
-  if(!msg){alert('Type a message first');return}
-  if(!confirm('Send this message to ALL active users via SMS?\n\n'+msg+'\n\n- ProbationCall.com'))return;
-  var btn=this;btn.disabled=true;btn.textContent='Sending...';
-  document.getElementById('massTextStatus').textContent='Sending...';
-  fetch('/api/admin/mass-text',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({message:msg})}).then(function(r){return r.json()}).then(function(d){
-    btn.disabled=false;btn.textContent='🚀 Send to All Active Users';
-    if(d.error){document.getElementById('massTextStatus').textContent='Error: '+d.error;return}
-    document.getElementById('massTextStatus').innerHTML='<span style="color:#22c55e">✅ Sent: '+d.sent+'</span> | Failed: '+d.failed+' | Skipped: '+d.skipped+' | Total: '+d.total;
-    document.getElementById('massTextMsg').value='';
-    document.getElementById('massTextPreview').style.display='none';
-  }).catch(function(e){btn.disabled=false;btn.textContent='🚀 Send to All Active Users';document.getElementById('massTextStatus').textContent='Error: '+e.message});
+
+$('sendMassText').onclick=function(){
+  if(!massPreviewed){alert('Preview first.');return}
+  var body=$('massTextMsg').value.trim();
+  var channel=$('massChannel').value, segment=$('massSegment').value;
+  if(!confirm('Send this '+channel+' message to the "'+segment+'" segment?\n\n'+
+    ($('massCounts').textContent||'')+'\n\nThis cannot be recalled.'))return;
+  var btn=this;btn.disabled=true;btn.textContent='Sending…';
+  $('massTextStatus').textContent='Sending…';
+  fetch('/api/admin/mass-send',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},
+    body:JSON.stringify({channel:channel,segment:segment,subject:$('massSubject').value,body:body})})
+   .then(function(r){return r.json()}).then(function(d){
+     btn.disabled=false;btn.textContent='🚀 Send';
+     if(d.error){$('massTextStatus').textContent='Error: '+d.error;return}
+     var bits=[];
+     if(d.email.intended) bits.push('email '+d.email.sent+'/'+d.email.intended);
+     if(d.sms.intended) bits.push('text '+d.sms.sent+'/'+d.sms.intended);
+     $('massTextStatus').innerHTML='<span style="color:#22c55e">✅ Sent</span> — '+bits.join(' · ');
+     $('massTextMsg').value='';$('massSubject').value='';
+     $('massTextPreview').style.display='none';$('massWarn').style.display='none';
+     $('massCounts').textContent='';massPreviewed=false;btn.disabled=true;
+   }).catch(function(e){btn.disabled=false;btn.textContent='🚀 Send';$('massTextStatus').textContent='Error: '+e.message});
 };
+
 document.getElementById('ftbendPopulate').onclick=function(){
   if(!confirm("Pull today's color from finishprobation.com for ALL Fort Bend offices and notify subscribers? (no double-billing — safe to re-run)"))return;
   var btn=this;btn.disabled=true;btn.textContent='Populating...';
