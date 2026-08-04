@@ -1718,11 +1718,21 @@ function onboardClearErr(id) {
 function onboardBack(step) {
   document.querySelectorAll('.onboard-step').forEach(function(el) { el.style.display = 'none'; });
   document.getElementById('onboardStep' + step).style.display = 'block';
-  if (step === 2) applyOnboardCountyUI();
+  // Re-apply on entry to step 2 AND step 4. Step 4's heading, blurb, time
+  // label and 5 AM option are all county-dependent, and applying them only
+  // when step 2 renders means any route to step 4 that skips step 2 shows
+  // the previous county's copy. Cheap to make staleness structurally
+  // impossible rather than rely on the navigation always passing through.
+  if (step === 2 || step === 4) applyOnboardCountyUI();
 }
 
 // Everything that depends on which county was picked, in one place so step 2
 // and step 4 can never disagree about it.
+document.addEventListener('DOMContentLoaded', function() {
+  var cty = document.getElementById('onboardCounty');
+  if (cty) cty.addEventListener('change', applyOnboardCountyUI);
+});
+
 function applyOnboardCountyUI() {
   var ftbend = document.getElementById('onboardCounty').value === 'ftbend';
   document.getElementById('onboardPinGroup').style.display = ftbend ? 'none' : 'block';
@@ -1804,9 +1814,12 @@ function onboardNext(step) {
   document.querySelectorAll('.onboard-step').forEach(function(el) { el.style.display = 'none'; });
   document.getElementById('onboardStep' + step).style.display = 'block';
 
-  // County-dependent UI is applied on entry to step 2 AND kept correct for
-  // step 4, which also reads the county.
-  if (step === 2) applyOnboardCountyUI();
+  // Re-apply on entry to step 2 AND step 4. Step 4's heading, blurb, time
+  // label and 5 AM option are all county-dependent, and applying them only
+  // when step 2 renders means any route to step 4 that skips step 2 shows
+  // the previous county's copy. Cheap to make staleness structurally
+  // impossible rather than rely on the navigation always passing through.
+  if (step === 2 || step === 4) applyOnboardCountyUI();
 }
 
 function selectOnboardMethod(method) {
@@ -2244,15 +2257,15 @@ document.addEventListener('DOMContentLoaded',function(){
   var b=document.getElementById('sendSupportBtn'); if(b)b.onclick=sendSupportMessage;
 });
 function openSupport(){
-  $('supportErr').style.display='none';
-  $('supportSubject').value='';$('supportBody').value='';
-  var b=$('sendSupportBtn'); b.disabled=false; b.textContent='Send message';
-  $('supportModal').classList.add('active');
+  document.getElementById('supportErr').style.display='none';
+  document.getElementById('supportSubject').value='';document.getElementById('supportBody').value='';
+  var b=document.getElementById('sendSupportBtn'); b.disabled=false; b.textContent='Send message';
+  document.getElementById('supportModal').classList.add('active');
 }
-function closeSupportModal(){$('supportModal').classList.remove('active')}
+function closeSupportModal(){document.getElementById('supportModal').classList.remove('active')}
 function sendSupportMessage(){
-  var subject=$('supportSubject').value.trim(), body=$('supportBody').value.trim();
-  var err=$('supportErr'), btn=$('sendSupportBtn');
+  var subject=document.getElementById('supportSubject').value.trim(), body=document.getElementById('supportBody').value.trim();
+  var err=document.getElementById('supportErr'), btn=document.getElementById('sendSupportBtn');
   function fail(m){err.textContent=m;err.style.display='block';btn.disabled=false;btn.textContent='Send message'}
   // Mirror the server rules so the answer is the same before and after submit.
   if(subject.length<3)return fail('Give your message a short subject.');
