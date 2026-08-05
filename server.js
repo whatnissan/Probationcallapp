@@ -4594,6 +4594,57 @@ app.post('/api/admin/mass-preview', adminAuth, async function(req, res) {
   }
 });
 
+// Sends log — every mass send with its per-recipient outcome, so "what went
+// out and did it arrive" is answerable from the panel instead of a query.
+// Admin copies are returned separately from the customer population so they
+// can never be mistaken for reach.
+app.get('/api/admin/mass-sends', adminAuth, async function(req, res) {
+  try {
+    var sends = await supabase.from('mass_sends').select('*').order('id', { ascending: false }).limit(50);
+    if (sends.error) return res.status(500).json({ error: sends.error.message });
+    var ids = (sends.data || []).map(function(s2) { return s2.id; });
+    var recips = ids.length
+      ? await supabase.from('mass_send_recipients').select('*').in('mass_send_id', ids).order('id')
+      : { data: [] };
+    if (recips.error) return res.status(500).json({ error: recips.error.message });
+
+    var byId = {};
+    (recips.data || []).forEach(function(r) {
+      (byId[r.mass_send_id] = byId[r.mass_send_id] || []).push(r);
+    });
+
+    var out = (sends.data || []).map(function(s2) {
+      var rows = byId[s2.id] || [];
+      var isAdmin = function(r) { return String(r.channel).indexOf('admin_copy') === 0; };
+      var customer = rows.filter(function(r) { return !isAdmin(r); });
+      var admin = rows.filter(isAdmin);
+      function tally(list) {
+        var t = { sent: 0, failed: 0, skipped: 0 };
+        list.forEach(function(r) { if (t[r.status] !== undefined) t[r.status]++; });
+        return t;
+      }
+      return {
+        id: s2.id, channel: s2.channel, segment: s2.segment, subject: s2.subject,
+        body: s2.body, sms_body: s2.sms_body, sent_by: s2.sent_by, created_at: s2.created_at,
+        email: { intended: s2.email_intended, sent: s2.email_sent },
+        sms: { intended: s2.sms_intended, sent: s2.sms_sent },
+        tally: tally(customer),
+        adminCopy: tally(admin),
+        recipients: customer.map(function(r) {
+          return { channel: r.channel, destination: r.destination, status: r.status, error: r.error };
+        }),
+        adminCopies: admin.map(function(r) {
+          return { channel: r.channel, destination: r.destination, status: r.status, error: r.error };
+        })
+      };
+    });
+    res.json({ sends: out });
+  } catch (e) {
+    console.error('[MASS-SEND] log failed:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post('/api/admin/mass-send', adminAuth, async function(req, res) {
   var channel = (req.body && req.body.channel) || 'email';
   var segment = (req.body && req.body.segment) || 'all';

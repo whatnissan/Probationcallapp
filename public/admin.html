@@ -61,7 +61,7 @@
 </div>
 </div>
 </div>
-<div class="tabs"><div class="tab active" id="tabUsers">Users</div><div class="tab" id="tabPayouts">Payouts</div><div class="tab" id="tabPurchases">Purchases</div><div class="tab" id="tabCalls">Calls</div><div class="tab" id="tabPromos">Promos</div><div class="tab" id="tabTransfers">Transfers</div><div class="tab" id="tabSupport">Support <span id="supportBadge" style="display:none;background:#ef4444;color:#fff;border-radius:10px;padding:1px 7px;font-size:0.72rem;margin-left:4px"></span></div></div>
+<div class="tabs"><div class="tab active" id="tabUsers">Users</div><div class="tab" id="tabPayouts">Payouts</div><div class="tab" id="tabPurchases">Purchases</div><div class="tab" id="tabCalls">Calls</div><div class="tab" id="tabPromos">Promos</div><div class="tab" id="tabTransfers">Transfers</div><div class="tab" id="tabSends">Sends</div><div class="tab" id="tabSupport">Support <span id="supportBadge" style="display:none;background:#ef4444;color:#fff;border-radius:10px;padding:1px 7px;font-size:0.72rem;margin-left:4px"></span></div></div>
 <div id="usersTab" class="tab-content active"><div class="card"><h2>All Users (click to view) <button class="btn btn-sm btn-secondary" id="refreshBtn">Refresh</button> <span class="last-refresh" id="lastRefresh"></span></h2><div class="search-bar"><input type="text" id="userSearch" placeholder="Search..."><select id="userFilter"><option value="all">All</option><option value="active">Active</option><option value="disabled">Disabled</option><option value="admin">Admins</option><option value="scheduled">Scheduled</option><option value="locked">Locked to Affiliate</option></select></div><div style="max-height:500px;overflow-y:auto"><table><thead><tr><th class="sortable" data-sort="email">Email ↕</th><th class="sortable" data-sort="credits">Credits ↕</th><th>Locked To</th><th class="sortable" data-sort="schedule">Schedule ↕</th><th class="sortable" data-sort="calls">Calls ↕</th><th class="sortable" data-sort="spent">Spent ↕</th><th>Terms</th><th>Status</th><th class="sortable" data-sort="created">Created ↕</th><th class="sortable" data-sort="lastlogin">Last Login ↕</th></tr></thead><tbody id="usersTable"></tbody></table></div></div></div>
 <div id="payoutsTab" class="tab-content"><div class="card"><h2>Pending Payouts</h2><div id="pendingPayouts"></div></div></div>
 <div id="purchasesTab" class="tab-content"><div class="card"><h2>Purchases</h2><table><thead><tr><th>User</th><th>Package</th><th>Amount</th><th>Date</th><th>Status</th></tr></thead><tbody id="purchasesTable"></tbody></table></div></div>
@@ -80,7 +80,7 @@
   </div>
 </div>
 </div>
-<div id="supportTab" class="tab-content"><div class="card"><h2>Support</h2><div style="display:flex;gap:8px;align-items:center;margin-bottom:12px"><select id="supportFilter" style="padding:8px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#fff"><option value="open">Open</option><option value="">All</option><option value="answered">Answered</option><option value="closed">Closed</option></select><button class="btn btn-secondary btn-sm" id="reloadSupport" style="padding:6px 12px">Refresh</button><span id="supportStatus" style="color:#8892b0;font-size:0.83rem"></span></div><div id="supportList"></div></div></div><div class="modal" id="userModal"><div class="modal-content"><button class="modal-close" id="closeUserModal">x</button><h2 style="color:#00d9ff" id="userModalTitle">User</h2><div id="userIdentityBar" style="display:none;align-items:center;gap:12px;margin:-8px 0 16px"></div><div id="userModalContent"></div></div></div>
+<div id="sendsTab" class="tab-content"><div class="card"><h2>Sends log</h2><div style="display:flex;gap:8px;align-items:center;margin-bottom:12px"><button class="btn btn-secondary btn-sm" id="reloadSends" style="padding:6px 12px">Refresh</button><span id="sendsStatus" style="color:#8892b0;font-size:0.83rem"></span></div><div id="sendsList"></div></div></div><div id="supportTab" class="tab-content"><div class="card"><h2>Support</h2><div style="display:flex;gap:8px;align-items:center;margin-bottom:12px"><select id="supportFilter" style="padding:8px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#fff"><option value="open">Open</option><option value="">All</option><option value="answered">Answered</option><option value="closed">Closed</option></select><button class="btn btn-secondary btn-sm" id="reloadSupport" style="padding:6px 12px">Refresh</button><span id="supportStatus" style="color:#8892b0;font-size:0.83rem"></span></div><div id="supportList"></div></div></div><div class="modal" id="userModal"><div class="modal-content"><button class="modal-close" id="closeUserModal">x</button><h2 style="color:#00d9ff" id="userModalTitle">User</h2><div id="userIdentityBar" style="display:none;align-items:center;gap:12px;margin:-8px 0 16px"></div><div id="userModalContent"></div></div></div>
 <div class="modal" id="creditsModal"><div class="modal-content" style="max-width:400px"><button class="modal-close" id="closeCreditsModal">x</button><h2>Manage Credits</h2><p style="color:#8892b0;margin:15px 0">User: <span id="creditsEmail" style="color:#fff"></span><br>Current: <span id="creditsCurrent" style="color:#00d9ff"></span></p><input type="hidden" id="creditsUid"><div class="form-group"><label>Action</label><select id="creditsAction"><option value="add">Add</option><option value="remove">Remove</option><option value="set">Set To</option></select></div><div class="form-group"><label>Amount</label><input type="number" id="creditsAmount" value="10" min="0"></div><button class="btn btn-success" style="width:100%;padding:12px" id="applyCredits">Apply</button></div></div>
 <div class="modal" id="refundModal"><div class="modal-content" style="max-width:440px"><button class="modal-close" id="closeRefundModal">x</button><h2 style="color:#ef4444">Refund payment</h2><div id="refundSummary" style="margin:15px 0;color:#8892b0;font-size:0.9rem;line-height:1.7"></div><input type="hidden" id="refundPurchaseId"><div class="consent-box" style="border-color:rgba(239,68,68,0.35);background:rgba(239,68,68,0.08)"><label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;color:#fff;font-size:0.88rem"><input type="checkbox" id="refundClawback" checked style="width:18px;height:18px;margin-top:2px;flex-shrink:0"><span>Also reclaim the <b id="refundCreditCount">0</b> credits this purchase granted.<br><span style="color:#8892b0;font-size:0.8rem">Untick to refund the money and let the user keep their credits (goodwill). Already-spent credits are never taken below zero.</span></span></label></div><div id="refundStatus" class="status" style="display:none;margin-top:12px"></div><div style="display:flex;gap:10px;margin-top:18px"><button class="btn btn-secondary" style="flex:1" id="refundCancelBtn">Cancel</button><button class="btn btn-danger" style="flex:1" id="refundConfirmBtn">Refund</button></div><p style="color:#8892b0;font-size:0.75rem;margin-top:10px">Cancel closes this dialog and does nothing. Only the red Refund button moves money.</p></div></div><div class="modal" id="promoModal"><div class="modal-content" style="max-width:400px"><button class="modal-close" id="closePromoModal">x</button><h2>New Promo</h2><div class="form-group"><label>Code</label><input type="text" id="promoCode" style="text-transform:uppercase"></div><div class="form-group"><label>Credits</label><input type="number" id="promoCredits" value="5" min="1"></div><div class="form-group"><label>Max Uses</label><input type="number" id="promoMax" value="100" min="1"></div><button class="btn btn-primary" style="width:100%;padding:12px" id="createPromo">Create</button></div></div>
 <script>
@@ -102,7 +102,7 @@ document.getElementById("refreshBtn").addEventListener("click", function(e) {
         alert("Error: " + err.message);
     });
 });
-$("userSearch").onkeyup=filter;document.querySelectorAll(".sortable").forEach(function(th){th.onclick=function(){var col=this.dataset.sort;if(sortCol===col){sortDir*=-1}else{sortCol=col;sortDir=-1}filter()}});$("userFilter").onchange=filter;$("newPromoBtn").onclick=function(){$("promoModal").classList.add("active")};$("closeUserModal").onclick=function(){$("userModal").classList.remove("active")};$("closeCreditsModal").onclick=function(){$("creditsModal").classList.remove("active")};$("closePromoModal").onclick=function(){$("promoModal").classList.remove("active")};$("supportFilter").onchange=loadSupport;$("reloadSupport").onclick=loadSupport;$("closeRefundModal").onclick=closeRefundModal;$("refundCancelBtn").onclick=closeRefundModal;$("refundConfirmBtn").onclick=doRefund;$("applyCredits").onclick=doCredits;$("createPromo").onclick=doPromo;["Users","Payouts","Purchases","Calls","Promos","Transfers","Support"].forEach(function(t){$("tab"+t).onclick=function(){document.querySelectorAll(".tab").forEach(function(x){x.classList.remove("active")});document.querySelectorAll(".tab-content").forEach(function(x){x.classList.remove("active")});this.classList.add("active");$(t.toLowerCase()+"Tab").classList.add("active");if(t==="Transfers")loadTransfers();if(t==="Support")loadSupport()}})}
+$("userSearch").onkeyup=filter;document.querySelectorAll(".sortable").forEach(function(th){th.onclick=function(){var col=this.dataset.sort;if(sortCol===col){sortDir*=-1}else{sortCol=col;sortDir=-1}filter()}});$("userFilter").onchange=filter;$("newPromoBtn").onclick=function(){$("promoModal").classList.add("active")};$("closeUserModal").onclick=function(){$("userModal").classList.remove("active")};$("closeCreditsModal").onclick=function(){$("creditsModal").classList.remove("active")};$("closePromoModal").onclick=function(){$("promoModal").classList.remove("active")};$("reloadSends").onclick=loadSends;$("supportFilter").onchange=loadSupport;$("reloadSupport").onclick=loadSupport;$("closeRefundModal").onclick=closeRefundModal;$("refundCancelBtn").onclick=closeRefundModal;$("refundConfirmBtn").onclick=doRefund;$("applyCredits").onclick=doCredits;$("createPromo").onclick=doPromo;["Users","Payouts","Purchases","Calls","Promos","Transfers","Support","Sends"].forEach(function(t){$("tab"+t).onclick=function(){document.querySelectorAll(".tab").forEach(function(x){x.classList.remove("active")});document.querySelectorAll(".tab-content").forEach(function(x){x.classList.remove("active")});this.classList.add("active");$(t.toLowerCase()+"Tab").classList.add("active");if(t==="Transfers")loadTransfers();if(t==="Support")loadSupport();if(t==="Sends")loadSends()}})}
 async function load(){
     window.adminSysStats=null;fetch("/api/system-stats",{headers:{Authorization:"Bearer "+token}}).then(function(r){return r.json();}).then(function(ss){window.adminSysStats=(ss&&ss.scheduledAvg)?ss:null;}).catch(function(){});
     var r=await fetch("/api/admin/dashboard",{headers:{Authorization:"Bearer "+token}});
@@ -148,6 +148,49 @@ function fmtCreditSource(row){var s=row.source||'other';if(s==='admin_grant')ret
 // metadata. Failure is silent — an identity bar is not worth breaking the
 // modal over.
 // --- Support ---
+function loadSends(){
+  $('sendsStatus').textContent='Loading…';
+  fetch('/api/admin/mass-sends',{headers:{Authorization:'Bearer '+token}})
+   .then(function(r){return r.json()}).then(function(d){
+     if(d.error){$('sendsStatus').textContent='Error: '+d.error;return}
+     var sends=d.sends||[];
+     $('sendsStatus').textContent=sends.length+' send'+(sends.length===1?'':'s');
+     if(!sends.length){$('sendsList').innerHTML='<p class="text-muted">Nothing sent yet.</p>';return}
+     var h='';
+     sends.forEach(function(s){
+       var t=s.tally, total=t.sent+t.failed+t.skipped;
+       // Colour by OUTCOME, not by "a send happened" — a fully failed send
+       // must not look the same as a delivered one.
+       var ok = t.failed===0 && t.sent>0;
+       var edge = ok ? '#22c55e' : (t.sent>0 ? '#f59e0b' : '#ef4444');
+       var headline = t.sent+' of '+total+' sent';
+       if(t.failed) headline += ' · '+t.failed+' failed';
+       if(t.skipped) headline += ' · '+t.skipped+' skipped';
+       h+='<div style="border:1px solid rgba(255,255,255,0.08);border-left:3px solid '+edge+';border-radius:10px;padding:14px;margin-bottom:12px;background:rgba(255,255,255,0.02)">'+
+          '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:baseline">'+
+          '<div><b>'+esc(s.subject||('('+s.channel+' send)'))+'</b>'+
+          '<br><span class="text-muted" style="font-size:0.8rem">#'+esc(s.id)+' · '+esc(s.channel)+' · segment '+esc(s.segment)+' · '+new Date(s.created_at).toLocaleString()+' · by '+esc(s.sent_by)+'</span></div>'+
+          '<span style="color:'+edge+';font-weight:600;font-size:0.9rem;white-space:nowrap">'+esc(headline)+'</span></div>';
+       if(s.adminCopy && (s.adminCopy.sent||s.adminCopy.failed))
+         h+='<div style="font-size:0.76rem;color:#8892b0;margin-top:6px">admin copy: '+s.adminCopy.sent+' sent'+(s.adminCopy.failed?(', <span style="color:#ef4444">'+s.adminCopy.failed+' failed</span>'):'')+' <span style="opacity:0.7">(not counted as reach)</span></div>';
+       if(s.sms_body)
+         h+='<div style="margin-top:8px;max-width:320px;background:#0b141a;border-radius:14px;padding:10px"><div style="background:#34c759;color:#fff;border-radius:16px;padding:8px 11px;font-size:0.8rem;white-space:pre-wrap;word-break:break-word">'+esc(s.sms_body)+'</div></div>';
+       h+='<details style="margin-top:8px"><summary style="cursor:pointer;color:#00d9ff;font-size:0.82rem">'+total+' recipients</summary><div style="margin-top:8px">';
+       s.recipients.forEach(function(r){
+         var c=r.status==='sent'?'#22c55e':(r.status==='skipped'?'#8892b0':'#ef4444');
+         h+='<div style="font-size:0.78rem;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.04)">'+
+            '<span style="color:'+c+';display:inline-block;width:64px">'+esc(r.status)+'</span>'+
+            '<span style="opacity:0.6;display:inline-block;width:42px">'+esc(r.channel)+'</span>'+
+            esc(r.destination||'')+
+            (r.error?('<div style="color:#f59e0b;font-size:0.72rem;padding-left:106px;word-break:break-word">'+esc(r.error)+'</div>'):'')+
+            '</div>';
+       });
+       h+='</div></details></div>';
+     });
+     $('sendsList').innerHTML=h;
+   }).catch(function(e){$('sendsStatus').textContent='Error: '+e.message});
+}
+
 function loadSupport(){
   var status=$('supportFilter').value;
   $('supportStatus').textContent='Loading…';
