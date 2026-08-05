@@ -33,7 +33,7 @@
 </div>
 <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
 <button class="btn btn-secondary" id="previewMassText" style="padding:10px 20px">👁️ Preview</button>
-<button class="btn btn-danger" id="sendMassText" style="padding:10px 20px" disabled>🚀 Send</button>
+<button class="btn btn-danger" id="sendMassText" style="padding:10px 20px">👁️ Preview, then send</button>
 <span id="massTextStatus" style="color:#8892b0;font-size:0.85rem"></span>
 </div>
 <div id="massWarn" style="display:none;margin-top:10px;padding:10px 12px;border-radius:6px;background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.4);color:#f59e0b;font-size:0.83rem"></div>
@@ -123,6 +123,10 @@ async function load(){
     renderPurchases(d.purchases);
     renderCalls(d.calls);
     renderPromos(d.promos);
+    // Support badge on panel load, not only on tab click. Pending requests
+    // should be visible the moment the panel opens — a count you have to go
+    // looking for is a count you miss.
+    loadSupport();
     $("lastRefresh").textContent = "✓ Updated " + new Date().toLocaleTimeString() + " (" + d.users.length + " users)"; calcGlobalTrends(); loadMontgomeryAnalytics();
     return d;
 }
@@ -359,11 +363,16 @@ function massSyncUI(){
   $('massSubjectGroup').style.display = w.email ? 'block' : 'none';
   // Any edit invalidates the preview — you cannot approve one message and
   // send another.
+  // Any edit invalidates a previous preview — you cannot approve one message
+  // and send another. The button STAYS CLICKABLE and relabels instead of going
+  // disabled: a disabled button dispatches no click event, so pressing it did
+  // nothing at all — no dialog, no error, no request. That dead click is what
+  // stopped the first announcement from going out.
   massPreviewed = false;
-  $('sendMassText').disabled = true;
+  $('sendMassText').textContent = '👁️ Preview, then send';
   $('massTextPreview').style.display='none';
   $('massWarn').style.display='none';
-  $('massTextStatus').textContent='Preview required before sending.';
+  $('massTextStatus').textContent='';
 }
 ['massChannel','massSegment','massSubject','massTextMsg'].forEach(function(id){
   var el=$(id); if(!el) return;
@@ -423,13 +432,21 @@ $('previewMassText').onclick=function(){
      } else { $('massWarn').style.display='none'; }
 
      massPreviewed=true;
-     $('sendMassText').disabled=false;
-     $('massTextStatus').textContent='Preview ready — check it, then send.';
+     $('sendMassText').textContent='🚀 Send for real';
+     $('massTextStatus').textContent='Preview ready — check it above, then press Send for real.';
    }).catch(function(e){$('massTextStatus').textContent='Error: '+e.message});
 };
 
 $('sendMassText').onclick=function(){
-  if(!massPreviewed){alert('Preview first.');return}
+  if(!massPreviewed){
+    // First press builds the preview rather than refusing. The safety property
+    // is unchanged — nothing is dispatched until a preview the admin can see
+    // has been produced by the same code that will send — but the user is
+    // never left pressing a button that does nothing.
+    $('massTextStatus').textContent='Building preview — press Send again once you have checked it.';
+    $('previewMassText').onclick();
+    return;
+  }
   var body=$('massTextMsg').value.trim();
   var channel=$('massChannel').value, segment=$('massSegment').value;
   if(!confirm('Send this '+channel+' message to the "'+segment+'" segment?\n\n'+
@@ -447,7 +464,7 @@ $('sendMassText').onclick=function(){
      $('massTextStatus').innerHTML='<span style="color:#22c55e">✅ Sent</span> — '+bits.join(' · ');
      $('massTextMsg').value='';$('massSubject').value='';
      $('massTextPreview').style.display='none';$('massWarn').style.display='none';
-     $('massCounts').textContent='';massPreviewed=false;btn.disabled=true;
+     $('massCounts').textContent='';massPreviewed=false;btn.textContent='👁️ Preview, then send';
    }).catch(function(e){btn.disabled=false;btn.textContent='🚀 Send';$('massTextStatus').textContent='Error: '+e.message});
 };
 

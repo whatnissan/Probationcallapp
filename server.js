@@ -3711,11 +3711,22 @@ async function sendLowCreditAlert(userId, remainingCredits, notifyNumber, notify
     message = 'You\'re down to ' + remainingCredits + ' credits.\n\nWhen they run out your daily checks pause until you top up:\nprobationcall.com\n\n- ProbationCall.com';
   }
   console.log('[LOW-CREDIT] Alerting user ' + userId.slice(0,8) + '... (' + remainingCredits + ' credits left)');
-  if (notifyNumber) {
-    await sendSMS(notifyNumber, message, 'low_credit').catch(function(e) { console.error('[LOW-CREDIT] SMS failed:', e.message); });
-  }
+
+  // Respect the user's chosen channel. This previously texted EVERY user with
+  // a number on file regardless of notify_method, so an email-only subscriber
+  // received an SMS they never consented to — the exact thing the STOP/consent
+  // work exists to prevent. Email is always sent because running out of
+  // credits is account-critical and email is the channel every account has;
+  // SMS goes only to users who asked for it. sendSMS itself refuses an
+  // opted-out number, so that check is not duplicated here.
+  var wantsSms = (notifyMethod === 'sms' || notifyMethod === 'both');
   if (notifyEmail) {
     await sendEmail(notifyEmail, message, 'low_credit').catch(function(e) { console.error('[LOW-CREDIT] Email failed:', e.message); });
+  }
+  if (notifyNumber && wantsSms) {
+    await sendSMS(notifyNumber, message, 'low_credit').catch(function(e) { console.error('[LOW-CREDIT] SMS failed:', e.message); });
+  } else if (notifyNumber && !wantsSms) {
+    console.log('[LOW-CREDIT] SMS skipped for ' + userId.slice(0,8) + ' — notify_method=' + notifyMethod);
   }
 }
 
@@ -4469,7 +4480,9 @@ app.post('/api/admin/support/:id/close', adminAuth, async function(req, res) {
 // === MASS SEND (email / text / both) ===
 // Test and staff accounts never receive a mass send. Kept as emails rather
 // than ids so it reads plainly and survives a database reset.
-var MASS_SEND_EXCLUDE = ['whatnissan@gmail.com', 'whatnissan@protonmail.com', 'dmlafortune@gmail.com', 'integragsr1225@gmail.com'];
+// Staff and test accounts. cajuncowboy is the business partner's admin
+// account, not a customer — excluded from customer-facing mass sends.
+var MASS_SEND_EXCLUDE = ['whatnissan@gmail.com', 'whatnissan@protonmail.com', 'dmlafortune@gmail.com', 'integragsr1225@gmail.com', 'cajuncowboy@gmail.com'];
 
 // Resolve a segment to concrete recipients, with per-channel eligibility.
 // "active" for an announcement is deliberately broad: the users WITHOUT a
