@@ -4496,6 +4496,19 @@ async function resolveMassRecipients(segment) {
   var optOuts = await supabase.from('sms_opt_outs').select('phone');
   if (optOuts.error) throw new Error('sms_opt_outs: ' + optOuts.error.message);
 
+  // For the 'not_emailed_yet' segment: everyone already reached by a
+  // SUCCESSFUL mass email. Keyed on status='sent' specifically, so the six
+  // recipients whose first attempt FAILED on Brevo's IP restriction are not
+  // wrongly treated as already-contacted — a failed row must not suppress a
+  // retry, or an outage silently becomes a permanent omission.
+  var alreadyEmailed = {};
+  if (segment === 'not_emailed_yet') {
+    var prior = await supabase.from('mass_send_recipients')
+      .select('user_id').eq('channel', 'email').eq('status', 'sent');
+    if (prior.error) throw new Error('mass_send_recipients: ' + prior.error.message);
+    (prior.data || []).forEach(function(r) { if (r.user_id) alreadyEmailed[r.user_id] = true; });
+  }
+
   var schedBy = {};
   (scheds.data || []).forEach(function(s) { schedBy[s.user_id] = s; });
   var optedOut = {};
@@ -4510,6 +4523,8 @@ async function resolveMassRecipients(segment) {
     var sched = schedBy[p.id] || null;
     if (segment === 'active_schedule' && !(sched && sched.enabled)) return;
     if (segment === 'never_configured' && sched) return;
+    // Same population as 'all', minus anyone a mass email has already reached.
+    if (segment === 'not_emailed_yet' && alreadyEmailed[p.id]) return;
     var phone = sched && sched.notify_number ? sched.notify_number : null;
     out.push({
       user_id: p.id,

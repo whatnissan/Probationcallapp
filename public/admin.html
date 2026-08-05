@@ -22,7 +22,7 @@
 <div style="flex:1;min-width:150px"><label style="display:block;font-size:0.78rem;color:#8892b0;margin-bottom:4px">Channel</label>
 <select id="massChannel" style="width:100%;padding:9px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#fff"><option value="email">Email</option><option value="text">Text</option><option value="both">Both</option></select></div>
 <div style="flex:1;min-width:190px"><label style="display:block;font-size:0.78rem;color:#8892b0;margin-bottom:4px">Recipients</label>
-<select id="massSegment" style="width:100%;padding:9px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#fff"><option value="all">All users</option><option value="active_schedule">With an active schedule</option><option value="never_configured">Signed up, never configured</option></select></div>
+<select id="massSegment" style="width:100%;padding:9px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#fff"><option value="all">All users</option><option value="active_schedule">With an active schedule</option><option value="never_configured">Signed up, never configured</option><option value="not_emailed_yet">Not yet emailed (no duplicates)</option></select></div>
 </div>
 <div class="form-group" id="massSubjectGroup" style="margin-bottom:10px"><label style="display:block;font-size:0.78rem;color:#8892b0;margin-bottom:4px">Email subject</label>
 <input type="text" id="massSubject" maxlength="140" placeholder="ProbationCall is live" style="width:100%;padding:10px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#fff"></div>
@@ -406,10 +406,10 @@ $('previewMassText').onclick=function(){
        var segColour = seg.segments>1 ? '#f59e0b' : '#22c55e';
        html += '<div style="font-size:0.78rem;color:#8892b0;margin-bottom:6px">Text — exactly what recipients see</div>'+
          '<div style="max-width:300px;background:#0b141a;border:1px solid rgba(255,255,255,0.12);border-radius:18px;padding:14px 16px;margin-bottom:6px">'+
-         '<div style="background:#1f6feb;color:#fff;border-radius:16px;padding:10px 13px;font-size:0.86rem;line-height:1.45;white-space:pre-wrap;word-break:break-word">'+esc(d.sms.body)+'</div></div>'+
+         '<div style="background:#34c759;color:#fff;border-radius:18px;padding:10px 13px;font-size:0.86rem;line-height:1.45;white-space:pre-wrap;word-break:break-word">'+esc(d.sms.body)+'</div></div>'+
          '<div style="font-size:0.76rem;color:'+segColour+';margin-bottom:12px">'+
          seg.characters+' chars · '+seg.encoding+' · <b>'+seg.segments+' segment'+(seg.segments===1?'':'s')+'</b>'+
-         (seg.segments>1?' — this will arrive as '+seg.segments+' separate texts and bills as '+seg.segments+'.':' — fits in one text.')+
+         (seg.segments>1?' — modern phones reassemble this into ONE message; it just bills as '+seg.segments+'.':' — fits in one segment.')+
          '</div>';
      }
      if(w.email){
