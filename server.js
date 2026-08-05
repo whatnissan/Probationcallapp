@@ -4646,8 +4646,21 @@ app.get('/api/admin/mass-sends', adminAuth, async function(req, res) {
 });
 
 app.post('/api/admin/mass-send', adminAuth, async function(req, res) {
+  // Logged BEFORE any work, so "did the click even reach the server" is
+  // answerable from Railway logs alone. Five watchers expired on sends that
+  // left no trace anywhere; a request that arrives and fails looks identical
+  // from outside to one that never arrives, and it should not.
+  console.log('[MASS-SEND] REQUEST from ' + ((req.profile && req.profile.email) || '?') +
+    ' channel=' + ((req.body && req.body.channel) || '?') +
+    ' segment=' + ((req.body && req.body.segment) || '?') +
+    ' testOnly=' + !!(req.body && req.body.testOnly) +
+    ' bodyLen=' + (((req.body && req.body.body) || '').length));
   var channel = (req.body && req.body.channel) || 'email';
   var segment = (req.body && req.body.segment) || 'all';
+  // Test copy: same endpoint, same request shape, same dispatch code — only
+  // the recipient list is swapped for the admins. Deliberately NOT a separate
+  // endpoint, so proving this path proves the real one.
+  var testOnly = !!(req.body && req.body.testOnly);
   var subject = ((req.body && req.body.subject) || '').trim();
   var body = ((req.body && req.body.body) || '').trim();
   var adminEmail = (req.profile && req.profile.email) || 'unknown';
@@ -4659,18 +4672,33 @@ app.post('/api/admin/mass-send', adminAuth, async function(req, res) {
   }
 
   try {
-    var recips = await resolveMassRecipients(segment);
-    if (!recips.length) return res.status(400).json({ error: 'That segment has no recipients' });
+    var recips;
+    if (testOnly) {
+      var admProfiles = await supabase.from('profiles').select('id, email').eq('is_admin', true);
+      if (admProfiles.error) return res.status(500).json({ error: 'Could not load admins' });
+      var admSch = await supabase.from('user_schedules').select('user_id, notify_number');
+      var admPhone = {};
+      (admSch.data || []).forEach(function(r) { admPhone[r.user_id] = r.notify_number; });
+      recips = (admProfiles.data || []).filter(function(a) { return !!a.email; }).map(function(a) {
+        var ph = admPhone[a.id] || null;
+        return { user_id: a.id, email: a.email, phone: ph, smsEligible: !!ph };
+      });
+      if (!recips.length) return res.status(400).json({ error: 'No admin has an email address on file' });
+      console.log('[MASS-SEND] TEST COPY by ' + adminEmail + ' — ' + recips.length + ' admin recipient(s), zero customers');
+    } else {
+      recips = await resolveMassRecipients(segment);
+      if (!recips.length) return res.status(400).json({ error: 'That segment has no recipients' });
+    }
 
     var smsBody = toSmsText(body);
-    var rendered = renderBrandedEmail({ subject: subject, body: body });
+    var rendered = renderBrandedEmail({ subject: (testOnly ? '[TEST COPY] ' : '') + subject, body: body });
     var wantEmail = channel === 'email' || channel === 'both';
     var wantSms = channel === 'text' || channel === 'both';
     var emailTargets = wantEmail ? recips.filter(function(r) { return !!r.email; }) : [];
     var smsTargets = wantSms ? recips.filter(function(r) { return r.smsEligible; }) : [];
 
     var sendRow = await supabase.from('mass_sends').insert({
-      channel: channel, segment: segment,
+      channel: channel, segment: testOnly ? ('TEST → admins only (' + segment + ')') : segment,
       subject: subject || null, body: body,
       sms_body: wantSms ? smsBody : null,
       sent_by: adminEmail,
@@ -4716,7 +4744,9 @@ app.post('/api/admin/mass-send', adminAuth, async function(req, res) {
     // the counts shown before sending. Logged with its own channel so a
     // FAILED admin copy is visible — proof-of-send that silently did not
     // arrive is worse than none.
-    var adminCopies = await supabase.from('profiles').select('id, email').eq('is_admin', true);
+    // A test copy already goes to the admins; an admin copy of it would
+    // deliver the same message to the same inbox twice.
+    var adminCopies = testOnly ? { data: [] } : await supabase.from('profiles').select('id, email').eq('is_admin', true);
     for (var ac = 0; ac < ((adminCopies.data || []).length); ac++) {
       var adm = adminCopies.data[ac];
       if (wantEmail && adm.email) {

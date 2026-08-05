@@ -33,7 +33,7 @@
 </div>
 <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
 <button class="btn btn-secondary" id="previewMassText" style="padding:10px 20px">👁️ Preview</button>
-<button class="btn btn-danger" id="sendMassText" style="padding:10px 20px">👁️ Preview, then send</button>
+<button class="btn btn-danger" id="sendMassText" style="padding:10px 20px">👁️ Preview, then send</button><button class="btn btn-secondary" id="sendTestCopy" style="padding:10px 20px">✉️ Send test copy to me only</button>
 <span id="massTextStatus" style="color:#8892b0;font-size:0.85rem"></span>
 </div>
 <div id="massWarn" style="display:none;margin-top:10px;padding:10px 12px;border-radius:6px;background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.4);color:#f59e0b;font-size:0.83rem"></div>
@@ -478,6 +478,40 @@ $('previewMassText').onclick=function(){
      $('sendMassText').textContent='🚀 Send for real';
      $('massTextStatus').textContent='Preview ready — check it above, then press Send for real.';
    }).catch(function(e){$('massTextStatus').textContent='Error: '+e.message});
+};
+
+// Test copy. Goes through the SAME endpoint and the SAME fetch as a real
+// send, with testOnly:true swapping the recipient list for the admins — so if
+// this works and the real send does not, the fault is the preview gate, not
+// the request path. Deliberately skips the preview gate: sending to yourself
+// needs no approval step.
+$('sendTestCopy').onclick=function(){
+  var body=$('massTextMsg').value.trim();
+  if(!body){alert('Write a message first');return}
+  var w=massChannelWants();
+  if(w.email && !$('massSubject').value.trim()){alert('Email test copies need a subject');return}
+  var btn=this; if(btn.disabled)return;
+  btn.disabled=true; btn.textContent='Sending test…';
+  $('massTextStatus').textContent='Sending test copy…';
+  fetch('/api/admin/mass-send',{method:'POST',
+    headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},
+    body:JSON.stringify({testOnly:true,channel:$('massChannel').value,segment:$('massSegment').value,
+      subject:$('massSubject').value,body:body})})
+   .then(function(r){return r.json().then(function(d){return{ok:r.ok,status:r.status,d:d}})})
+   .then(function(res){
+     btn.disabled=false; btn.textContent='✉️ Send test copy to me only';
+     if(!res.ok){
+       // Surface the STATUS CODE too — that is the difference between "never
+       // arrived" and "arrived and threw".
+       $('massTextStatus').innerHTML='<span style="color:#ef4444">Test failed (HTTP '+res.status+'): '+esc((res.d&&res.d.error)||'unknown')+'</span>';
+       return;
+     }
+     $('massTextStatus').innerHTML='<span style="color:#22c55e">✅ Test copy sent to '+res.d.email.sent+' admin(s)'+(res.d.sms.sent?(' + '+res.d.sms.sent+' text'):'')+' — zero customers</span>';
+     load();
+   }).catch(function(e){
+     btn.disabled=false; btn.textContent='✉️ Send test copy to me only';
+     $('massTextStatus').innerHTML='<span style="color:#ef4444">Test request never completed: '+esc(e.message)+'</span>';
+   });
 };
 
 $('sendMassText').onclick=function(){
