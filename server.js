@@ -3116,7 +3116,31 @@ app.post('/webhook/recording', validateTwilio, async function(req, res) {
         // rather than ~52. The 9:30 cutoff below still ends the sequence.
         var retryDelayMs = ftbendRetryDelayMs(thisAttemptNumber);
         var nextAt = new Date(Date.now() + retryDelayMs);
-        if (wouldExceedFtbendCutoff(nextAt, 'America/Chicago')) {
+
+        // A byte-identical transcript means the parser has already given its
+        // final answer — re-running a deterministic function on the same input
+        // cannot produce a different one. On 2026-08-04 that fact cost nine
+        // calls into a county hotline with the same string every time.
+        //
+        // Scoped deliberately to the case where we HAVE ground truth and still
+        // cannot match it: that is a parser gap, and retrying is futile. When
+        // the method is no_ground_truth the retry IS worth making, because
+        // finishprobation may simply not have published yet — which is exactly
+        // what happened on 2026-08-05, where attempt 3 resolved once ground
+        // truth appeared.
+        var sameTranscriptAsLastAttempt = !!(existingRetry
+          && existingRetry.last_transcript
+          && transcript
+          && existingRetry.last_transcript === transcript);
+        var parserExhausted = sameTranscriptAsLastAttempt
+          && (crossCheck.match_method === 'no_match' || crossCheck.match_method === 'partial_match');
+        if (parserExhausted) {
+          console.log('[FTBEND-RETRY] ' + officeId + ' transcript identical to attempt '
+            + existingRetry.attempt_number + ' and still ' + crossCheck.match_method
+            + ' — parser exhausted, resolving from ground truth instead of re-dialling');
+        }
+
+        if (parserExhausted || wouldExceedFtbendCutoff(nextAt, 'America/Chicago')) {
           // CUTOFF — try one last ground-truth fetch if we don't already have one.
           var cutoffGT = (groundTruthArr && groundTruthArr.length > 0) ? groundTruthArr : null;
           if (!cutoffGT) {
