@@ -4658,6 +4658,40 @@ app.post('/api/admin/mass-send', adminAuth, async function(req, res) {
       await new Promise(function(z) { setTimeout(z, 200); });
     }
 
+    // ADMIN COPY — proof-of-send in the admin's own inbox, deliberately
+    // OUTSIDE the recipient population. Admins are in MASS_SEND_EXCLUDE so
+    // they never receive the customer send itself; this is a separate,
+    // clearly-marked copy that does not affect email_intended/email_sent or
+    // the counts shown before sending. Logged with its own channel so a
+    // FAILED admin copy is visible — proof-of-send that silently did not
+    // arrive is worse than none.
+    var adminCopies = await supabase.from('profiles').select('id, email').eq('is_admin', true);
+    for (var ac = 0; ac < ((adminCopies.data || []).length); ac++) {
+      var adm = adminCopies.data[ac];
+      if (wantEmail && adm.email) {
+        var acOk = await brevoMail.send({
+          to: adm.email,
+          from: { email: MASS_FROM_EMAIL, name: 'ProbationCall' },
+          replyTo: { email: SUPPORT_REPLY_TO, name: 'ProbationCall' },
+          subject: '[ADMIN COPY] ' + subject,
+          text: rendered.text, html: rendered.html
+        }).then(function() { return { ok: true }; }, function(e) { return { ok: false, error: e.message }; });
+        results.push({ mass_send_id: sendId, user_id: adm.id, channel: 'admin_copy_email',
+          destination: adm.email, status: acOk.ok ? 'sent' : 'failed',
+          error: acOk.ok ? null : String(acOk.error).slice(0, 300) });
+      }
+      if (wantSms) {
+        var admSched = await supabase.from('user_schedules').select('notify_number').eq('user_id', adm.id).maybeSingle();
+        var admNum = admSched && admSched.data ? admSched.data.notify_number : null;
+        if (admNum) {
+          var acSms = await sendSMS(admNum, 'ADMIN COPY: ' + smsBody, 'mass_send_admin_copy');
+          results.push({ mass_send_id: sendId, user_id: adm.id, channel: 'admin_copy_sms',
+            destination: admNum, status: (acSms && acSms.success) ? 'sent' : 'failed',
+            error: (acSms && acSms.success) ? null : String((acSms && acSms.error) || 'unknown').slice(0, 300) });
+        }
+      }
+    }
+
     if (results.length) {
       var ins = await supabase.from('mass_send_recipients').insert(results);
       if (ins.error) console.error('[MASS-SEND] recipient rows failed (messages already sent):', ins.error.message);
