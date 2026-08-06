@@ -690,7 +690,11 @@ async function deductCreditOnce(userId, idempotencyKey, options) {
 // Function name kept as "checkConsecutiveUnknown" for log continuity
 // and minimal churn — its scope is broader than UNKNOWN now.
 var UNKNOWN_STREAK_THRESHOLD = 3;
-var NO_RESULT_STATUSES = ['UNKNOWN', 'CALL_FAILED', 'HOTLINE_DOWN'];
+// TRANSCRIBER_DOWN / RECORDING_UNAVAILABLE join the no-result streak: from
+// the user's side a supplier outage is indistinguishable from a call that
+// produced nothing, and a run of them should still pause a schedule rather
+// than burn credits-free calls forever. None of these bill.
+var NO_RESULT_STATUSES = ['UNKNOWN', 'CALL_FAILED', 'HOTLINE_DOWN', 'TRANSCRIBER_DOWN', 'RECORDING_UNAVAILABLE'];
 async function checkConsecutiveUnknown(userId, lastReason, notifyNumber, notifyEmail, notifyMethod) {
   // PIN_EXPIRED is filtered OUT here so it neither contributes to nor
   // occupies a slot in the no-result streak. Its own counter handles it.
@@ -2934,26 +2938,111 @@ app.post('/webhook/recording', validateTwilio, async function(req, res) {
     console.log('[RECORDING] Saved Montgomery recording for', config.callSid);
   }
   
-  // Transcribe with Deepgram
+  // Dual-channel, one per code per day. Email AND SMS deliberately: a
+// transcription outage is a supplier failure, and picking a single channel
+// means the alert shares a fate with whichever supplier is having the bad day.
+var _transcriberAlertKey = null;
+async function alertAdminTranscriberFailure(code, detail, config) {
+  var today = formatLocalDay(new Date(), 'America/Chicago');
+  var key = today + ':' + code;
+  if (_transcriberAlertKey === key) return;
+
+  var admins = await supabase.from('profiles').select('id, email').eq('is_admin', true);
+  if (!admins.data || !admins.data.length) return;
+
+  var vendor = code === 'TRANSCRIBER_DOWN' ? 'Deepgram (transcription)' : 'Twilio (call recording)';
+  var text = 'ADMIN: ' + vendor + ' is failing.\n\n' +
+    'Code: ' + code + '\n' +
+    'Detail: ' + String(detail || '').slice(0, 300) + '\n' +
+    (config && config.officeId ? ('Office: ' + config.officeId + '\n') : '') +
+    '\nResults cannot be produced while this persists. Users are being told to call the hotline themselves and are NOT being charged. One alert per code per day.';
+  var smsText = 'ProbationCall ADMIN: ' + vendor + ' failing (' + code + '). Users told to call the hotline; not charged. 1 alert/day.';
+
+  var delivered = 0;
+  for (var i = 0; i < admins.data.length; i++) {
+    var a = admins.data[i];
+    if (a.email) {
+      var ok = await brevoMail.send({
+        to: a.email,
+        from: { email: MASS_FROM_EMAIL, name: 'ProbationCall' },
+        replyTo: { email: SUPPORT_REPLY_TO, name: 'ProbationCall' },
+        subject: 'ADMIN: ' + vendor + ' is failing',
+        text: text, html: renderBrandedEmail({ subject: vendor + ' is failing', body: text }).html
+      }).then(function() { return true; }, function() { return false; });
+      if (ok) delivered++;
+    }
+    var as = await supabase.from('user_schedules').select('notify_number').eq('user_id', a.id).maybeSingle();
+    if (as && as.data && as.data.notify_number) {
+      var sr = await sendSMS(as.data.notify_number, smsText, 'transcriber_down');
+      if (sr && sr.success) delivered++;
+    }
+  }
+  // Arm the throttle only once something actually arrived, so a day where
+  // both channels fail does not silently burn the alert.
+  if (delivered > 0) {
+    _transcriberAlertKey = key;
+    console.log('[TRANSCRIBE-ALERT] ' + code + ' alerted, ' + delivered + ' channel deliveries');
+  } else {
+    console.error('[TRANSCRIBE-ALERT] ' + code + ' — BOTH CHANNELS FAILED, throttle not armed');
+  }
+}
+
+// A transcription failure that is OUR supplier's, not the county's. Carries a
+// code so the caller can tell TRANSCRIBER_DOWN from RECORDING_UNAVAILABLE from
+// a genuinely silent hotline, all of which previously looked like ''.
+function TranscriptionError(code, message) {
+  var e = new Error(message);
+  e.name = 'TranscriptionError';
+  e.transcriptionCode = code;
+  return e;
+}
+var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
+
+// Transcribe with Deepgram
   try {
     console.log('[TRANSCRIBE] Starting Deepgram transcription for', callId);
     var audioUrl = recordingUrl + '.mp3';
     // Download from Twilio with auth
+    // 1b — neither fetch checked .ok and neither had a timeout. A Deepgram
+    // 401/429/500 produced dgResult.results === undefined, transcript === '',
+    // and the system treated a VENDOR OUTAGE identically to a silent hotline:
+    // Montgomery users were told "the hotline may be experiencing issues",
+    // blaming the county for our supplier. Nothing anywhere could say the
+    // transcriber was down. A fallback chain is worthless while the failure
+    // that should trigger it is invisible, so this lands before any second
+    // vendor.
     var audioResponse = await fetch(audioUrl, {
       headers: {
         'Authorization': 'Basic ' + Buffer.from(process.env.TWILIO_ACCOUNT_SID + ':' + process.env.TWILIO_AUTH_TOKEN).toString('base64')
-      }
+      },
+      signal: AbortSignal.timeout(TRANSCRIBE_FETCH_TIMEOUT_MS)
     });
+    if (!audioResponse.ok) {
+      // The recording is Twilio's, not Deepgram's. Distinguish it so a
+      // recording-not-ready 404 is never blamed on the transcriber.
+      throw new TranscriptionError('RECORDING_UNAVAILABLE',
+        'Twilio returned ' + audioResponse.status + ' for ' + audioUrl);
+    }
     var audioBuffer = Buffer.from(await audioResponse.arrayBuffer());
     console.log('[TRANSCRIBE] Downloaded audio:', audioBuffer.length, 'bytes');
+    if (audioBuffer.length < 1024) {
+      throw new TranscriptionError('RECORDING_UNAVAILABLE',
+        'Recording body was ' + audioBuffer.length + ' bytes — too small to be audio');
+    }
     var dgResponse = await fetch('https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true', {
       method: 'POST',
       headers: {
         'Authorization': 'Token ' + process.env.DEEPGRAM_API_KEY,
         'Content-Type': 'audio/mpeg'
       },
-      body: audioBuffer
+      body: audioBuffer,
+      signal: AbortSignal.timeout(TRANSCRIBE_FETCH_TIMEOUT_MS)
     });
+    if (!dgResponse.ok) {
+      var dgErrBody = await dgResponse.text().catch(function() { return ''; });
+      throw new TranscriptionError('TRANSCRIBER_DOWN',
+        'Deepgram HTTP ' + dgResponse.status + ' ' + String(dgErrBody).slice(0, 200));
+    }
     var dgResult = await dgResponse.json();
     var transcript = (dgResult.results && dgResult.results.channels && dgResult.results.channels[0] && dgResult.results.channels[0].alternatives && dgResult.results.channels[0].alternatives[0] && dgResult.results.channels[0].alternatives[0].transcript) || '';
     
@@ -3064,7 +3153,16 @@ app.post('/webhook/recording', validateTwilio, async function(req, res) {
       config.phase2 = phases.phase2;
 
       // Our own detection — what Deepgram + detectColor parsed.
-      var ourDetection = detectedColor || phases.phase1 || 'UNKNOWN';
+      // Record what we ACTUALLY detected, not just the first group. This
+      // logged only detectedColor/phase1, so 2026-08-06 read our="Phase 1"
+      // against truth "Phase 1, Phase 3" — which looks like the detector
+      // dropped a group when it had in fact found both. A diagnostic column
+      // that understates the detector sends the next investigation the wrong
+      // way; today it cost a round trip to disprove.
+      var detectedGroups = [phases.phase1, phases.phase2]
+        .filter(Boolean)
+        .join(', ');
+      var ourDetection = detectedGroups || detectedColor || 'UNKNOWN';
       console.log('[TRANSCRIBE] Fort Bend ' + officeId + ' our_detection:', ourDetection);
 
       // Cross-check against finishprobation.com ground truth. Network call
@@ -3334,9 +3432,39 @@ app.post('/webhook/recording', validateTwilio, async function(req, res) {
       broadcastToClients({ type: 'result', callId: callId, result: result, speech: transcript });
     }
   } catch (err) {
-    console.error('[TRANSCRIBE] Deepgram error:', err.message);
+    var tCode = err && err.transcriptionCode ? err.transcriptionCode : 'TRANSCRIBE_ERROR';
+    console.error('[TRANSCRIBE] ' + tCode + ' for ' + callId + ':', err.message);
+
+    if (tCode === 'TRANSCRIBER_DOWN' || tCode === 'RECORDING_UNAVAILABLE') {
+      // Record the outage against the call so a morning of vendor failure is
+      // countable afterwards, rather than being inferred from a pattern of
+      // empty transcripts. Does NOT bill — this result code is outside the
+      // MUST_TEST/NO_TEST gate, same as every other non-result outcome.
+      if (config.userId) {
+        await supabase.from('call_history').insert({
+          user_id: config.userId,
+          call_sid: config.callSid || 'unknown',
+          target_number: config.targetNumber || null,
+          pin_used: config.pin || null,
+          result: tCode,
+          recording_url: recordingUrl ? recordingUrl + '.mp3' : null,
+          created_at: new Date().toISOString()
+        }).then(function() {}, function(e) {
+          console.error('[TRANSCRIBE] could not record ' + tCode + ':', e.message);
+        });
+      }
+      // Tell admins WHICH vendor failed. The user-facing message deliberately
+      // does not speculate about the county — "we could not get a result" is
+      // true regardless, and blaming the hotline for our supplier's outage is
+      // what the old copy did.
+      await alertAdminTranscriberFailure(tCode, err.message, config).catch(function(e) {
+        console.error('[TRANSCRIBE] transcriber alert failed:', e.message);
+      });
+    }
+
     if (!config.isFtbendDaily && config.notifyNumber) {
-      await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, '⚠️ Call completed but no result detected.\n\nPlease verify manually.\nPIN: ' + config.pin + '\n\n- ProbationCall.com', callId);
+      await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod,
+        'We could not get a result from your check-in this morning.\n\nPlease call the hotline yourself today to be safe. You have not been charged.\n\n- ProbationCall.com', callId);
     }
   }
 });
