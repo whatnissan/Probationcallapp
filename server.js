@@ -50,8 +50,13 @@ const brevoMail = {
         }, msg.replyTo ? { replyTo: (typeof msg.replyTo === "object" ? msg.replyTo : { email: msg.replyTo }) } : {}))
       });
       if (response.ok) {
-        console.log("[EMAIL] ✅ Sent successfully to", msg.to);
-        return { success: true };
+        // Keep Brevo's messageId. It was previously discarded, which meant a
+        // delivery trace had to match on subject text and timestamp — fine for
+        // one message, useless once two sends share a subject.
+        var providerId = null;
+        try { providerId = (await response.json()).messageId || null; } catch (e) { /* body optional */ }
+        console.log("[EMAIL] ✅ Sent successfully to", msg.to, providerId ? ('id=' + providerId) : '');
+        return { success: true, messageId: providerId };
       } else {
         var err = await response.text();
         console.error("[EMAIL] ❌ Brevo API Error:", err);
@@ -3846,7 +3851,13 @@ app.post('/api/admin/mass-text', adminAuth, async function(req, res) {
 // NO_CREDITS / UNKNOWN as "ran" — they did, just without an actionable result.
 var adminAlertSent = false;
 var adminAlertDate = null;
-var HEALTH_GRACE_MINUTES = STAGGER_MINUTES + 20; // stagger window + 20 min buffer
+// Stagger window + retry sequence headroom. The old +20 fired while a
+// user could still be legitimately mid-retry: the Montgomery retry
+// sequence backs off across roughly an hour before it final-fails, so a
+// 35-minute window guaranteed alerts on morning-in-progress. 75 minutes
+// clears a full retry sequence, and pending_retries now covers the
+// in-flight case directly rather than relying on the window alone.
+var HEALTH_GRACE_MINUTES = STAGGER_MINUTES + 60;
 async function checkCallHealth() {
   try {
     var now = new Date();
@@ -3892,7 +3903,21 @@ async function checkCallHealth() {
       if (c.result !== 'RETRY_PENDING') ranUserIds[c.user_id] = true;
     });
 
-    var missed = due.filter(function(s) { return !ranUserIds[s.user_id]; });
+    // H6 — a user mid-retry has NO call_history row yet: the morning-retry
+    // flow deliberately writes one row when the morning RESOLVES, not per
+    // attempt. Counting them as "missed" alerts on users the system is
+    // actively still working on. 2026-08-06 fired on exactly that: one user
+    // on retry attempt 3, next attempt already scheduled.
+    var inFlight = await supabase.from('pending_retries').select('user_id, attempt_number, last_result');
+    var inFlightBy = {};
+    (inFlight.data || []).forEach(function(r) { inFlightBy[r.user_id] = r; });
+
+    var missed = due.filter(function(s) {
+      return !ranUserIds[s.user_id] && !inFlightBy[s.user_id];
+    });
+    var retrying = due.filter(function(s) {
+      return !ranUserIds[s.user_id] && inFlightBy[s.user_id];
+    });
 
     // Noise thresholds scale with fleet size. With < 8 due users the old
     // "at least 3 missed" floor meant a single user's calls could fail
@@ -3904,22 +3929,40 @@ async function checkCallHealth() {
       if (missed.length / due.length < 0.25) return;
     }
 
+    // Resolve who, so the alert can name them.
+    var missedDetail = [];
+    for (var md = 0; md < missed.length; md++) {
+      var mp = await supabase.from('profiles').select('email').eq('id', missed[md].user_id).maybeSingle();
+      missedDetail.push({
+        email: (mp.data && mp.data.email) || missed[md].user_id.slice(0, 8),
+        sched: (missed[md].hour || 6) + ':' + String(missed[md].minute || 0).padStart(2, '0'),
+        lastResult: null
+      });
+    }
+
     var adminResult = await supabase.from('profiles').select('id').eq('is_admin', true);
     var admins = adminResult.data || [];
     for (var i = 0; i < admins.length; i++) {
       var adminSched = await supabase.from('user_schedules').select('notify_number').eq('user_id', admins[i].id).single();
       if (adminSched.data && adminSched.data.notify_number) {
+        // Name the users and their state. A bare count is not actionable —
+        // it says something is wrong without saying what to look at.
+        var who = missedDetail.map(function(d) {
+          return d.email + ' (' + d.sched + (d.lastResult ? ', last ' + d.lastResult : ', no calls today') + ')';
+        }).join('\n');
         await sendSMS(adminSched.data.notify_number,
-          '⚠️ ADMIN ALERT: Possible call issues!\n\n' +
-          'Due (Montgomery, past scheduled time): ' + due.length + '\n' +
-          'Ran: ' + Object.keys(ranUserIds).length + '\n' +
-          'Missed: ' + missed.length + '\n\n' +
-          'Check admin panel.\n\n- ProbationCall.com',
+          '⚠️ ProbationCall: ' + missed.length + ' user' + (missed.length === 1 ? '' : 's') +
+          ' with no result today\n\n' + who + '\n\n' +
+          (retrying.length ? (retrying.length + ' more still mid-retry (not counted).\n\n') : '') +
+          'Due ' + due.length + ' · ran ' + Object.keys(ranUserIds).length +
+          '\n\n- ProbationCall.com',
           'admin_alert').catch(function(e) { console.error('[ADMIN ALERT] SMS failed:', e.message); });
       }
     }
     adminAlertSent = true;
-    console.log('[ADMIN ALERT] Call health warning sent — due=' + due.length + ' ran=' + Object.keys(ranUserIds).length + ' missed=' + missed.length);
+    console.log('[ADMIN ALERT] Call health warning sent — due=' + due.length +
+      ' ran=' + Object.keys(ranUserIds).length + ' missed=' + missed.length +
+      ' midRetry=' + retrying.length + ' [' + missedDetail.map(function(d) { return d.email; }).join(', ') + ']');
   } catch (e) {
     console.error('[ADMIN ALERT] checkCallHealth error:', e.message);
   }
@@ -4720,10 +4763,12 @@ app.post('/api/admin/mass-send', adminAuth, async function(req, res) {
         from: { email: MASS_FROM_EMAIL, name: 'ProbationCall' },
         replyTo: { email: SUPPORT_REPLY_TO, name: 'ProbationCall' },
         subject: subject, text: rendered.text, html: rendered.html
-      }).then(function() { return { ok: true }; }, function(e) { return { ok: false, error: e.message }; });
+      }).then(function(x) { return { ok: true, messageId: x && x.messageId }; },
+              function(e) { return { ok: false, error: e.message }; });
       if (ok.ok) emailSent++;
       results.push({ mass_send_id: sendId, user_id: r.user_id, channel: 'email', destination: r.email,
-        status: ok.ok ? 'sent' : 'failed', error: ok.ok ? null : String(ok.error).slice(0, 300) });
+        status: ok.ok ? 'sent' : 'failed', error: ok.ok ? null : String(ok.error).slice(0, 300),
+        provider_message_id: ok.ok ? (ok.messageId || null) : null });
       await new Promise(function(z) { setTimeout(z, 120); });
     }
 
@@ -4733,7 +4778,8 @@ app.post('/api/admin/mass-send', adminAuth, async function(req, res) {
       if (sres && sres.success) smsSent++;
       results.push({ mass_send_id: sendId, user_id: t.user_id, channel: 'sms', destination: t.phone,
         status: (sres && sres.success) ? 'sent' : (sres && sres.opted_out ? 'skipped' : 'failed'),
-        error: (sres && sres.success) ? null : String((sres && sres.error) || 'unknown').slice(0, 300) });
+        error: (sres && sres.success) ? null : String((sres && sres.error) || 'unknown').slice(0, 300),
+        provider_message_id: (sres && sres.sid) || null });
       await new Promise(function(z) { setTimeout(z, 200); });
     }
 
@@ -4756,10 +4802,12 @@ app.post('/api/admin/mass-send', adminAuth, async function(req, res) {
           replyTo: { email: SUPPORT_REPLY_TO, name: 'ProbationCall' },
           subject: '[ADMIN COPY] ' + subject,
           text: rendered.text, html: rendered.html
-        }).then(function() { return { ok: true }; }, function(e) { return { ok: false, error: e.message }; });
+        }).then(function(x) { return { ok: true, messageId: x && x.messageId }; },
+                function(e) { return { ok: false, error: e.message }; });
         results.push({ mass_send_id: sendId, user_id: adm.id, channel: 'admin_copy_email',
           destination: adm.email, status: acOk.ok ? 'sent' : 'failed',
-          error: acOk.ok ? null : String(acOk.error).slice(0, 300) });
+          error: acOk.ok ? null : String(acOk.error).slice(0, 300),
+          provider_message_id: acOk.ok ? (acOk.messageId || null) : null });
       }
       if (wantSms) {
         var admSched = await supabase.from('user_schedules').select('notify_number').eq('user_id', adm.id).maybeSingle();
@@ -4768,7 +4816,8 @@ app.post('/api/admin/mass-send', adminAuth, async function(req, res) {
           var acSms = await sendSMS(admNum, 'ADMIN COPY: ' + smsBody, 'mass_send_admin_copy');
           results.push({ mass_send_id: sendId, user_id: adm.id, channel: 'admin_copy_sms',
             destination: admNum, status: (acSms && acSms.success) ? 'sent' : 'failed',
-            error: (acSms && acSms.success) ? null : String((acSms && acSms.error) || 'unknown').slice(0, 300) });
+            error: (acSms && acSms.success) ? null : String((acSms && acSms.error) || 'unknown').slice(0, 300),
+            provider_message_id: (acSms && acSms.sid) || null });
         }
       }
     }
