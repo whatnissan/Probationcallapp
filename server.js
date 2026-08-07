@@ -3705,7 +3705,7 @@ async function sendEmail(to, message, callId) {
     "</table>" +
     "</td></tr></table></body></html>";
   try {
-    await brevoMail.send({
+    var sendResult = await brevoMail.send({
       to: to,
       from: { email: FROM_EMAIL, name: "ProbationCall" },
       subject: subject,
@@ -3713,9 +3713,14 @@ async function sendEmail(to, message, callId) {
       html: html
     });
     log(callId, "Email sent to " + to, "success");
-    return { success: true };
+    await logNotification({ channel: 'email', kind: callId || 'email', destination: to,
+      body: subject + ' — ' + message, status: 'sent',
+      providerMessageId: sendResult && sendResult.messageId });
+    return { success: true, messageId: sendResult && sendResult.messageId };
   } catch (e) {
     log(callId, "Email failed: " + e.message, "error");
+    await logNotification({ channel: 'email', kind: callId || 'email', destination: to,
+      body: subject + ' — ' + message, status: 'failed', error: e.message });
     return { success: false, error: e.message };
   }
 }
@@ -3759,11 +3764,47 @@ async function recordSmsOptOut(phone, source, keyword) {
   return userId;
 }
 
+// Central write point for the notification log. Deliberately inside sendSMS /
+// sendEmail rather than at the ~11 call sites: a per-site approach means the
+// next alert added silently goes unlogged, which is how every non-result
+// message ended up invisible in the first place. Never throws — a logging
+// failure must not stop a message reaching a user.
+async function logNotification(fields) {
+  try {
+    var userId = fields.userId || null;
+    if (!userId && fields.destination) {
+      // sendSMS/sendEmail only receive a destination. One indexed lookup;
+      // nullable, so an unresolvable destination still produces a row.
+      var col = fields.channel === 'sms' ? 'notify_number' : 'notify_email';
+      var sc = await supabase.from('user_schedules').select('user_id').eq(col, fields.destination).maybeSingle();
+      if (sc && sc.data) userId = sc.data.user_id;
+      if (!userId && fields.channel === 'email') {
+        var pr = await supabase.from('profiles').select('id').eq('email', fields.destination).maybeSingle();
+        if (pr && pr.data) userId = pr.data.id;
+      }
+    }
+    await supabase.from('notification_log').insert({
+      user_id: userId,
+      channel: fields.channel,
+      kind: fields.kind || 'unknown',
+      destination: fields.destination || null,
+      body_preview: String(fields.body || '').slice(0, 300),
+      status: fields.status,
+      error: fields.error ? String(fields.error).slice(0, 300) : null,
+      provider_message_id: fields.providerMessageId || null
+    });
+  } catch (e) {
+    console.error('[NOTIF-LOG] could not record ' + fields.kind + ':', e.message);
+  }
+}
+
 async function sendSMS(to, message, callId) {
   // Refuse before calling Twilio. Twilio would reject with 21610 anyway, but
   // checking here keeps the log honest and avoids a pointless API round trip.
   if (await isSmsOptedOut(to)) {
     log(callId, 'SMS suppressed — recipient opted out', 'error');
+    await logNotification({ channel: 'sms', kind: callId || 'sms', destination: to,
+      body: message, status: 'suppressed', error: 'recipient opted out' });
     return { success: false, error: 'opted_out', opted_out: true };
   }
   try {
@@ -3773,6 +3814,8 @@ async function sendSMS(to, message, callId) {
       body: message
     });
     log(callId, 'SMS sent: ' + msg.sid, 'success');
+    await logNotification({ channel: 'sms', kind: callId || 'sms', destination: to,
+      body: message, status: 'sent', providerMessageId: msg.sid });
     return { success: true, sid: msg.sid };
   } catch (e) {
     // 21610 = Twilio's "this number has replied STOP". Authoritative — record
@@ -3781,9 +3824,13 @@ async function sendSMS(to, message, callId) {
     if (e && (e.code === 21610 || e.code === '21610')) {
       log(callId, 'SMS blocked: recipient opted out (Twilio 21610)', 'error');
       await recordSmsOptOut(to, 'twilio_21610', null).catch(function() {});
+      await logNotification({ channel: 'sms', kind: callId || 'sms', destination: to,
+        body: message, status: 'suppressed', error: 'Twilio 21610 — opted out' });
       return { success: false, error: 'opted_out', opted_out: true };
     }
     log(callId, 'SMS failed: ' + e.message, 'error');
+    await logNotification({ channel: 'sms', kind: callId || 'sms', destination: to,
+      body: message, status: 'failed', error: e.message });
     return { success: false, error: e.message };
   }
 }
@@ -4349,6 +4396,16 @@ app.get('/api/admin/user/:id/detail', adminAuth, async function(req, res) {
     var ledger = await supabase.from('credit_transactions').select('*').eq('user_id', uid).order('created_at', { ascending: false }).limit(50);
     var calls = await supabase.from('call_history').select('result, billed_at, created_at').eq('user_id', uid).order('created_at', { ascending: false }).limit(500);
 
+    // Every non-result message we sent this user: low-credit warnings, pause
+    // and PIN notices, opt-out confirmations, mass sends, support replies.
+    // Before notification_log existed these were fire-and-forget, so "you
+    // never warned me" was unanswerable.
+    var notif = await supabase.from('notification_log')
+      .select('channel, kind, destination, body_preview, status, error, delivery_status, delivered_at, created_at')
+      .eq('user_id', uid).order('created_at', { ascending: false }).limit(100);
+    var notifRows = notif.error ? [] : (notif.data || []);
+    if (notif.error) console.error('[ADMIN-DETAIL] notification_log read failed:', notif.error.message);
+
     var rows = calls.data || [];
     var counts = {};
     rows.forEach(function(c) { counts[c.result] = (counts[c.result] || 0) + 1; });
@@ -4373,6 +4430,7 @@ app.get('/api/admin/user/:id/detail', adminAuth, async function(req, res) {
         last_result: rows.length ? rows[0].result : null,
         last_call_at: rows.length ? rows[0].created_at : null
       },
+      notifications: notifRows,
       totals: {
         spent_cents: (purch.data || []).reduce(function(a, p) { return a + (p.amount_cents || 0); }, 0),
         refunded_cents: (purch.data || []).reduce(function(a, p) { return a + (p.refund_amount_cents || 0); }, 0)
