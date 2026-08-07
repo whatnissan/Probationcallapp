@@ -442,12 +442,56 @@ function showSessionExpired(msg){
   document.body.appendChild(bar);
 }
 
+// Supabase refreshes the session in the background, but `token` was read once
+// in init() and never updated. Past the JWT's ~1h life every request carried a
+// dead token, so an admin still perfectly signed in got the expired banner —
+// usually after leaving the tab open. Keep the module-level token current.
+sb.auth.onAuthStateChange(function(_evt, session){
+  if(session && session.access_token) token = session.access_token;
+});
+
+// A token good for the request about to be made. getSession() serves from
+// storage, so check the expiry ourselves and force the refresh rather than
+// letting the request 401 first. Any failure keeps the existing token — the
+// 401 path below is a better fallback than a thrown fetch.
+async function freshToken(){
+  try{
+    var s = await sb.auth.getSession();
+    var sess = s && s.data ? s.data.session : null;
+    if(sess){
+      if((sess.expires_at||0) - Math.floor(Date.now()/1000) < 60){
+        var r = await sb.auth.refreshSession();
+        if(r && r.data && r.data.session) sess = r.data.session;
+      }
+      if(sess.access_token) token = sess.access_token;
+    }
+  }catch(e){}
+  return token;
+}
+
 // Wrap every admin fetch. Returns the parsed body, or throws after showing the
 // banner when the session is the problem — so no caller has to know about
 // auth, and a future admin endpoint cannot reintroduce the confusion.
 async function adminFetch(url, opts){
-  var res = await fetch(url, opts);
+  opts = opts || {};
+  var t = await freshToken();
+  var headers = {};
+  for(var k in (opts.headers||{})) headers[k] = opts.headers[k];
+  // Callers build 'Bearer '+token at call time, which may be the stale one.
+  // Overriding here fixes every existing call site without touching them.
+  headers.Authorization = 'Bearer ' + t;
+  var res = await fetch(url, Object.assign({}, opts, { headers: headers }));
   var body = await res.json().catch(function(){ return {}; });
+  // One forced refresh and retry before concluding the session is really gone.
+  // Covers the narrow window where the token died between freshToken and here.
+  if(res.status===401 && !opts._retried){
+    var rr = await sb.auth.refreshSession().catch(function(){ return null; });
+    if(rr && rr.data && rr.data.session && rr.data.session.access_token){
+      token = rr.data.session.access_token;
+      var retryOpts = Object.assign({}, opts, { _retried: true });
+      return adminFetch(url, retryOpts);
+    }
+  }
   if(res.status===401 || (res.status===403 && body && /NOT_ADMIN|ACCOUNT_DISABLED/.test(body.code||''))){
     showSessionExpired(body && body.error);
     var err = new Error(body && body.error ? body.error : 'Session problem');

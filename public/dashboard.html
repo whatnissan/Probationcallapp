@@ -781,6 +781,14 @@ supabase.auth.onAuthStateChange(function(event, session) {
   } else if (event === 'SIGNED_OUT') {
     localStorage.removeItem('pb_token');
     token = null;
+  } else if (session && session.access_token) {
+    // TOKEN_REFRESHED and friends. Supabase renews the session in the
+    // background but nothing here was picking the new JWT up, so `token`
+    // stayed frozen at whatever init() read and every call after the ~1h
+    // expiry failed on a still-valid session. Token only — re-running
+    // showDashboard() would reconnect the websocket on every refresh.
+    token = session.access_token;
+    try { localStorage.setItem('pb_token', token); } catch (e) {}
   }
 });
 
