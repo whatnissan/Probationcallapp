@@ -150,8 +150,8 @@ function fmtCreditSource(row){var s=row.source||'other';if(s==='admin_grant')ret
 // --- Support ---
 function loadSends(){
   $('sendsStatus').textContent='Loading…';
-  fetch('/api/admin/mass-sends',{headers:{Authorization:'Bearer '+token}})
-   .then(function(r){return r.json()}).then(function(d){
+  adminFetch('/api/admin/mass-sends',{headers:{Authorization:'Bearer '+token}})
+   .then(function(d){
      if(d.error){$('sendsStatus').textContent='Error: '+d.error;return}
      var sends=d.sends||[];
      $('sendsStatus').textContent=sends.length+' send'+(sends.length===1?'':'s');
@@ -188,14 +188,14 @@ function loadSends(){
        h+='</div></details></div>';
      });
      $('sendsList').innerHTML=h;
-   }).catch(function(e){$('sendsStatus').textContent='Error: '+e.message});
+   }).catch(function(e){ if(!e.handled) $('sendsStatus').textContent='Error: '+e.message; });
 }
 
 function loadSupport(){
   var status=$('supportFilter').value;
   $('supportStatus').textContent='Loading…';
-  fetch('/api/admin/support'+(status?('?status='+encodeURIComponent(status)):''),{headers:{Authorization:'Bearer '+token}})
-   .then(function(r){return r.json()}).then(function(d){
+  adminFetch('/api/admin/support'+(status?('?status='+encodeURIComponent(status)):''),{headers:{Authorization:'Bearer '+token}})
+   .then(function(d){
      if(d.error){$('supportStatus').textContent='Error: '+d.error;return}
      var msgs=d.messages||[];
      $('supportStatus').textContent=msgs.length+' message'+(msgs.length===1?'':'s');
@@ -225,7 +225,7 @@ function loadSupport(){
        h+='</div>';
      });
      $('supportList').innerHTML=h;
-   }).catch(function(e){$('supportStatus').textContent='Error: '+e.message});
+   }).catch(function(e){ if(!e.handled) $('supportStatus').textContent='Error: '+e.message; });
 }
 
 function sendSupportReply(id){
@@ -386,6 +386,49 @@ window.delUser=function(uid,email){if(!confirm("DELETE user "+email+"?\n\nThis w
 // handlers, so one apostrophe broke out of the attribute and executed.
 // Escapes quotes and backtick too, and stringifies non-strings (the old
 // `s?` guard turned 0 into "").
+// Shared handling for an expired or invalid admin session. Eight-plus admin
+// features are adminAuth-gated, so when a token lapses they ALL fail at the
+// same moment, each printing a raw error into its own status line. That reads
+// as a system fault rather than "you need to sign in again". Shown once, with
+// the one action that fixes it.
+var _sessionBannerShown = false;
+function showSessionExpired(msg){
+  if(_sessionBannerShown) return;
+  _sessionBannerShown = true;
+  var bar=document.createElement('div');
+  bar.id='sessionExpiredBar';
+  bar.style.cssText='position:fixed;top:0;left:0;right:0;z-index:9999;background:#7f1d1d;color:#fff;'+
+    'padding:14px 18px;display:flex;align-items:center;justify-content:center;gap:14px;'+
+    'font-size:0.95rem;box-shadow:0 2px 12px rgba(0,0,0,0.4)';
+  bar.innerHTML='<span>'+esc(msg||'Your session expired — reload to sign in again.')+'</span>';
+  var btn=document.createElement('button');
+  btn.className='btn'; btn.textContent='Reload';
+  btn.style.cssText='background:#fff;color:#7f1d1d;padding:6px 18px;font-weight:600';
+  btn.onclick=function(){location.reload()};
+  bar.appendChild(btn);
+  document.body.appendChild(bar);
+}
+
+// Wrap every admin fetch. Returns the parsed body, or throws after showing the
+// banner when the session is the problem — so no caller has to know about
+// auth, and a future admin endpoint cannot reintroduce the confusion.
+async function adminFetch(url, opts){
+  var res = await fetch(url, opts);
+  var body = await res.json().catch(function(){ return {}; });
+  if(res.status===401 || (res.status===403 && body && /NOT_ADMIN|ACCOUNT_DISABLED/.test(body.code||''))){
+    showSessionExpired(body && body.error);
+    var err = new Error(body && body.error ? body.error : 'Session problem');
+    err.handled = true;
+    throw err;
+  }
+  if(!res.ok){
+    var e2 = new Error((body && body.error) || ('HTTP ' + res.status));
+    e2.status = res.status;
+    throw e2;
+  }
+  return body;
+}
+
 function esc(s){if(s===null||s===undefined)return"";return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;").replace(/`/g,"&#96;")}
 function calcUserStats(calls,sysStats){var tests=calls.filter(function(c){return c.result==="MUST_TEST"}).sort(function(a,b){return new Date(a.created_at)-new Date(b.created_at)});if(tests.length<1)return null;var scheduledIntervals=[],retestCount=0;for(var i=1;i<tests.length;i++){var days=Math.round((new Date(tests[i].created_at)-new Date(tests[i-1].created_at))/(1000*60*60*24));if(days<=0)continue;if(days<7)retestCount++;else if(days<60)scheduledIntervals.push(days);}var personalAvg=null,personalStdDev=null;if(scheduledIntervals.length>0){personalAvg=scheduledIntervals.reduce(function(a,b){return a+b},0)/scheduledIntervals.length;if(scheduledIntervals.length>=2){var variance=scheduledIntervals.reduce(function(s,v){return s+Math.pow(v-personalAvg,2)},0)/scheduledIntervals.length;personalStdDev=Math.sqrt(variance);}}var sysAvg=sysStats?sysStats.scheduledAvg:null;var sysStdDev=sysStats?sysStats.scheduledStdDev:null;var blendedAvg=null,blendedStdDev=null,dataSource="none";if(personalAvg&&sysAvg){var pw=Math.min(1.0,scheduledIntervals.length/8),sw=1-pw;blendedAvg=(sysAvg*sw)+(personalAvg*pw);blendedStdDev=((sysStdDev||3)*sw)+((personalStdDev||(sysStdDev||3))*pw);dataSource=pw<0.5?"blended":"personal";}else if(personalAvg){blendedAvg=personalAvg;blendedStdDev=personalStdDev||3;dataSource="personal";}else if(sysAvg){blendedAvg=sysAvg;blendedStdDev=sysStdDev||3;dataSource="county avg";}var last=tests[tests.length-1];var daysSince=Math.round((new Date()-new Date(last.created_at))/(1000*60*60*24));var first=tests[0];var totalDays=Math.max(1,Math.round((new Date()-new Date(first.created_at))/(1000*60*60*24)));var perMonth=((tests.length/totalDays)*30).toFixed(1);var displayAvg=blendedAvg?blendedAvg.toFixed(1):"--";var predict="";var confText="";if(blendedAvg){var daysUntil=Math.round(blendedAvg-daysSince);var lo=Math.max(0,Math.round(blendedAvg-(blendedStdDev||3)-daysSince));var hi=Math.round(blendedAvg+(blendedStdDev||3)-daysSince);var range=(hi>lo&&hi>0)?" ("+lo+"-"+hi+"d)":"";if(daysUntil<=0)predict="<span style='color:#ef4444'>Test likely any day now</span>";else if(daysUntil<=2)predict="<span style='color:#f59e0b'>~"+daysUntil+" day(s)</span>";else predict="<span style='color:#00d9ff'>~"+daysUntil+" days"+range+"</span>";var dataPoints=scheduledIntervals.length+(sysStats?Math.min(5,(sysStats.scheduledIntervalCount||0)/4):0);var varConf=blendedStdDev>0?Math.max(0,100-(blendedStdDev/blendedAvg*100)):80;var confidence=Math.round(Math.min(88,Math.max(40,dataPoints*6+varConf*0.3)));var retestNote=retestCount>0?" | "+retestCount+" retest"+(retestCount>1?"s":"")+" excl":"";var srcNote=dataSource==="county avg"?" | county avg":dataSource==="blended"?" | blended":"";confText=confidence+"% confidence | "+tests.length+" tests"+srcNote+retestNote;}var dayCount=[0,0,0,0,0,0,0];tests.forEach(function(t){dayCount[new Date(t.created_at).getDay()]++;});if(sysStats&&sysStats.dayOfWeekCounts&&tests.length<6){var sd=sysStats.dayOfWeekCounts,sm=Math.max.apply(null,sd);if(sm>0){var pw2=Math.min(1.0,tests.length/6),sw2=1-pw2;for(var d=0;d<7;d++)dayCount[d]=Math.round(dayCount[d]*pw2+(sd[d]/sm)*10*sw2);}}var maxDay=Math.max.apply(null,dayCount);var dayNames=["S","M","T","W","T","F","S"],patternHtml="";for(var d=0;d<7;d++){var pct=maxDay>0?(dayCount[d]/maxDay):0;var cls=pct>=0.7?"high":pct>=0.3?"med":"low";patternHtml+="<div class='pattern-day "+cls+"'>"+dayNames[d]+"</div>";}return{total:tests.length,avg:displayAvg,daysSince:daysSince,perMonth:perMonth,predict:predict,confText:confText,pattern:patternHtml};}
 function calcGlobalTrends(){var tests=D.calls.filter(function(c){return c.result==="MUST_TEST"}).sort(function(a,b){return new Date(a.created_at)-new Date(b.created_at)});if(tests.length<2){document.getElementById("globalTrends").style.display="none";return}document.getElementById("globalTrends").style.display="block";var userTests={};tests.forEach(function(t){if(!userTests[t.user_id])userTests[t.user_id]=[];userTests[t.user_id].push(t)});var allIntervals=[];Object.keys(userTests).forEach(function(uid){var ut=userTests[uid].sort(function(a,b){return new Date(a.created_at)-new Date(b.created_at)});for(var i=1;i<ut.length;i++){var days=Math.round((new Date(ut[i].created_at)-new Date(ut[i-1].created_at))/(1000*60*60*24));if(days>0&&days<60)allIntervals.push(days)}});var avgInt=allIntervals.length>0?(allIntervals.reduce(function(a,b){return a+b},0)/allIntervals.length).toFixed(1):"--";var dayCount=[0,0,0,0,0,0,0];tests.forEach(function(t){dayCount[new Date(t.created_at).getDay()]++});var maxDay=Math.max.apply(null,dayCount);var dayNames=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];var dayNamesShort=["S","M","T","W","T","F","S"];var mostLikely=dayNames[dayCount.indexOf(maxDay)];var first=tests[0];var last=tests[tests.length-1];var totalDays=Math.max(1,Math.round((new Date(last.created_at)-new Date(first.created_at))/(1000*60*60*24)));var testsPerMonth=((tests.length/totalDays)*30).toFixed(1);document.getElementById("gtAvgInterval").textContent=avgInt;document.getElementById("gtTotalTests").textContent=tests.length;document.getElementById("gtTestRate").textContent=testsPerMonth;document.getElementById("gtMostLikely").textContent=mostLikely;var patternHtml="";for(var d=0;d<7;d++){var pct=maxDay>0?(dayCount[d]/maxDay):0;var cls=pct>=0.7?"high":pct>=0.3?"med":"low";patternHtml+="<div class=\"pattern-day "+cls+"\" title=\""+dayNames[d]+": "+dayCount[d]+" tests\">"+dayNamesShort[d]+"</div>"}document.getElementById("gtPatternRow").innerHTML=patternHtml}
@@ -570,7 +613,7 @@ Array.prototype.forEach.call(document.querySelectorAll('[data-ftcall]'),function
 document.getElementById('paymentsHealth').onclick=function(){
   var btn=this;btn.disabled=true;btn.textContent='Testing…';
   var box=document.getElementById('paymentsHealthResult');box.innerHTML='Running…';
-  fetch('/api/admin/payments-health',{headers:{Authorization:'Bearer '+token}}).then(function(r){return r.json()}).then(function(d){
+  adminFetch('/api/admin/payments-health',{headers:{Authorization:'Bearer '+token}}).then(function(d){
     btn.disabled=false;btn.textContent='💳 Run Payments Self-Test';
     if(d.error){box.innerHTML='<span style="color:#ef4444">Error: '+d.error+'</span>';return}
     var rows=(d.checks||[]).map(function(c){

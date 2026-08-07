@@ -4121,13 +4121,26 @@ server.listen(PORT, function() {
 async function adminAuth(req, res, next) {
   var authHeader = req.headers.authorization;
   var tkn = authHeader ? authHeader.replace('Bearer ', '') : null;
-  if (!tkn) return res.status(401).json({ error: 'No token' });
+  // Every message here is read by a human in the admin panel. "Invalid" cost
+  // a bug report and a diagnosis for what was simply an expired session:
+  // Supabase access tokens lapse after ~1h, every adminAuth-gated feature
+  // fails at once, and the panel printed the raw string into each status
+  // line. The code field lets the client handle expiry as expiry.
+  if (!tkn) {
+    return res.status(401).json({ error: 'Not signed in — reload and sign in again.', code: 'NO_TOKEN' });
+  }
   try {
     var result = await supabase.auth.getUser(tkn);
-    if (result.error || !result.data.user) return res.status(401).json({ error: 'Invalid' });
+    if (result.error || !result.data.user) {
+      return res.status(401).json({ error: 'Your session expired — reload to sign in again.', code: 'SESSION_EXPIRED' });
+    }
     var pr = await supabase.from('profiles').select('*').eq('id', result.data.user.id).single();
-    if (!pr.data || !pr.data.is_admin) return res.status(403).json({ error: 'Not admin' });
-    if (pr.data.is_disabled) return res.status(403).json({ error: 'Account disabled' });
+    if (!pr.data || !pr.data.is_admin) {
+      return res.status(403).json({ error: 'This account is not an admin.', code: 'NOT_ADMIN' });
+    }
+    if (pr.data.is_disabled) {
+      return res.status(403).json({ error: 'This account is disabled.', code: 'ACCOUNT_DISABLED' });
+    }
     req.user = result.data.user;
     req.profile = pr.data;
     // Track last login (.then() required — lazy builder, see auth middleware)
