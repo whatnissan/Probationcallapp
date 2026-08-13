@@ -6377,19 +6377,29 @@ app.post('/api/subscription/checkout', auth, rateLimit('checkout', 10, 5 * 60 * 
 // === SUBSCRIPTION CUSTOMER PORTAL (cancel / update payment method / view invoices) ===
 // Requires the Customer Portal to be configured once in Stripe Dashboard:
 // https://dashboard.stripe.com/settings/billing/portal
-app.post('/api/subscription/portal', auth, async function(req, res) {
+//
+// Deliberately does NOT require a subscription (or even a saved customer id).
+// A user with a failed payment, a canceled sub, or no sub at all must still
+// be able to open the portal and put a card on file — gating this on
+// stripe_customer_id was the "No subscription on file" dead-end that left
+// past_due users unable to fix their own billing.
+//
+// Flow (customer resolution -> CAS self-heal sync -> portal session) lives in
+// lib/billing.js openBillingPortal — see test/billing.test.js for coverage.
+app.post('/api/subscription/portal', auth, rateLimit('portal', 10, 5 * 60 * 1000), async function(req, res) {
   try {
-    if (!req.profile.stripe_customer_id) {
-      return res.status(400).json({ error: 'No subscription on file' });
-    }
-    var portal = await stripe.billingPortal.sessions.create({
-      customer: req.profile.stripe_customer_id,
-      return_url: process.env.BASE_URL + '/dashboard'
-    });
-    res.json({ url: portal.url });
+    var result = await billing.openBillingPortal(req.profile, process.env.BASE_URL + '/dashboard');
+    res.json({ url: result.url });
   } catch (e) {
-    console.error('[SUBSCRIPTION] Portal error:', e.message);
-    res.status(500).json({ error: e.message });
+    logStripeError('portal (user ' + req.user.id.slice(0, 8) + ')', e);
+    var rawMsg = (e.raw && e.raw.message) || e.message || '';
+    if (rawMsg.indexOf('default configuration has not been created') !== -1 || rawMsg.indexOf('No configuration provided') !== -1) {
+      // Stripe-side setup gap, not a user problem. Actionable for the user,
+      // loud in the logs for the operator.
+      console.error('[SUBSCRIPTION] Billing Portal is NOT configured in the Stripe Dashboard — create the default configuration at https://dashboard.stripe.com/settings/billing/portal');
+      return res.status(500).json({ error: 'Billing portal is temporarily unavailable. Please contact support and we will fix your payment method for you.' });
+    }
+    res.status(500).json({ error: 'Could not open billing management: ' + rawMsg + ' — please try again or contact support.' });
   }
 });
 
