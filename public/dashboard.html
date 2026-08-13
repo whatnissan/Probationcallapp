@@ -312,6 +312,10 @@ select option { background: #1a1a2e; color: #fff; }
     <button class="buy-btn" onclick="showBuyModal()">Buy Credits</button>
   </div>
 
+  <!-- Payment-confirmation strip — shown on return from Stripe Checkout while
+       we poll /api/user for the webhook-granted credits to land. -->
+  <div id="payConfirmBanner" style="display:none;align-items:center;gap:10px;border-radius:10px;padding:10px 14px;margin:0 0 14px;font-size:0.9rem"></div>
+
   <!-- Subscription strip — surfaces current sub state on the main dashboard
        (active / canceling / canceled / past_due / none) with one action button. -->
   <div id="dashSubCard" style="display:none;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;border-radius:10px;padding:10px 14px;margin:0 0 14px;font-size:0.9rem"></div>
@@ -652,6 +656,10 @@ select option { background: #1a1a2e; color: #fff; }
           <button id="subscribeBtn" class="btn" onclick="subscribeMonthly()" style="background:#00d9ff;color:#000;margin-top:6px">Subscribe</button>
         </div>
       </div>
+      <div style="margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.1);display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+        <div style="color:#8892b0;font-size:0.85rem;flex:1;min-width:140px">Don't want auto-renew? Buy one month, one time.</div>
+        <button id="buyMonthBtn" class="btn" onclick="buyOneMonth()" style="background:rgba(255,255,255,0.1);color:#fff;padding:6px 14px;font-size:0.85rem;flex-shrink:0">Buy 1 month — $14.99</button>
+      </div>
       <div id="subStatusBox" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.1);font-size:0.85rem;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
         <span id="subStatusText" style="color:#22c55e;flex:1;min-width:0"></span>
         <button class="btn" onclick="manageSubscription()" style="background:rgba(255,255,255,0.1);color:#fff;padding:4px 12px;font-size:0.8rem;flex-shrink:0">Manage Subscription</button>
@@ -691,6 +699,10 @@ var supabase = window.supabase.createClient(SUPA_URL, SUPA_KEY);
 var savedAffiliateCode = null; var token = localStorage.getItem('pb_token') || null;
 var termsAccepted = false;
 var affiliateData = null;
+// Billing state as of the last /api/user render — snapshotted into
+// localStorage when a checkout starts, compared against on return.
+var lastLoadedCredits = null;
+var lastLoadedSubStatus = null;
 
 // Disclaimer checkboxes
 document.querySelectorAll('#agreeCheck1, #agreeCheck2').forEach(function(cb) {
@@ -797,11 +809,88 @@ function showDashboard() {
   document.getElementById('app').style.display = 'block';
   loadUser();
   connectWS();
+  // Return-from-Checkout markers. The webhook that grants credits / flips the
+  // subscription often lands a beat AFTER Stripe redirects back, so instead of
+  // a blocking alert over stale numbers we strip the marker and poll /api/user
+  // until the state actually changes (or we time out with a soft message).
   var params = new URLSearchParams(window.location.search);
-  if (params.get('success')) {
-    alert('✅ Payment successful! Credits added.');
+  var marker = params.get('success') ? 'purchase' : (params.get('subscribed') ? 'subscription' : null);
+  if (marker || params.get('canceled')) {
     history.replaceState({}, '', '/dashboard');
   }
+  if (marker) startPaymentConfirmPolling(marker);
+}
+
+// Snapshot the billing state the user last SAW, taken right before we hand
+// them to Stripe Checkout. On return, polling compares against this — "did
+// credits go above what they had when they clicked buy" — which also works
+// when the webhook beats the redirect home.
+function rememberPreCheckoutState() {
+  try {
+    localStorage.setItem('pb_precheckout', JSON.stringify({
+      credits: lastLoadedCredits,
+      subStatus: lastLoadedSubStatus,
+      t: Date.now()
+    }));
+  } catch (e) {}
+}
+
+function startPaymentConfirmPolling(marker) {
+  var banner = document.getElementById('payConfirmBanner');
+  function show(html, color) {
+    if (!banner) return;
+    banner.style.display = 'flex';
+    banner.style.background = 'rgba(' + color + ',0.08)';
+    banner.style.border = '1px solid rgba(' + color + ',0.35)';
+    banner.innerHTML = html;
+  }
+  function hide() { if (banner) banner.style.display = 'none'; }
+  var CYAN = '0,217,255', GREEN = '34,197,94', AMBER = '245,158,11';
+  show('<span style="color:#00d9ff;font-weight:600">⏳ Confirming your payment…</span>', CYAN);
+
+  var baseline = null;
+  try { baseline = JSON.parse(localStorage.getItem('pb_precheckout') || 'null'); } catch (e) {}
+  try { localStorage.removeItem('pb_precheckout'); } catch (e) {}
+  // A snapshot from a different, older session tells us nothing.
+  if (baseline && (!baseline.t || Date.now() - baseline.t > 60 * 60 * 1000)) baseline = null;
+
+  function confirmed(profile) {
+    var credits = profile.credits;
+    var subStatus = profile.subscription_status;
+    if (baseline) {
+      if (typeof baseline.credits === 'number' && typeof credits === 'number' && credits > baseline.credits) return true;
+      if (marker === 'subscription' && subStatus !== baseline.subStatus && (subStatus === 'active' || subStatus === 'trialing')) return true;
+      return false;
+    }
+    // No snapshot (e.g. checkout started elsewhere): best available signal.
+    if (marker === 'subscription') return subStatus === 'active' || subStatus === 'trialing';
+    return typeof credits === 'number' && credits > 0;
+  }
+
+  var deadline = Date.now() + 20000;
+  function finishTimeout() {
+    show('<span style="color:#f59e0b;font-weight:600">✅ Payment received — your account will update shortly.</span>', AMBER);
+    setTimeout(hide, 15000);
+  }
+  function poll() {
+    fetch('/api/user', { headers: { Authorization: 'Bearer ' + token } })
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d && d.profile && confirmed(d.profile)) {
+          show('<span style="color:#22c55e;font-weight:600">✅ Payment confirmed — credits added.</span>', GREEN);
+          loadUser(); // re-render credits, banner, sub strip from the fresh state
+          setTimeout(hide, 6000);
+          return;
+        }
+        if (Date.now() < deadline) setTimeout(poll, 2000);
+        else finishTimeout();
+      })
+      .catch(function() {
+        if (Date.now() < deadline) setTimeout(poll, 2000);
+        else finishTimeout();
+      });
+  }
+  setTimeout(poll, 1500); // give the webhook a head start over the first poll
 }
 
 function formatTime(h, m) {
@@ -1042,6 +1131,8 @@ function loadUser() {
       document.getElementById('credits').textContent = d.isDev ? '∞' : d.profile.credits;
       updateCoveredUntil(d.profile.credits);
       renderSubscriptionStatus(d.profile);
+      lastLoadedCredits = d.profile.credits;
+      lastLoadedSubStatus = d.profile.subscription_status || null;
       
       if (d.is_admin || d.ftbend_access) document.getElementById('ftbendTabBtn').style.display = 'block';
 
@@ -1194,6 +1285,7 @@ function closeBuyModal() { document.getElementById('buyModal').classList.remove(
 function subscribeMonthly() {
   var btn = document.getElementById('subscribeBtn');
   if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
+  rememberPreCheckoutState();
   fetch('/api/subscription/checkout', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }
@@ -1207,6 +1299,27 @@ function subscribeMonthly() {
   }).catch(function() {
     alert('Network error starting subscription — check your connection and try again.');
     if (btn) { btn.disabled = false; btn.textContent = 'Subscribe'; }
+  });
+}
+
+// One-time month pass — $14.99 once for 30 credits, no subscription.
+function buyOneMonth() {
+  var btn = document.getElementById('buyMonthBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
+  rememberPreCheckoutState();
+  fetch('/api/checkout/month', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + token }
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.url) {
+      window.location.href = d.url;
+    } else {
+      alert(d.error || 'Could not start checkout — please try again.');
+      if (btn) { btn.disabled = false; btn.textContent = 'Buy 1 month — $14.99'; }
+    }
+  }).catch(function() {
+    alert('Network error starting checkout — check your connection and try again.');
+    if (btn) { btn.disabled = false; btn.textContent = 'Buy 1 month — $14.99'; }
   });
 }
 
@@ -2037,7 +2150,8 @@ function calculateExactCredits() {
 
 function buyExactCredits() {
   if (!window.exactPurchase) return;
-  
+  rememberPreCheckoutState();
+
   // Save probation end date
   fetch('/api/profile/probation-end', {
     method: 'POST',

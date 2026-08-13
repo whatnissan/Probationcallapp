@@ -2215,6 +2215,7 @@ async function handleSubscriptionInvoicePaymentFailed(invoice, res) {
   }
 }
 
+
 async function handleSubscriptionDeleted(subscription, res) {
   try {
     // Sub is fully canceled now — the "canceling at period end" state is over,
@@ -2691,6 +2692,14 @@ app.post('/webhook/stripe', async function(req, res) {
     // program is off — only the commission/transfer path is skipped.
     if (!AFFILIATE_ENABLED) {
       console.log('[STRIPE WEBHOOK] Affiliate program disabled — skipping commission for session ' + s.id);
+      return res.json({ received: true });
+    }
+
+    // month_pass is the $14.99 subscription's one-time twin — commission-free
+    // for parity, so affiliates have no incentive to steer signups away from
+    // recurring revenue (subscriptions pay no commission per policy).
+    if (s.metadata.package_id === 'month_pass') {
+      console.log('[STRIPE WEBHOOK] month_pass purchase — affiliate commission skipped (subscription parity) for session ' + s.id);
       return res.json({ received: true });
     }
 
@@ -6371,6 +6380,38 @@ app.post('/api/subscription/checkout', auth, rateLimit('checkout', 10, 5 * 60 * 
   } catch (e) {
     logStripeError('subscription checkout (user ' + req.user.id.slice(0, 8) + ')', e);
     res.status(500).json({ error: 'Could not start the subscription checkout: ' + ((e.raw && e.raw.message) || e.message) });
+  }
+});
+
+// === ONE-TIME MONTH PASS ===
+// $14.99 once, 30 credits, NO subscription created. For users who don't want
+// recurring billing. Deliberately rides the existing one-time bundle webhook
+// path (checkout.session.completed, mode:'payment'): credits INCREMENT via
+// the add_credits_with_ledger RPC, replay is idempotent on the session id
+// (purchases pre-check + credit_transactions unique index), and
+// subscription_status is never touched — a month-pass buyer can't be handed
+// a payment-failed banner by this purchase.
+app.post('/api/checkout/month', auth, rateLimit('checkout', 10, 5 * 60 * 1000), async function(req, res) {
+  try {
+    var session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      line_items: [{
+        price_data: {
+          currency: 'usd',
+          product_data: { name: 'ProbationCall - 1 Month (30 Credits, one-time)' },
+          unit_amount: 1499
+        },
+        quantity: 1
+      }],
+      mode: 'payment',
+      success_url: process.env.BASE_URL + '/dashboard?success=true',
+      cancel_url: process.env.BASE_URL + '/dashboard?canceled=true',
+      metadata: { user_id: req.user.id, package_id: 'month_pass', credits: '30' }
+    });
+    res.json({ url: session.url });
+  } catch (e) {
+    logStripeError('month-pass checkout (user ' + req.user.id.slice(0, 8) + ')', e);
+    res.status(500).json({ error: 'Could not start checkout — please try again' });
   }
 });
 
