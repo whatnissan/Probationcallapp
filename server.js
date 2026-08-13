@@ -21,6 +21,7 @@ const { formatLocalDay, todayMD, wouldExceedCutoff, wouldExceedFtbendCutoff, ftb
 const { computeTieredPriceCents, MAX_EXACT_CREDITS } = require('./lib/pricing');
 const { isValidPin, isValidTimezone, isValidEmail, normalizePhoneE164, isValidSupportSubject, isValidSupportBody } = require('./lib/validation');
 const { toSmsText, smsSegmentInfo, looksLikeEmailContent, renderBrandedEmail } = require('./lib/messaging');
+const { createBilling, logStripeError } = require('./lib/billing');
 
 
 // --- BREVO EMAIL VIA HTTP API ---
@@ -99,6 +100,12 @@ app.use(express.static('public'));
 const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+// Billing helpers (customer resolution, conflict-tolerant profile writes,
+// subscription event routing, portal flow) — logic lives in lib/billing.js
+// so it's unit-testable; see test/billing.test.js.
+const billing = createBilling({ stripe: stripe, supabase: supabase });
+const updateProfileTolerant = billing.updateProfileTolerant;
+const applySubscriptionProfileUpdate = billing.applySubscriptionProfileUpdate;
 
 if (process.env.BREVO_KEY) {
   console.log('[EMAIL] Brevo configured');
@@ -2185,10 +2192,22 @@ async function handleSubscriptionInvoicePaymentFailed(invoice, res) {
       console.log('[STRIPE WEBHOOK] payment_failed for canceled sub (customer-only match) — ignoring. invoice=' + invoice.id);
       return res.json({ received: true });
     }
-    await supabase.from('profiles')
-      .update({ subscription_status: 'past_due' })
-      .eq('id', profile.id);
-    console.log('[STRIPE WEBHOOK] Subscription payment FAILED: user=' + profile.id.slice(0, 8) + ' invoice=' + invoice.id);
+    // Backfill the Stripe ids alongside the flag. Writing past_due WITHOUT
+    // them created the dead-end state: the banner fired (status flag) while
+    // the portal endpoint (stripe_customer_id) and the subscription.updated/
+    // deleted handlers (stripe_subscription_id) couldn't see the user — so
+    // the flag could never clear and "Update card" alerted instead of working.
+    var failIdBackfill = {};
+    if (!profile.stripe_customer_id && invoice.customer) failIdBackfill.stripe_customer_id = invoice.customer;
+    if (!profile.stripe_subscription_id && refs.subId) failIdBackfill.stripe_subscription_id = refs.subId;
+    var failRes = await updateProfileTolerant({
+      userId: profile.id,
+      safeFields: { subscription_status: 'past_due' },
+      idFields: failIdBackfill,
+      label: 'invoice.payment_failed'
+    });
+    console.log('[STRIPE WEBHOOK] Subscription payment FAILED: user=' + profile.id.slice(0, 8) + ' invoice=' + invoice.id
+      + (Object.keys(failIdBackfill).length ? ' backfill=' + JSON.stringify(failIdBackfill) + (failRes.idsDropped ? ' (DROPPED on conflict)' : '') : ''));
     return res.json({ received: true });
   } catch (e) {
     console.error('[STRIPE WEBHOOK] handleSubscriptionInvoicePaymentFailed error:', e.message);
@@ -2201,14 +2220,11 @@ async function handleSubscriptionDeleted(subscription, res) {
     // Sub is fully canceled now — the "canceling at period end" state is over,
     // so clear those flags. UI keys off subscription_status='canceled' for
     // the terminal "Subscription ended" message.
-    var r = await supabase.from('profiles')
-      .update({
-        subscription_status: 'canceled',
-        subscription_cancel_at_period_end: false,
-        subscription_cancel_at: null
-      })
-      .eq('stripe_subscription_id', subscription.id);
-    if (r.error) console.error('[STRIPE WEBHOOK] Subscription cancel update failed:', r.error);
+    await applySubscriptionProfileUpdate(subscription, {
+      subscription_status: 'canceled',
+      subscription_cancel_at_period_end: false,
+      subscription_cancel_at: null
+    }, 'subscription.deleted');
     console.log('[STRIPE WEBHOOK] Subscription canceled: sub=' + subscription.id);
     return res.json({ received: true });
   } catch (e) {
@@ -2264,14 +2280,11 @@ async function handleSubscriptionUpdated(subscription, res) {
   try {
     var cancelAtEnd = !!subscription.cancel_at_period_end;
     var cancelAtIso = subscription.cancel_at ? new Date(subscription.cancel_at * 1000).toISOString() : null;
-    var r = await supabase.from('profiles')
-      .update({
-        subscription_status: subscription.status,
-        subscription_cancel_at_period_end: cancelAtEnd,
-        subscription_cancel_at: cancelAtIso
-      })
-      .eq('stripe_subscription_id', subscription.id);
-    if (r.error) console.error('[STRIPE WEBHOOK] Subscription updated update failed:', r.error);
+    await applySubscriptionProfileUpdate(subscription, {
+      subscription_status: subscription.status,
+      subscription_cancel_at_period_end: cancelAtEnd,
+      subscription_cancel_at: cancelAtIso
+    }, 'subscription.updated');
     console.log('[STRIPE WEBHOOK] Subscription updated: sub=' + subscription.id + ' status=' + subscription.status + ' cancel_at_period_end=' + cancelAtEnd + (cancelAtIso ? ' cancel_at=' + cancelAtIso : ''));
     return res.json({ received: true });
   } catch (e) {
