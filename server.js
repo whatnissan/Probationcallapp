@@ -6369,8 +6369,8 @@ app.post('/api/subscription/checkout', auth, rateLimit('checkout', 10, 5 * 60 * 
     var session = await stripe.checkout.sessions.create(params);
     res.json({ url: session.url });
   } catch (e) {
-    console.error('[SUBSCRIPTION] Checkout error:', e.message);
-    res.status(500).json({ error: e.message });
+    logStripeError('subscription checkout (user ' + req.user.id.slice(0, 8) + ')', e);
+    res.status(500).json({ error: 'Could not start the subscription checkout: ' + ((e.raw && e.raw.message) || e.message) });
   }
 });
 
@@ -6447,7 +6447,7 @@ app.post('/api/checkout/custom', auth, rateLimit('checkout', 10, 5 * 60 * 1000),
     });
     res.json({ url: session.url });
   } catch (e) {
-    console.error('[CHECKOUT] Custom checkout error:', e.message);
+    logStripeError('custom checkout (user ' + req.user.id.slice(0, 8) + ')', e);
     res.status(500).json({ error: 'Could not start checkout — please try again' });
   }
 });

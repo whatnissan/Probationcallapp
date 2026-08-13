@@ -1205,17 +1205,24 @@ function subscribeMonthly() {
       if (btn) { btn.disabled = false; btn.textContent = 'Subscribe'; }
     }
   }).catch(function() {
+    alert('Network error starting subscription — check your connection and try again.');
     if (btn) { btn.disabled = false; btn.textContent = 'Subscribe'; }
   });
 }
 
+// Opens the Stripe Billing Portal — works with or without an active
+// subscription (server creates the Stripe customer if needed), so the
+// past_due "Update card" button can never dead-end on "No subscription
+// on file". Errors shown are the server's actionable message.
 function manageSubscription() {
   fetch('/api/subscription/portal', {
     method: 'POST',
     headers: { Authorization: 'Bearer ' + token }
   }).then(function(r) { return r.json(); }).then(function(d) {
     if (d.url) window.location.href = d.url;
-    else alert(d.error || 'Could not open Manage Subscription');
+    else alert(d.error || 'Could not open billing management — please try again or contact support.');
+  }).catch(function() {
+    alert('Network error opening billing management — check your connection and try again.');
   });
 }
 
