@@ -4168,6 +4168,44 @@ async function checkCallHealth() {
 // Run health check every 30 minutes
 setInterval(checkCallHealth, 30 * 60 * 1000);
 
+// ========== MIGRATION DRIFT CHECK ==========
+// Compares migrations/ filenames against the schema_migrations tracking
+// table (migration 029) at every boot. Three migrations (013/014/015)
+// silently missed production because nothing enforced this; the check makes
+// a skipped file show up in Railway logs on the very next deploy instead of
+// when it breaks. LOG-ONLY by design — a drift finding must never take down
+// the 5:05 AM calls, so this cannot throw and never blocks startup.
+async function checkMigrationDrift() {
+  var files;
+  try {
+    files = require('fs').readdirSync(path.join(__dirname, 'migrations'))
+      .filter(function(f) { return /\.sql$/.test(f); })
+      .sort();
+  } catch (e) {
+    console.error('[MIGRATION-CHECK] Could not read migrations/ directory:', e.message);
+    return;
+  }
+  var r = await supabase.from('schema_migrations').select('filename');
+  if (r.error) {
+    console.error('[MIGRATION-CHECK] ⚠️ Tracking table unreadable (' + (r.error.message || r.error) + ') — run migrations/029_schema_migrations.sql plus the backfill INSERT, or this warning repeats every deploy.');
+    return;
+  }
+  var tracked = {};
+  (r.data || []).forEach(function(row) { tracked[row.filename] = true; });
+  var missing = files.filter(function(f) { return !tracked[f]; });
+  var unknown = Object.keys(tracked).filter(function(f) { return files.indexOf(f) === -1; });
+  if (missing.length === 0 && unknown.length === 0) {
+    console.log('[MIGRATION-CHECK] OK — all ' + files.length + ' migration files recorded as applied in production');
+    return;
+  }
+  missing.forEach(function(f) {
+    console.error('[MIGRATION-CHECK] ⚠️⚠️ NOT RECORDED AS APPLIED IN PRODUCTION: migrations/' + f + ' — run it in the Supabase SQL editor, then: insert into schema_migrations (filename, note) values (\'' + f + '\', \'...\');');
+  });
+  unknown.forEach(function(f) {
+    console.error('[MIGRATION-CHECK] ⚠️ Tracked in schema_migrations but missing from the repo: ' + f + ' — the repo cannot rebuild what production is running.');
+  });
+}
+
 var PORT = process.env.PORT || 3000;
 server.listen(PORT, function() {
   console.log('========================================');
@@ -4184,6 +4222,9 @@ server.listen(PORT, function() {
   console.log('Min Payout: $' + (MIN_PAYOUT_CENTS / 100));
   console.log('========================================');
   loadAllSchedules();
+  checkMigrationDrift().catch(function(e) {
+    console.error('[MIGRATION-CHECK] threw (non-fatal):', e.message);
+  });
 });
 // ========== ADMIN ROUTES ==========
 
