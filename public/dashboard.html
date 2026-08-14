@@ -672,6 +672,7 @@ select option { background: #1a1a2e; color: #fff; }
       <div class="form-group">
         <input type="date" id="buyEndDate" onchange="calculateExactCredits()">
       </div>
+      <div id="buyDateWarn" style="display:none;color:#f59e0b;font-size:0.85rem;margin:-8px 0 12px"></div>
       <div id="exactCalc" style="display:none;background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:8px;padding:15px;margin:15px 0">
         <div style="display:flex;justify-content:space-between;align-items:center">
           <div>
@@ -1278,7 +1279,12 @@ function showTab(name) {
   if (name === 'ftbend') loadFtbendColors();
 }
 
-function showBuyModal() { document.getElementById('buyModal').classList.add('active'); if(probationEndDate){ document.getElementById('buyEndDate').value = probationEndDate; calculateExactCredits(); } }
+// Prefill runs SILENT: a stale/past saved probation date must never throw a
+// blocking alert at modal open — that alert landed on top of the Subscribe
+// tap and read as "Subscribe is broken" (2026-08-13 bug). The date warning
+// renders inline in the Exact Credits section instead, and only that section
+// — Subscribe and Buy-1-month never touch the date field.
+function showBuyModal() { document.getElementById('buyModal').classList.add('active'); if(probationEndDate){ document.getElementById('buyEndDate').value = probationEndDate; calculateExactCredits(true); } }
 function closeBuyModal() { document.getElementById('buyModal').classList.remove('active'); }
 
 
@@ -1809,7 +1815,11 @@ function updateProbationDisplay() {
   var days = Math.ceil((end - today) / (1000 * 60 * 60 * 24));
   
   if (days <= 0) {
-    document.getElementById('probationCountdown').innerHTML = '<span style="color:#22c55e">🎉 Complete!</span>';
+    // A past date is ambiguous: genuinely finished, or entered wrong /
+    // extended. Celebrate (it's usually true) but add the quiet nudge —
+    // a stale past date used to surface only by breaking the buy modal.
+    document.getElementById('probationCountdown').innerHTML = '<span style="color:#22c55e">🎉 Complete!</span>' +
+      '<div style="color:#8892b0;font-size:0.8rem;margin-top:4px;font-weight:normal">Probation over? You can disable your daily schedule — or update the date if it changed.</div>';
   } else if (days <= 7) {
     document.getElementById('probationCountdown').innerHTML = '<span style="color:#22c55e">' + days + ' days left!</span>';
   } else {
@@ -2096,10 +2106,17 @@ async function completeOnboarding() {
 
 
 
-function calculateExactCredits() {
+// silentPrefill=true when called from showBuyModal's auto-prefill: an invalid
+// saved date then shows the inline warning only. A user-initiated change
+// (onchange) also warns inline — no alert() in either case, so a past date
+// can never block the Subscribe / Buy-1-month paths that share this modal.
+function calculateExactCredits(silentPrefill) {
+  var warn = document.getElementById('buyDateWarn');
+  if (warn) warn.style.display = 'none';
   var endDate = document.getElementById('buyEndDate').value;
   if (!endDate) {
     document.getElementById('exactCalc').style.display = 'none';
+    window.exactPurchase = null;
     return;
   }
 
@@ -2110,7 +2127,13 @@ function calculateExactCredits() {
   var days = Math.ceil((end - today) / (1000 * 60 * 60 * 24));
   if (days < 1) {
     document.getElementById('exactCalc').style.display = 'none';
-    alert('Please select a future date');
+    window.exactPurchase = null;
+    if (warn) {
+      warn.textContent = silentPrefill
+        ? '⚠️ Your saved probation end date (' + end.toLocaleDateString() + ') is in the past. Pick a new date to buy exact credits — subscribing or buying a month works regardless.'
+        : '⚠️ That date is in the past — pick a future date.';
+      warn.style.display = 'block';
+    }
     return;
   }
 
