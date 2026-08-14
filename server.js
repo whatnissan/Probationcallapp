@@ -2852,6 +2852,28 @@ app.post('/api/call', auth, async function(req, res) {
   }
 });
 
+// Append-only dial audit (migration 032). One row per Twilio create attempt,
+// 'dialed' or 'create_failed'. call_history is written at RESULT time, so
+// without this a call that dies pre-result leaves no durable trace — the
+// reliability audit found CALL_FAILED/HOTLINE_DOWN at literally zero rows in
+// 60 days for exactly that reason. Fire-and-forget by contract: this must
+// never add latency to, or fail, the call path.
+function recordCallAttempt(fields) {
+  supabase.from('call_attempts').insert({
+    call_id: fields.call_id || null,
+    call_sid: fields.call_sid || null,
+    user_id: fields.user_id || null,
+    county: fields.county || null,
+    office_id: fields.office_id || null,
+    is_scheduled: fields.is_scheduled === true,
+    retry_count: fields.retry_count || 0,
+    outcome: fields.outcome,
+    error: fields.error || null
+  }).then(function() {}, function(e) {
+    console.error('[ATTEMPT-LOG] ' + fields.outcome + ' write failed for ' + (fields.call_id || '?') + ':', e.message);
+  });
+}
+
 async function initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notifyMethod, userId, retryCount, county, isScheduledMorning) {
   var callId = 'call_' + Date.now();
   log(callId, 'Starting call to ' + targetNumber + (retryCount > 0 ? ' (retry #' + retryCount + ')' : ''), 'info');
@@ -2869,19 +2891,40 @@ async function initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notify
     result: null
   });
   
-  var call = await twilioClient.calls.create({
-    to: targetNumber,
-    from: TWILIO_VOICE_NUMBER,
-    url: process.env.BASE_URL + '/twiml/answer?callId=' + callId,
-    statusCallback: process.env.BASE_URL + '/webhook/status?callId=' + callId,
-    statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed'],
-    record: true,
-    recordingStatusCallback: process.env.BASE_URL + '/webhook/recording?callId=' + callId,
-    timeout: 60
-  });
-  
+  var call;
+  try {
+    call = await twilioClient.calls.create({
+      to: targetNumber,
+      from: TWILIO_VOICE_NUMBER,
+      url: process.env.BASE_URL + '/twiml/answer?callId=' + callId,
+      statusCallback: process.env.BASE_URL + '/webhook/status?callId=' + callId,
+      statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed'],
+      record: true,
+      recordingStatusCallback: process.env.BASE_URL + '/webhook/recording?callId=' + callId,
+      timeout: 60
+    });
+  } catch (e) {
+    // Durable record of "we tried to dial and Twilio refused". Previously
+    // this outcome existed only as a log line: no call_sid, no callbacks, no
+    // call_history row — a morning of create-rejects was invisible in data.
+    // Fire-and-forget: attempt logging must never affect the call path.
+    recordCallAttempt({
+      call_id: callId, user_id: userId || null, county: county || 'montgomery',
+      is_scheduled: isScheduledMorning === true, retry_count: retryCount || 0,
+      outcome: 'create_failed', error: String(e.message || e).slice(0, 300)
+    });
+    pendingCalls.delete(callId);
+    throw e;
+  }
+
   pendingCalls.get(callId).callSid = call.sid;
   log(callId, 'Call SID: ' + call.sid, 'success');
+
+  recordCallAttempt({
+    call_id: callId, call_sid: call.sid, user_id: userId || null,
+    county: county || 'montgomery', is_scheduled: isScheduledMorning === true,
+    retry_count: retryCount || 0, outcome: 'dialed'
+  });
 
   // Mirror to DB so a restart before the recording webhook doesn't orphan
   // the call. Best-effort; await so the row exists before webhooks fire.
@@ -3805,6 +3848,15 @@ async function logNotification(fields) {
         if (pr && pr.data) userId = pr.data.id;
       }
     }
+    // Tie call-result notifications to their Twilio call (migration 031).
+    // kind carries the internal callId for call notifications, and the
+    // in-flight map still holds that call here (notify runs well inside the
+    // 10-min cleanup window) — so the sid resolves centrally with no
+    // signature changes at any call site. Non-call kinds stay null.
+    var callSid = fields.callSid || null;
+    if (!callSid && fields.kind && pendingCalls.has(fields.kind)) {
+      callSid = pendingCalls.get(fields.kind).callSid || null;
+    }
     await supabase.from('notification_log').insert({
       user_id: userId,
       channel: fields.channel,
@@ -3813,7 +3865,8 @@ async function logNotification(fields) {
       body_preview: String(fields.body || '').slice(0, 300),
       status: fields.status,
       error: fields.error ? String(fields.error).slice(0, 300) : null,
-      provider_message_id: fields.providerMessageId || null
+      provider_message_id: fields.providerMessageId || null,
+      call_sid: callSid
     });
   } catch (e) {
     console.error('[NOTIF-LOG] could not record ' + fields.kind + ':', e.message);
@@ -4065,7 +4118,11 @@ async function checkCallHealth() {
       adminAlertSent = false;
       adminAlertDate = today;
     }
-    if (adminAlertSent) return;
+    // Deliberately NO early return on adminAlertSent here: the miss/recovery
+    // persistence below (missed_call_events, migration 030) must keep running
+    // all morning so the reliability metrics get the raw record. The admin
+    // ALERT still fires at most once per day — its gate moved below, after
+    // persistence.
 
     var hour = cst.getHours();
     if (hour < 7 || hour > 11) return;
@@ -4115,6 +4172,36 @@ async function checkCallHealth() {
     var retrying = due.filter(function(s) {
       return !ranUserIds[s.user_id] && inFlightBy[s.user_id];
     });
+
+    // Persist every miss and mark recoveries BEFORE any alert damping — the
+    // reliability metrics need the raw record even on mornings no alert
+    // fires. This is what makes "scheduled but never fired" measurable at
+    // all: until migration 030 this computation was discarded after one SMS.
+    // Best-effort: a metrics write failing must not affect the health alert.
+    if (missed.length > 0) {
+      var missRows = missed.map(function(s) {
+        return {
+          user_id: s.user_id,
+          missed_date: today,
+          sched_time: (s.hour || 6) + ':' + String(s.minute || 0).padStart(2, '0') + ' America/Chicago'
+        };
+      });
+      var mIns = await supabase.from('missed_call_events')
+        .upsert(missRows, { onConflict: 'user_id,missed_date', ignoreDuplicates: true });
+      if (mIns.error) console.error('[HEALTH] missed_call_events write failed:', mIns.error.message);
+    }
+    var ranList = Object.keys(ranUserIds);
+    if (ranList.length > 0) {
+      var mRec = await supabase.from('missed_call_events')
+        .update({ recovered_at: new Date().toISOString() })
+        .eq('missed_date', today)
+        .is('recovered_at', null)
+        .in('user_id', ranList);
+      if (mRec.error) console.error('[HEALTH] missed_call_events recovery mark failed:', mRec.error.message);
+    }
+
+    // Alert path below: unchanged behavior, at most once per day.
+    if (adminAlertSent) return;
 
     // Noise thresholds scale with fleet size. With < 8 due users the old
     // "at least 3 missed" floor meant a single user's calls could fail
@@ -5753,6 +5840,11 @@ async function ftbendCallOffice(officeId, office) {
     pendingCalls.get(callId).callSid = call.sid;
     console.log('[FTBEND] ' + office.name + ' call initiated: ' + call.sid);
 
+    recordCallAttempt({
+      call_id: callId, call_sid: call.sid, county: 'ftbend',
+      office_id: officeId, is_scheduled: true, outcome: 'dialed'
+    });
+
     // Mirror to DB so a restart before the recording webhook doesn't orphan
     // this office's call (the daily/system path had NO cleanup or recovery
     // before — a redeploy mid-morning silently lost the office).
@@ -5762,6 +5854,14 @@ async function ftbendCallOffice(officeId, office) {
       deletePendingCallDb(callId);
     }, 10 * 60 * 1000);
   } catch (e) {
+    // A create-reject here means no callbacks will ever fire for this
+    // office: the status-callback retry queue can't engage, so until the
+    // 9:25 safety sweep the office is silently empty. Record it durably.
+    recordCallAttempt({
+      call_id: callId, county: 'ftbend', office_id: officeId,
+      is_scheduled: true, outcome: 'create_failed',
+      error: String(e.message || e).slice(0, 300)
+    });
     console.error('[FTBEND] ' + office.name + ' call failed:', e.message);
   }
 }
