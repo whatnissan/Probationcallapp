@@ -4469,6 +4469,18 @@ app.get('/api/admin/user/:id/detail', adminAuth, async function(req, res) {
     var notifRows = notif.error ? [] : (notif.data || []);
     if (notif.error) console.error('[ADMIN-DETAIL] notification_log read failed:', notif.error.message);
 
+    // Opt-out state for the schedule's SMS number: notify_method can say
+    // "sms" while the number is suppressed — the contacts panel must show
+    // which address is genuinely in use, not just which one is configured.
+    var smsOptOut = null;
+    if (sched.data && sched.data.notify_number) {
+      var oo = await supabase.from('sms_opt_outs')
+        .select('opted_out_at, source')
+        .eq('phone', sched.data.notify_number)
+        .maybeSingle();
+      if (!oo.error && oo.data) smsOptOut = oo.data;
+    }
+
     var rows = calls.data || [];
     var counts = {};
     rows.forEach(function(c) { counts[c.result] = (counts[c.result] || 0) + 1; });
@@ -4494,6 +4506,7 @@ app.get('/api/admin/user/:id/detail', adminAuth, async function(req, res) {
         last_call_at: rows.length ? rows[0].created_at : null
       },
       notifications: notifRows,
+      sms_opt_out: smsOptOut,
       totals: {
         spent_cents: (purch.data || []).reduce(function(a, p) { return a + (p.amount_cents || 0); }, 0),
         refunded_cents: (purch.data || []).reduce(function(a, p) { return a + (p.refund_amount_cents || 0); }, 0)
