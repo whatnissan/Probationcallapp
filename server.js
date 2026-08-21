@@ -419,9 +419,10 @@ async function recordCreditAdd(opts) {
 }
 
 // Un-pause a schedule that WE paused for zero credits. Deliberately scoped to
-// paused_reason = 'no_credits' so a schedule the user switched off themselves
-// (enabled=false, paused_reason=null) is never silently switched back on by a
-// credit purchase. The .eq() predicates make the flip atomic: rows returned
+// paused_reason = 'no_credits' so no other pause is ever silently switched
+// back on by a credit purchase — not a user's own pause ('user' or legacy
+// null), and not the auto-pauses ('unknown_streak', 'pin_expired'), which
+// credits don't fix. The .eq() predicates make the flip atomic: rows returned
 // means we won the transition, so the "you're back on" notice is sent exactly
 // once even if two grants land together.
 async function resumePausedScheduleIfAny(userId) {
@@ -722,7 +723,12 @@ async function checkConsecutiveUnknown(userId, lastReason, notifyNumber, notifyE
   var sched = await supabase.from('user_schedules').select('enabled').eq('user_id', userId).single();
   if (!sched.data || sched.data.enabled === false) return;
   console.log('[UNKNOWN-STREAK] Pausing schedule for ' + userId.slice(0, 8) + ' after ' + UNKNOWN_STREAK_THRESHOLD + ' no-result calls (UNKNOWN/CALL_FAILED/HOTLINE_DOWN; PIN_EXPIRED excluded)');
-  await supabase.from('user_schedules').update({ enabled: false }).eq('user_id', userId);
+  // Tag WHY we paused. Without a reason this row is indistinguishable from a
+  // deliberate user pause, so clients offer "resume" — which fixes nothing
+  // here (the streak re-pauses it) while the user believes they're covered.
+  // Also keeps this pause out of the no_credits auto-resume, which is scoped
+  // .eq('paused_reason', 'no_credits').
+  await supabase.from('user_schedules').update({ enabled: false, paused_reason: 'unknown_streak' }).eq('user_id', userId);
   if (scheduledJobs.has(userId)) {
     scheduledJobs.get(userId).stop();
     scheduledJobs.delete(userId);
@@ -780,7 +786,10 @@ async function handlePinExpiredResult(userId, lastTranscript, notifyNumber, noti
     return;
   }
 
-  await supabase.from('user_schedules').update({ enabled: false }).eq('user_id', userId);
+  // Tag WHY we disabled — see the unknown_streak note above. 'pin_expired'
+  // pauses must never look like a user's own pause, and must not be touched
+  // by the no_credits auto-resume.
+  await supabase.from('user_schedules').update({ enabled: false, paused_reason: 'pin_expired' }).eq('user_id', userId);
   if (scheduledJobs.has(userId)) {
     scheduledJobs.get(userId).stop();
     scheduledJobs.delete(userId);
@@ -1826,6 +1835,10 @@ app.post('/api/schedule', auth, async function(req, res) {
     quiet_mode: req.body.quietMode || false,
     ftbend_office: req.body.ftbend_office || 'missouri',
     enabled: true,
+    // Re-saving the schedule re-enables it, so any pause reason is spent —
+    // clear it. Leaving a stale 'pin_expired'/'unknown_streak' on an enabled
+    // row would mislabel the account the next time it's read.
+    paused_reason: null,
     // Re-saving the schedule (typically to update a fresh PIN) clears the
     // PIN_EXPIRED streak so the auto-disable logic starts over.
     consecutive_pin_expired: 0
@@ -4814,8 +4827,18 @@ async function alertAdminNewSupportMessage(msg) {
     var sc = await supabase.from('user_schedules').select('enabled, paused_reason, county').eq('user_id', msg.userId).maybeSingle();
     if (sc.data) {
       ctx.county = sc.data.county;
+      // Every pause reason labeled explicitly. The old ternary called
+      // anything that wasn't no_credits "auto-paused" — including a user's
+      // own vacation pause. Null means the row predates reason-tagging
+      // (or an untagged path wrote it) — say so, don't guess.
+      var PAUSE_LABELS = {
+        no_credits: 'paused (no credits)',
+        unknown_streak: 'auto-paused (no-result streak)',
+        pin_expired: 'auto-paused (PIN expired)',
+        user: 'paused (by user)'
+      };
       ctx.schedule = sc.data.enabled ? 'active'
-        : (sc.data.paused_reason === 'no_credits' ? 'paused (no credits)' : 'auto-paused');
+        : (PAUSE_LABELS[sc.data.paused_reason] || 'paused (reason unrecorded)');
     }
   } catch (e) { /* context is a nicety; never block the alert */ }
 
