@@ -918,6 +918,20 @@ function selectSchedMethod(method) {
   document.getElementById('schedSmsConsentBox').style.display = (method === 'sms' || method === 'both') ? 'block' : 'none';
 }
 
+// Event-free twin of selectSchedMethod for programmatic initialization (the
+// click handler above reads the global `event`). Finds the tile by the method
+// name in its onclick attribute so option order doesn't matter.
+function setSchedMethodUI(method) {
+  document.querySelectorAll('#scheduleTab .method-option').forEach(function(el) {
+    var on = el.getAttribute('onclick') || '';
+    el.classList.toggle('active', on.indexOf("'" + method + "'") >= 0);
+  });
+  document.getElementById('schedMethod').value = method;
+  document.getElementById('schedEmailGroup').style.display = (method === 'email' || method === 'both') ? 'block' : 'none';
+  document.getElementById('schedPhoneGroup').style.display = (method === 'sms' || method === 'both') ? 'block' : 'none';
+  document.getElementById('schedSmsConsentBox').style.display = (method === 'sms' || method === 'both') ? 'block' : 'none';
+}
+
 
 function loadFtbendColors() {
   fetch("/api/ftbend/today", token ? { headers: { Authorization: "Bearer " + token } } : {})
@@ -1245,6 +1259,14 @@ function loadUser() {
         document.getElementById('schedQuiet').checked = d.schedule.quiet_mode || false;
         if (d.schedule.notify_email) document.getElementById('schedEmail').value = d.schedule.notify_email;
         if (d.schedule.notify_number) document.getElementById('schedNotify').value = d.schedule.notify_number;
+        // Method selector prefills from the active schedule exactly like
+        // County/PIN/Email above — it previously always started on Email,
+        // contradicting a schedule saved as SMS or Both. Case-insensitive;
+        // unknown/missing values keep the Email default.
+        var savedMethod = String(d.schedule.notify_method || '').toLowerCase();
+        if (savedMethod === 'email' || savedMethod === 'sms' || savedMethod === 'both') {
+          setSchedMethodUI(savedMethod);
+        }
         updateCountyUI('schedCounty', 'schedPin');
       } else {
         document.getElementById('scheduleBanner').classList.remove('active');
