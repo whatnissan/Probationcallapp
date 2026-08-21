@@ -336,8 +336,8 @@ select option { background: #1a1a2e; color: #fff; }
       <div class="confidence" id="predictConfidence"></div>
     </div>
     <div style="margin-top:12px;text-align:center">
-      <div style="font-size:0.75rem;color:#8892b0;margin-bottom:6px">Test Likelihood by Day</div>
-      <div class="pattern-row" id="patternRow"></div><div style="font-size:0.65rem;color:#666;margin-top:8px">🟢 Low chance · 🟡 Medium · 🔴 High chance</div>
+      <div style="font-size:0.75rem;color:#8892b0;margin-bottom:6px" id="patternTitle">Test Likelihood by Day</div>
+      <div class="pattern-row" id="patternRow"></div><div style="font-size:0.65rem;color:#666;margin-top:8px" id="patternLegend">🟢 Low chance · 🟡 Medium · 🔴 High chance</div>
     </div>
   </div>
   <div class="card" id="probationCard" style="display:none">
@@ -2332,20 +2332,53 @@ function calculateTestStats(history, sysStats) {
     predictEl.textContent = "Need more data for prediction"; predictEl.style.color = "#8892b0";
     confEl.textContent = "Keep logging tests to improve accuracy";
   }
-  // Day grid: colored only when the sample statistically earns it; otherwise
-  // a uniform neutral strip. Green cells on 1-2 observations read as "safe
-  // days" and a user who plans around one and gets called was failed by us.
-  var dayNames = ["S","M","T","W","T","F","S"], patternHtml = "";
-  for (var d = 0; d < 7; d++) {
-    var cls = "na";
-    if (p.dayGrid.show) cls = p.dayGrid.pct[d] >= 0.7 ? "high" : p.dayGrid.pct[d] >= 0.3 ? "med" : "low";
-    patternHtml += "<div class='pattern-day " + cls + "'>" + dayNames[d] + "</div>";
+  // Day grid: colored only when the personal sample statistically earns it.
+  // Below that, no dead neutral strip and no legend for colors that never
+  // appear — the space carries real information instead: the county-level
+  // weekday fact (labeled as county-wide, never as the user's own, never as
+  // safe days), progress toward the personal pattern, and the user's actual
+  // recent test dates.
+  var titleEl = document.getElementById("patternTitle");
+  var legendEl = document.getElementById("patternLegend");
+  var rowEl = document.getElementById("patternRow");
+  rowEl.style.flexWrap = "wrap";
+  if (p.dayGrid.show) {
+    if (titleEl) titleEl.textContent = "Test Likelihood by Day";
+    if (legendEl) legendEl.style.display = "block";
+    var dayNames = ["S","M","T","W","T","F","S"], patternHtml = "";
+    for (var d = 0; d < 7; d++) {
+      var cls = p.dayGrid.pct[d] >= 0.7 ? "high" : p.dayGrid.pct[d] >= 0.3 ? "med" : "low";
+      patternHtml += "<div class='pattern-day " + cls + "'>" + dayNames[d] + "</div>";
+    }
+    rowEl.innerHTML = patternHtml;
+  } else {
+    if (titleEl) titleEl.textContent = "Test Days";
+    if (legendEl) legendEl.style.display = "none";
+    var county = PredictionCore.countyDayPattern(sysStats);
+    var html = "<div style='text-align:center;font-size:0.75rem;color:#8892b0;line-height:1.6;width:100%'>";
+    if (county && county.fullWeekSignificant && !county.weekdaySignificant) {
+      html += "<b style='color:#e4e4e7'>Montgomery County overall:</b> " +
+        (county.total - county.weekendCount) + " of " + county.total + " recorded tests fell on weekdays — but which weekday looks random. " +
+        "<b style='color:#f59e0b'>Stay ready every weekday.</b> Weekend tests are rare, not never (" + county.weekendCount + " of " + county.total + ").";
+    } else {
+      html += "Testing looks random — <b style='color:#f59e0b'>stay ready any day.</b>";
+    }
+    html += "<br>Your own day pattern unlocks at " + PredictionCore.DAY_GRID_MIN_TESTS + " recorded tests (" + p.tests + " so far).";
+    if (p.recentTests && p.recentTests.length >= 2) {
+      var parts = [];
+      for (var r = 0; r < p.recentTests.length; r++) {
+        var dstr = new Date(p.recentTests[r] + "T12:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" });
+        if (r === 0) parts.push(dstr);
+        else {
+          var gap = Math.round((new Date(p.recentTests[r]) - new Date(p.recentTests[r-1])) / 86400000);
+          parts.push(dstr + " <span style='color:#666'>(+" + gap + "d)</span>");
+        }
+      }
+      html += "<br><span style='color:#666'>Your recent tests:</span> " + parts.join(" → ");
+    }
+    html += "</div>";
+    rowEl.innerHTML = html;
   }
-  if (!p.dayGrid.show) {
-    patternHtml += "<div style='flex-basis:100%;text-align:center;font-size:0.68rem;color:#8892b0;margin-top:4px'>Testing possible any day — no reliable day pattern yet (" + p.dayGrid.reason + ")</div>";
-  }
-  document.getElementById("patternRow").innerHTML = patternHtml;
-  document.getElementById("patternRow").style.flexWrap = "wrap";
 }
 function renderCallHistory(filter) {
   var el = document.getElementById("historyList");

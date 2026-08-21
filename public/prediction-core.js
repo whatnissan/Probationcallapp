@@ -139,8 +139,12 @@
     var maxDay = Math.max.apply(null, dayCounts);
     var pct = dayCounts.map(function(c) { return maxDay > 0 ? c / maxDay : 0; });
 
+    // Real recent history for display — actual dates, no inference.
+    var recent = tests.slice(-6).map(function(t) { return String(t.created_at).slice(0, 10); });
+
     return {
       tests: tests.length,
+      recentTests: recent,
       daysSince: daysSince,
       totalDays: totalDays,
       perMonth: ((tests.length / totalDays) * 30).toFixed(1),
@@ -157,8 +161,34 @@
     };
   }
 
+  // County-level weekday pattern from pooled MUST_TEST day counts (served in
+  // systemStats.dayOfWeekCounts). Two-stage test, because the pooled 2026-08
+  // data clears the full-week chi-square (30.5, p<0.01) ENTIRELY on weekends
+  // (2 of 72 tests ever) while the weekday-only test (df=4) does not clear —
+  // i.e. the county is a weekday service with random weekday choice. Display
+  // must label this county-wide, never as the user's own pattern, and never
+  // as safe days.
+  function countyDayPattern(sysStats) {
+    var c = sysStats && sysStats.dayOfWeekCounts;
+    if (!c || c.length !== 7) return null;
+    var n = c.reduce(function(a, b) { return a + b; }, 0);
+    if (n < 30) return null;
+    var exp = n / 7, chi2 = 0;
+    c.forEach(function(v) { chi2 += Math.pow(v - exp, 2) / exp; });
+    var wk = c.slice(1, 6), wn = wk.reduce(function(a, b) { return a + b; }, 0);
+    var wexp = wn / 5, wchi = 0;
+    wk.forEach(function(v) { wchi += Math.pow(v - wexp, 2) / wexp; });
+    return {
+      total: n,
+      weekendCount: c[0] + c[6],
+      fullWeekSignificant: chi2 > 12.592, // df=6 @ 0.05
+      weekdaySignificant: wchi > 9.488    // df=4 @ 0.05
+    };
+  }
+
   global.PredictionCore = {
     computePrediction: computePrediction,
+    countyDayPattern: countyDayPattern,
     DAY_GRID_MIN_TESTS: DAY_GRID_MIN_TESTS
   };
 })(typeof window !== 'undefined' ? window : this);
