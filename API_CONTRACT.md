@@ -494,18 +494,31 @@ clients sort identically.
 
 ### 4.11a Charting policy — binds every client
 
-Frequency charts (day-of-week, week-of-month, color rotation) use a
+**Frequency charts** (day-of-week, week-of-month, color rotation) use a
 **single-hue intensity ramp**: darker/more saturated = observed more often.
 **Never a green/amber/red scale.** Green implies a safe day, and there is no
 safe day — any day can be a test day. A user who plans around a green cell
 and gets called was failed by the product; readiness, not safety, is the
 message everywhere.
 
+**Directional risk scales** (overdue ratio) are different: the ordering is
+real — 0.3× genuinely is less likely today than 1.7× — so they keep a scale.
+But the scale runs **neutral → alert**: dim/slate at low ratios, through
+amber, to red as it passes 1.0. **Never green.** Low reads "not due yet" —
+never "safe", "clear", or any wording that licenses skipping a morning check.
+
+**Green is reserved for confirmed past-tense outcomes.** A NO_TEST that was
+actually announced today is a fact about today and may be green. Nothing
+that forecasts — a frequency, a ratio, a window — may be.
+
 Concretely:
-- One hue per chart, intensity proportional to relative frequency (backend
-  web uses `rgba(0,217,255, 0.12 + rel*0.68)`; iOS picks one hue and holds it).
+- One hue per frequency chart, intensity proportional to relative frequency
+  (backend web uses `rgba(0,217,255, 0.12 + rel*0.68)`; iOS picks one hue and
+  holds it).
 - Low intensity reads "observed less often" — copy must never translate it
   as "unlikely", "safe", or "clear".
+- Overdue-ratio displays ramp slate → amber → red with the alert boundary
+  at 1.0 (the 1.0 tick stays). Low ratio = neutral, not green.
 - Suppressed charts (see §4.10 gates) render the suppression reason and the
   county-level pattern — never an empty, zeroed, or greyed chart that still
   implies shape.
