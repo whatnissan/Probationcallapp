@@ -4396,9 +4396,17 @@ app.get('/api/admin/dashboard', adminAuth, async function(req, res) {
     var usersResult = await supabase.from('profiles').select('*').order('created_at', { ascending: false });
     var users = usersResult.data || [];
     
-    // Get auth users data for created_at and last_sign_in_at
-    var authUsersResult = await supabase.auth.admin.listUsers();
-    var authUsers = authUsersResult.data ? authUsersResult.data.users : [];
+    // Get auth users data for created_at and last_sign_in_at. listUsers()
+    // defaults to 50 per page — same silent-cap family as the 1000-row stats
+    // bug: the merge below quietly stopped enriching users past the first 50.
+    // Page explicitly until a short page.
+    var authUsers = [];
+    for (var authPage = 1; authPage <= 20; authPage++) {
+      var authUsersResult = await supabase.auth.admin.listUsers({ page: authPage, perPage: 1000 });
+      var pageUsers = (authUsersResult.data && authUsersResult.data.users) || [];
+      authUsers = authUsers.concat(pageUsers);
+      if (pageUsers.length < 1000) break;
+    }
     
     // Merge auth data into profiles
     users = users.map(function(u) {
@@ -4431,46 +4439,53 @@ app.get('/api/admin/dashboard', adminAuth, async function(req, res) {
     var promosResult = await supabase.from('promo_codes').select('*').order('created_at', { ascending: false });
     var promos = promosResult.data || [];
     
-    var totalRevenue = 0;
-    for (var i = 0; i < purchases.length; i++) {
-      totalRevenue += purchases[i].amount_cents || 0;
+    // === STATS: true counts, never array lengths ===
+    // Counting fetched arrays silently caps at PostgREST's 1000-row response
+    // limit (Total Calls sat frozen at exactly 1000 while the real count was
+    // 1770). Every count below asks the database via head:true count:'exact';
+    // the arrays are for the TABLE VIEWS only, which may legitimately show a
+    // capped window. Sums page through in 1000-row chunks for the same reason.
+    async function countRows(builder) {
+      var r = await builder;
+      return (r.error || r.count === null || r.count === undefined) ? null : r.count;
     }
-    
-    var pendingPayouts = 0;
-    for (var i = 0; i < payouts.length; i++) {
-      if (payouts[i].status === 'pending') pendingPayouts++;
+    async function sumColumn(table, col) {
+      var total = 0, from = 0, PAGE = 1000;
+      for (;;) {
+        var r = await supabase.from(table).select(col).range(from, from + PAGE - 1);
+        if (r.error) { console.error('[ADMIN] sum ' + table + '.' + col + ' failed:', r.error.message); return null; }
+        (r.data || []).forEach(function(row) { total += row[col] || 0; });
+        if (!r.data || r.data.length < PAGE) return total;
+        from += PAGE;
+      }
     }
-    
-    var affiliateOwed = 0;
-    for (var i = 0; i < users.length; i++) {
-      affiliateOwed += users[i].affiliate_balance_cents || 0;
-    }
-    
-    var termsAgreed = 0;
-    for (var i = 0; i < users.length; i++) {
-      if (users[i].terms_accepted_at) termsAgreed++;
-    }
-    
-    var disabledUsers = 0;
-    for (var i = 0; i < users.length; i++) {
-      if (users[i].is_disabled) disabledUsers++;
-    }
-    
-    var activeSchedules = 0;
-    for (var i = 0; i < schedules.length; i++) {
-      if (schedules[i].enabled) activeSchedules++;
-    }
-    
+    var totalCallsCount = await countRows(supabase.from('call_history').select('*', { count: 'exact', head: true }));
+    var totalUsersCount = await countRows(supabase.from('profiles').select('*', { count: 'exact', head: true }));
+    var activeSchedCount = await countRows(supabase.from('user_schedules').select('*', { count: 'exact', head: true }).eq('enabled', true));
+    var termsCount = await countRows(supabase.from('profiles').select('*', { count: 'exact', head: true }).not('terms_accepted_at', 'is', null));
+    var disabledCount = await countRows(supabase.from('profiles').select('*', { count: 'exact', head: true }).eq('is_disabled', true));
+    var pendingPayoutCount = await countRows(supabase.from('payout_requests').select('*', { count: 'exact', head: true }).eq('status', 'pending'));
+    var revenueSum = await sumColumn('purchases', 'amount_cents');
+    var owedSum = await sumColumn('profiles', 'affiliate_balance_cents');
+
+    // Array-derived fallbacks (correct below the row caps) if a count errors.
+    var fallbackActive = schedules.filter(function(s) { return s.enabled; }).length;
+    var fallbackTerms = users.filter(function(u) { return u.terms_accepted_at; }).length;
+    var fallbackDisabled = users.filter(function(u) { return u.is_disabled; }).length;
+    var fallbackPending = payouts.filter(function(p) { return p.status === 'pending'; }).length;
+    var fallbackRevenue = purchases.reduce(function(a, p) { return a + (p.amount_cents || 0); }, 0);
+    var fallbackOwed = users.reduce(function(a, u) { return a + (u.affiliate_balance_cents || 0); }, 0);
+
     res.json({
       stats: {
-        totalUsers: users.length,
-        activeSchedules: activeSchedules,
-        totalCalls: calls.length,
-        totalRevenue: totalRevenue,
-        pendingPayouts: pendingPayouts,
-        affiliateOwed: affiliateOwed,
-        termsAgreed: termsAgreed,
-        disabledUsers: disabledUsers
+        totalUsers: totalUsersCount !== null ? totalUsersCount : users.length,
+        activeSchedules: activeSchedCount !== null ? activeSchedCount : fallbackActive,
+        totalCalls: totalCallsCount !== null ? totalCallsCount : calls.length,
+        totalRevenue: revenueSum !== null ? revenueSum : fallbackRevenue,
+        pendingPayouts: pendingPayoutCount !== null ? pendingPayoutCount : fallbackPending,
+        affiliateOwed: owedSum !== null ? owedSum : fallbackOwed,
+        termsAgreed: termsCount !== null ? termsCount : fallbackTerms,
+        disabledUsers: disabledCount !== null ? disabledCount : fallbackDisabled
       },
       users: users,
       schedules: schedules,
