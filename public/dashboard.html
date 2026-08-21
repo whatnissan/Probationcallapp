@@ -1231,13 +1231,22 @@ function loadUser() {
         document.getElementById('scheduleDetails').style.display = 'block';
         document.getElementById('noSchedInfo').style.display = 'none';
         // Paused schedules are still returned by /api/user (it doesn't filter
-        // on enabled), so distinguish the three states rather than showing
-        // "✅ Schedule Active" over a schedule that isn't running.
+        // on enabled), so label each pause reason distinctly rather than
+        // showing "✅ Schedule Active" over a schedule that isn't running.
+        // (Previously a variable named schedOffByUser lumped every non-credit
+        // pause together as user-ish — misleading, since no user-initiated
+        // pause path exists: those rows are the server's auto-pauses or
+        // legacy untagged pauses.)
         var schedPausedNoCredits = d.schedule.enabled === false && d.schedule.paused_reason === 'no_credits';
-        var schedOffByUser = d.schedule.enabled === false && !schedPausedNoCredits;
+        var PAUSE_HEADINGS = {
+          no_credits: '⏸ Checks paused — out of credits',
+          unknown_streak: '⏸ Checks paused — recent calls got no result',
+          pin_expired: '⏸ Checks paused — your PIN expired',
+          user: '⏸ Checks paused'
+        };
         document.getElementById('schedStatusHeading').textContent =
-          schedPausedNoCredits ? '⏸ Checks paused — out of credits'
-          : (schedOffByUser ? '⏸ Checks paused automatically' : '✅ Schedule Active');
+          d.schedule.enabled !== false ? '✅ Schedule Active'
+          : (PAUSE_HEADINGS[d.schedule.paused_reason] || '⏸ Checks paused');
         document.getElementById('schedPausedInfo').style.display = schedPausedNoCredits ? 'block' : 'none';
         document.getElementById('schedBtn').textContent = '💾 Update Schedule';
         document.getElementById('schedCounty').value = d.schedule.county || 'montgomery';
