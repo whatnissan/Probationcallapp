@@ -4500,6 +4500,183 @@ app.get('/api/admin/dashboard', adminAuth, async function(req, res) {
   }
 });
 
+// === RELIABILITY METRICS (read-only) ===
+// Answers "is the service working end to end", not "is the server up".
+// Chain per user-day: attempted (call_attempts ∪ missed_call_events) →
+// result (call_history) → notified (notification_log, status=sent).
+// Data availability is part of the payload — call_attempts has data only
+// since 2026-08-15 (first full day; the writer deployed mid-day Aug 14) and
+// notification_log since 2026-08-06 — so every metric carries its own
+// status (ok/partial/insufficient) and caveat text instead of silently
+// blending blind days. All queries are small date-filtered selects paged
+// past the 1000-row cap and aggregated here.
+var RELIABILITY_ATTEMPTS_EPOCH = '2026-08-15';
+var RELIABILITY_NOTIF_EPOCH = '2026-08-06';
+var USABLE_RESULTS = /^(MUST_TEST|NO_TEST|PIN_EXPIRED|COLOR:|P1:)/;
+var RESULT_NOTIF_KIND = /^(call_\d+|ftbend_daily|retry-final-fail|pin_expired)$/;
+
+app.get('/api/admin/reliability', adminAuth, async function(req, res) {
+  try {
+    var since = new Date(Date.now() - 90 * 86400000).toISOString();
+    async function fetchAll(table, cols, applyFilters) {
+      var out = [], from = 0, PAGE = 1000;
+      for (;;) {
+        var q = supabase.from(table).select(cols).range(from, from + PAGE - 1);
+        if (applyFilters) q = applyFilters(q);
+        var r = await q;
+        if (r.error) throw new Error(table + ': ' + r.error.message);
+        out = out.concat(r.data || []);
+        if (!r.data || r.data.length < PAGE) return out;
+        from += PAGE;
+      }
+    }
+    var attempts = await fetchAll('call_attempts', 'user_id, county, office_id, outcome, created_at', function(q) { return q.gte('created_at', since); });
+    var missed = await fetchAll('missed_call_events', 'user_id, missed_date, recovered_at', null);
+    var calls = await fetchAll('call_history', 'user_id, result, county, ftbend_office, created_at', function(q) { return q.gte('created_at', since); });
+    var notifs = await fetchAll('notification_log', 'user_id, kind, status, channel, created_at', function(q) { return q.gte('created_at', since); });
+    var learnings = await fetchAll('fort_bend_learnings', 'office, match_method, our_detection, date', function(q) { return q.gte('created_at', since); });
+    var dcs = await fetchAll('daily_county_status', 'county, date', function(q) { return q.gte('date', since.slice(0, 10)); });
+    var profiles = await fetchAll('profiles', 'id, email', null);
+    var emailOf = {};
+    profiles.forEach(function(p) { emailOf[p.id] = p.email; });
+
+    function day(ts) { return String(ts).slice(0, 10); }
+    var todayStr = day(new Date().toISOString());
+
+    // Per user-day chain state.
+    var chain = {}; // key user|day -> {attempted, dialed, missedEvent, result, usable, notified, county}
+    function slot(uid, d) {
+      var k = uid + '|' + d;
+      if (!chain[k]) chain[k] = { uid: uid, day: d, attempted: false, missedEvent: false, result: null, usable: false, notified: false };
+      return chain[k];
+    }
+    attempts.forEach(function(a) {
+      if (!a.user_id) return; // ftbend system dials handled separately
+      var s = slot(a.user_id, day(a.created_at));
+      s.attempted = true;
+    });
+    missed.forEach(function(m) {
+      var s = slot(m.user_id, m.missed_date);
+      s.attempted = true; s.missedEvent = !m.recovered_at;
+    });
+    calls.forEach(function(c) {
+      if (!c.user_id) return;
+      var s = slot(c.user_id, day(c.created_at));
+      // Keep the "best" result of the day for display; usable wins.
+      if (!s.result || (!s.usable && USABLE_RESULTS.test(c.result || ''))) s.result = c.result;
+      if (USABLE_RESULTS.test(c.result || '')) s.usable = true;
+    });
+    notifs.forEach(function(n) {
+      if (!n.user_id || n.status !== 'sent' || !RESULT_NOTIF_KIND.test(n.kind || '')) return;
+      var s = chain[n.user_id + '|' + day(n.created_at)];
+      if (s) s.notified = true;
+    });
+
+    function windowMetrics(days) {
+      var start = new Date(Date.now() - (days - 1) * 86400000).toISOString().slice(0, 10);
+      var rows = Object.values(chain).filter(function(s) { return s.day >= start; });
+      var callRows = calls.filter(function(c) { return day(c.created_at) >= start; });
+
+      // Observability of the attempts epoch inside this window.
+      var windowDays = days;
+      var observableFrom = start > RELIABILITY_ATTEMPTS_EPOCH ? start : RELIABILITY_ATTEMPTS_EPOCH;
+      var observableDays = Math.max(0, Math.round((Date.now() - new Date(observableFrom).getTime()) / 86400000) + 1);
+      if (observableDays > windowDays) observableDays = windowDays;
+      var attemptsStatus = observableDays === 0 ? 'insufficient' : (observableDays < windowDays ? 'partial' : 'ok');
+      var notifFrom = start > RELIABILITY_NOTIF_EPOCH ? start : RELIABILITY_NOTIF_EPOCH;
+      var notifDays = Math.max(0, Math.round((Date.now() - new Date(notifFrom).getTime()) / 86400000) + 1);
+      if (notifDays > windowDays) notifDays = windowDays;
+      var notifStatus = notifDays === 0 ? 'insufficient' : (notifDays < windowDays ? 'partial' : 'ok');
+
+      // 1. Completion: attempted user-days that produced any result row.
+      var attempted = rows.filter(function(s) { return s.attempted && s.day >= RELIABILITY_ATTEMPTS_EPOCH; });
+      var completed = attempted.filter(function(s) { return !!s.result; });
+      // 2. Transcription: usable results / all result rows (call_history only,
+      //    so computable across the whole window — with the pre-epoch caveat
+      //    that calls dying before a result were invisible back then).
+      var usable = callRows.filter(function(c) { return USABLE_RESULTS.test(c.result || ''); });
+      // 3. Notification sent-rate: result days (since notif epoch) that got a
+      //    sent result-notification.
+      var resultDaysNotifWindow = rows.filter(function(s) { return s.result && s.day >= notifFrom; });
+      var notifiedDays = resultDaysNotifWindow.filter(function(s) { return s.notified; });
+      // 4. End-to-end: attempted → usable result → notified.
+      var e2eDen = attempted.filter(function(s) { return s.day >= notifFrom; });
+      var e2eNum = e2eDen.filter(function(s) { return s.usable && s.notified; });
+
+      function pct(num, den) { return den ? Math.round((num / den) * 1000) / 10 : null; }
+
+      // Fort Bend system detection for the window.
+      var lrn = learnings.filter(function(l) { return l.date >= start; });
+      var gt = lrn.filter(function(l) { return l.match_method && l.match_method !== 'no_ground_truth'; });
+      var fallback = gt.filter(function(l) { return ['substring', 'phonetic', 'cutoff_with_ground_truth'].indexOf(l.match_method) >= 0; });
+      var unknownByOffice = {};
+      lrn.forEach(function(l) {
+        if ((l.our_detection || '') === 'UNKNOWN') unknownByOffice[l.office] = (unknownByOffice[l.office] || 0) + 1;
+      });
+      var dcsRows = dcs.filter(function(r) { return r.date >= start; });
+
+      return {
+        days: windowDays,
+        endToEnd: {
+          pct: notifStatus === 'insufficient' || attemptsStatus === 'insufficient' ? null : pct(e2eNum.length, e2eDen.length),
+          num: e2eNum.length, den: e2eDen.length,
+          status: attemptsStatus === 'insufficient' ? 'insufficient' : attemptsStatus,
+          caveat: attemptsStatus === 'ok' ? observableDays + ' days of data' : (attemptsStatus === 'partial' ? 'only ' + observableDays + ' of ' + windowDays + ' days observable (dial logging began Aug 15)' : 'no dial data in window (began Aug 15)')
+        },
+        completion: {
+          pct: attemptsStatus === 'insufficient' ? null : pct(completed.length, attempted.length),
+          num: completed.length, den: attempted.length,
+          status: attemptsStatus,
+          caveat: attemptsStatus === 'ok' ? observableDays + ' days of data' : (attemptsStatus === 'partial' ? observableDays + ' of ' + windowDays + ' days observable' : 'insufficient history (since Aug 15)')
+        },
+        transcription: {
+          pct: pct(usable.length, callRows.length),
+          num: usable.length, den: callRows.length,
+          status: start >= RELIABILITY_ATTEMPTS_EPOCH ? 'ok' : 'partial',
+          caveat: start >= RELIABILITY_ATTEMPTS_EPOCH ? 'of recorded results' : 'of recorded results — lost calls invisible before Aug 15'
+        },
+        notification: {
+          pct: notifStatus === 'insufficient' ? null : pct(notifiedDays.length, resultDaysNotifWindow.length),
+          num: notifiedDays.length, den: resultDaysNotifWindow.length,
+          status: notifStatus,
+          caveat: 'sent-accepted, not delivered' + (notifStatus === 'partial' ? ' — log began Aug 6' : '')
+        },
+        ftbend: {
+          // 3 offices × window days. If `have` trails `want` only at the old
+          // edge of long windows, that's table history, not missed mornings —
+          // the UI notes it rather than reading it as failure.
+          coverage: { have: dcsRows.length, want: windowDays * 3 },
+          fallbackResolved: fallback.length,
+          groundTruthChecked: gt.length,
+          unknownByOffice: unknownByOffice
+        }
+      };
+    }
+
+    // Today's broken chains, by name and stage.
+    var brokenToday = Object.values(chain)
+      .filter(function(s) { return s.day === todayStr && s.attempted; })
+      .filter(function(s) { return !(s.usable && s.notified); })
+      .map(function(s) {
+        var stage = s.missedEvent ? 'never fired (missed, unrecovered)'
+          : !s.result ? 'dialed, no result yet'
+          : !s.usable ? 'no usable result (' + s.result + ')'
+          : 'result but not notified';
+        return { email: emailOf[s.uid] || s.uid.slice(0, 8), stage: stage, result: s.result };
+      });
+
+    res.json({
+      generatedAt: new Date().toISOString(),
+      epochs: { attempts: RELIABILITY_ATTEMPTS_EPOCH, notifications: RELIABILITY_NOTIF_EPOCH },
+      windows: { today: windowMetrics(1), d7: windowMetrics(7), d30: windowMetrics(30), d90: windowMetrics(90) },
+      brokenToday: brokenToday
+    });
+  } catch (e) {
+    console.error('[RELIABILITY] failed:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post('/api/admin/user/:id/credits', adminAuth, async function(req, res) {
   try {
     var userId = req.params.id;

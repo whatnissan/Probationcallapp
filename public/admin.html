@@ -62,8 +62,20 @@
 </div>
 </div>
 </div>
-<div class="tabs"><div class="tab active" id="tabUsers">Users</div><div class="tab" id="tabPayouts">Payouts</div><div class="tab" id="tabPurchases">Purchases</div><div class="tab" id="tabCalls">Calls</div><div class="tab" id="tabPromos">Promos</div><div class="tab" id="tabTransfers">Transfers</div><div class="tab" id="tabSends">Sends</div><div class="tab" id="tabSupport">Support <span id="supportBadge" style="display:none;background:#ef4444;color:#fff;border-radius:10px;padding:1px 7px;font-size:0.72rem;margin-left:4px"></span></div></div>
+<div class="tabs"><div class="tab active" id="tabUsers">Users</div><div class="tab" id="tabReliability">Reliability</div><div class="tab" id="tabPayouts">Payouts</div><div class="tab" id="tabPurchases">Purchases</div><div class="tab" id="tabCalls">Calls</div><div class="tab" id="tabPromos">Promos</div><div class="tab" id="tabTransfers">Transfers</div><div class="tab" id="tabSends">Sends</div><div class="tab" id="tabSupport">Support <span id="supportBadge" style="display:none;background:#ef4444;color:#fff;border-radius:10px;padding:1px 7px;font-size:0.72rem;margin-left:4px"></span></div></div>
 <div id="usersTab" class="tab-content active"><div class="card"><h2>All Users (click to view) <button class="btn btn-sm btn-secondary" id="refreshBtn">Refresh</button> <span class="last-refresh" id="lastRefresh"></span></h2><div class="search-bar"><input type="text" id="userSearch" placeholder="Search..."><select id="userFilter"><option value="all">All</option><option value="active">Active</option><option value="disabled">Disabled</option><option value="admin">Admins</option><option value="scheduled">Scheduled</option><option value="locked">Locked to Affiliate</option></select></div><div style="max-height:500px;overflow-y:auto"><table><thead><tr><th class="sortable" data-sort="email">Email ↕</th><th class="sortable" data-sort="credits">Credits ↕</th><th>Locked To</th><th class="sortable" data-sort="schedule">Schedule ↕</th><th class="sortable" data-sort="calls">Calls ↕</th><th class="sortable" data-sort="spent">Spent ↕</th><th>Terms</th><th>Status</th><th class="sortable" data-sort="created">Created ↕</th><th class="sortable" data-sort="lastlogin">Last Login ↕</th></tr></thead><tbody id="usersTable"></tbody></table></div></div></div>
+<div id="reliabilityTab" class="tab-content"><div class="card"><h2>Reliability — end to end, not uptime <button class="btn btn-sm btn-secondary" id="reloadReliability">Refresh</button> <span id="relStatus" style="color:#8892b0;font-size:0.8rem"></span></h2>
+<div style="display:flex;gap:8px;margin-bottom:14px" id="relWindows">
+<button class="btn btn-sm btn-secondary rel-win" data-win="today">Today</button>
+<button class="btn btn-sm btn-primary rel-win" data-win="d7">7 days</button>
+<button class="btn btn-sm btn-secondary rel-win" data-win="d30">30 days</button>
+<button class="btn btn-sm btn-secondary rel-win" data-win="d90">90 days</button>
+</div>
+<div id="relHeadline"></div>
+<div class="stats-grid" id="relRates"></div>
+<div id="relBroken"></div>
+<div id="relFtbend"></div>
+</div></div>
 <div id="payoutsTab" class="tab-content"><div class="card"><h2>Pending Payouts</h2><div id="pendingPayouts"></div></div></div>
 <div id="purchasesTab" class="tab-content"><div class="card"><h2>Purchases</h2><table><thead><tr><th>User</th><th>Package</th><th>Amount</th><th>Date</th><th>Status</th></tr></thead><tbody id="purchasesTable"></tbody></table></div></div>
 <div id="callsTab" class="tab-content"><div class="card"><h2>Calls</h2><table><thead><tr><th>User</th><th>Result</th><th>Date</th></tr></thead><tbody id="callsTable"></tbody></table></div></div>
@@ -103,7 +115,7 @@ document.getElementById("refreshBtn").addEventListener("click", function(e) {
         alert("Error: " + err.message);
     });
 });
-$("userSearch").onkeyup=filter;document.querySelectorAll(".sortable").forEach(function(th){th.onclick=function(){var col=this.dataset.sort;if(sortCol===col){sortDir*=-1}else{sortCol=col;sortDir=-1}filter()}});$("userFilter").onchange=filter;$("newPromoBtn").onclick=function(){$("promoModal").classList.add("active")};$("closeUserModal").onclick=function(){$("userModal").classList.remove("active")};$("closeCreditsModal").onclick=function(){$("creditsModal").classList.remove("active")};$("closePromoModal").onclick=function(){$("promoModal").classList.remove("active")};$("reloadSends").onclick=loadSends;$("supportFilter").onchange=loadSupport;$("reloadSupport").onclick=loadSupport;$("closeRefundModal").onclick=closeRefundModal;$("refundCancelBtn").onclick=closeRefundModal;$("refundConfirmBtn").onclick=doRefund;$("applyCredits").onclick=doCredits;$("createPromo").onclick=doPromo;["Users","Payouts","Purchases","Calls","Promos","Transfers","Support","Sends"].forEach(function(t){$("tab"+t).onclick=function(){document.querySelectorAll(".tab").forEach(function(x){x.classList.remove("active")});document.querySelectorAll(".tab-content").forEach(function(x){x.classList.remove("active")});this.classList.add("active");$(t.toLowerCase()+"Tab").classList.add("active");if(t==="Transfers")loadTransfers();if(t==="Support")loadSupport();if(t==="Sends")loadSends()}})}
+$("userSearch").onkeyup=filter;document.querySelectorAll(".sortable").forEach(function(th){th.onclick=function(){var col=this.dataset.sort;if(sortCol===col){sortDir*=-1}else{sortCol=col;sortDir=-1}filter()}});$("userFilter").onchange=filter;$("newPromoBtn").onclick=function(){$("promoModal").classList.add("active")};$("closeUserModal").onclick=function(){$("userModal").classList.remove("active")};$("closeCreditsModal").onclick=function(){$("creditsModal").classList.remove("active")};$("closePromoModal").onclick=function(){$("promoModal").classList.remove("active")};$("reloadSends").onclick=loadSends;document.querySelectorAll(".rel-win").forEach(function(b){b.onclick=function(){relWin=this.dataset.win;renderReliability()}});$("reloadReliability").onclick=loadReliability;$("supportFilter").onchange=loadSupport;$("reloadSupport").onclick=loadSupport;$("closeRefundModal").onclick=closeRefundModal;$("refundCancelBtn").onclick=closeRefundModal;$("refundConfirmBtn").onclick=doRefund;$("applyCredits").onclick=doCredits;$("createPromo").onclick=doPromo;["Users","Reliability","Payouts","Purchases","Calls","Promos","Transfers","Support","Sends"].forEach(function(t){$("tab"+t).onclick=function(){document.querySelectorAll(".tab").forEach(function(x){x.classList.remove("active")});document.querySelectorAll(".tab-content").forEach(function(x){x.classList.remove("active")});this.classList.add("active");$(t.toLowerCase()+"Tab").classList.add("active");if(t==="Transfers")loadTransfers();if(t==="Support")loadSupport();if(t==="Sends")loadSends();if(t==="Reliability")loadReliability()}})}
 async function load(){
     window.adminSysStats=null;fetch("/api/system-stats",{headers:{Authorization:"Bearer "+token}}).then(function(r){return r.json();}).then(function(ss){window.adminSysStats=(ss&&ss.scheduledAvg)?ss:null;}).catch(function(){});
     var r=await fetch("/api/admin/dashboard",{headers:{Authorization:"Bearer "+token}});
@@ -276,6 +288,69 @@ function renderUserMessages(d){
   el.innerHTML=h;
 }
 
+var relData=null, relWin='d7';
+function loadReliability(){
+  var st=$('relStatus'); if(st) st.textContent='Loading\u2026';
+  adminFetch('/api/admin/reliability',{headers:{Authorization:'Bearer '+token}})
+   .then(function(d){
+     if(d.error){ if(st) st.textContent='Error: '+d.error; return; }
+     relData=d;
+     if(st) st.textContent='as of '+new Date(d.generatedAt).toLocaleTimeString();
+     renderReliability();
+   }).catch(function(e){ if(!e.handled&&st) st.textContent='Error: '+e.message; });
+}
+function relTile(title,m,accent){
+  // Every tile carries its own confidence inline — a number without its
+  // caveat is how the old 1000-cap bug hid for weeks.
+  var grey = m.status==='insufficient' || m.pct===null;
+  var val = grey ? '\u2014' : (m.pct+'%');
+  var color = grey ? '#8892b0' : (m.pct>=99 ? '#22c55e' : m.pct>=90 ? '#f59e0b' : '#ef4444');
+  var sub = grey ? 'insufficient history' : (m.num+' of '+m.den);
+  var cave = m.caveat || '';
+  var warn = m.status==='partial' ? '<span style="color:#f59e0b">\u26A0 </span>' : '';
+  return '<div class="stat-card" style="'+(grey?'opacity:0.55;':'')+'text-align:left">'
+    +'<div class="stat-label" style="margin:0 0 6px">'+title+'</div>'
+    +'<div class="stat-num" style="color:'+color+'">'+val+'</div>'
+    +'<div style="font-size:0.72rem;color:#8892b0;margin-top:4px">'+sub+'</div>'
+    +'<div style="font-size:0.68rem;color:#8892b0;margin-top:6px;line-height:1.35">'+warn+esc(cave)+'</div></div>';
+}
+function renderReliability(){
+  if(!relData) return;
+  document.querySelectorAll('.rel-win').forEach(function(b){
+    b.className='btn btn-sm rel-win '+(b.dataset.win===relWin?'btn-primary':'btn-secondary');
+  });
+  var w=relData.windows[relWin];
+  // Headline: end-to-end IS the number. Everything else explains it.
+  var e=w.endToEnd, grey=e.status==='insufficient'||e.pct===null;
+  var hcolor=grey?'#8892b0':(e.pct>=99?'#22c55e':e.pct>=90?'#f59e0b':'#ef4444');
+  $('relHeadline').innerHTML='<div class="card" style="text-align:center;border-color:'+(grey?'rgba(255,255,255,0.1)':hcolor)+'">'
+    +'<div class="stat-label">END-TO-END: scheduled \u2192 called \u2192 result \u2192 notified</div>'
+    +'<div style="font-size:3rem;font-weight:700;color:'+hcolor+';margin:6px 0">'+(grey?'\u2014':e.pct+'%')+'</div>'
+    +'<div style="font-size:0.8rem;color:#8892b0">'+(grey?'insufficient history \u2014 '+esc(e.caveat):e.num+' of '+e.den+' user-days fully served \u00b7 '+esc(e.caveat))+'</div></div>';
+  $('relRates').innerHTML=
+    relTile('1 \u00b7 Call completion',w.completion)
+    +relTile('2 \u00b7 Transcription success',w.transcription)
+    +relTile('3 \u00b7 Notification sent-rate',w.notification)
+    +relTile('4 \u00b7 Fort Bend detection coverage',{
+      pct: w.ftbend.coverage.want? Math.round(w.ftbend.coverage.have/w.ftbend.coverage.want*1000)/10 : null,
+      num: w.ftbend.coverage.have, den: w.ftbend.coverage.want, status:'ok',
+      caveat: '3 offices \u00d7 '+w.days+'d; old-edge shortfall on long windows is table history, not missed mornings'});
+  // Broken chains today — visually loud, by name.
+  var b=relData.brokenToday||[];
+  $('relBroken').innerHTML = b.length
+    ? '<div class="card" style="border-color:#ef4444"><h2 style="color:#ef4444">\u26A0 Broken chains today ('+b.length+')</h2>'
+      + b.map(function(x){return '<div style="padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.05)"><b>'+esc(x.email)+'</b> \u2014 <span style="color:#f59e0b">'+esc(x.stage)+'</span></div>';}).join('')
+      + '<div style="font-size:0.7rem;color:#8892b0;margin-top:8px">"dialed, no result yet" during the morning window usually means retries are still running \u2014 recheck after 9:30 CT.</div></div>'
+    : '<div class="card" style="border-color:rgba(34,197,94,0.4)"><span style="color:#22c55e">\u2713 No broken chains today \u2014 every attempted user-day reached a notification (or is mid-retry with time left).</span></div>';
+  // Fort Bend detection quality detail.
+  var f=w.ftbend, uo=f.unknownByOffice||{};
+  var uoKeys=Object.keys(uo);
+  $('relFtbend').innerHTML='<div class="card"><h2>Fort Bend detection ('+relWin+')</h2>'
+    +'<div style="font-size:0.85rem;color:#8892b0;line-height:1.7">'
+    +'Resolved via finishprobation fallback rather than our own parse: <b style="color:'+(f.fallbackResolved?'#f59e0b':'#22c55e')+'">'+f.fallbackResolved+'</b> of '+f.groundTruthChecked+' ground-truth-checked detections \u2014 fallback saves the outcome but hides a parser gap.<br>'
+    +(uoKeys.length? 'UNKNOWN detections by office: '+uoKeys.map(function(k){return esc(k)+': <b style="color:#f59e0b">'+uo[k]+'</b>';}).join(' \u00b7 ') : 'No UNKNOWN detections in window.')
+    +'</div></div>';
+}
 function loadSupport(){
   var status=$('supportFilter').value;
   $('supportStatus').textContent='Loading…';
