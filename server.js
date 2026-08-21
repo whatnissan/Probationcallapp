@@ -1347,22 +1347,23 @@ app.get("/api/admin/montgomery-analytics", adminAuth, async function(req, res) {
       weekPatterns: weekPatterns,
       topDaysOfMonth: domPatterns.slice(0, 10),
       consecutiveTestPct: consecPct,
-      topIntervals: topIntervals,
-      confidence: Math.min(95, 50 + tests.length)
+      topIntervals: topIntervals
+      // confidence field removed 2026-08-21: Math.min(95, 50+n) had no
+      // probabilistic meaning — same policy as the prediction model.
     });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 
-app.get('/api/system-stats', auth, async function(req, res) {
-  try {
-    var now = Date.now();
-    if (global.systemStatsCache && (now - global.systemStatsCache.timestamp) < 3600000) {
-      return res.json(global.systemStatsCache.data);
-    }
-    var result = await supabase.from('call_history').select('user_id, created_at, result, county')
-      .eq('result', 'MUST_TEST').order('created_at', { ascending: true });
-    if (result.error) return res.status(500).json({ error: result.error.message });
+// Shared by /api/system-stats and /api/v1/prediction. Hour-cached.
+async function computeSystemStats() {
+  var now = Date.now();
+  if (global.systemStatsCache && (now - global.systemStatsCache.timestamp) < 3600000) {
+    return global.systemStatsCache.data;
+  }
+  var result = await supabase.from('call_history').select('user_id, created_at, result, county')
+    .eq('result', 'MUST_TEST').order('created_at', { ascending: true });
+  if (result.error) throw new Error(result.error.message);
     var tests = (result.data || []).filter(function(t) {
       var c = t.county || 'montgomery';
       return c === 'montgomery' || c.indexOf('montgomery') === 0;
@@ -1412,9 +1413,132 @@ app.get('/api/system-stats', auth, async function(req, res) {
       generatedAt: new Date().toISOString()
     };
     global.systemStatsCache = { timestamp: now, data: data };
-    res.json(data);
+  return data;
+}
+
+app.get('/api/system-stats', auth, async function(req, res) {
+  try {
+    res.json(await computeSystemStats());
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
+// ========== API v1 (API_CONTRACT.md) ==========
+// Contract conventions: /api/v1 base, bearer JWT, structured error shape
+// {error:{code,message,retryable}}, stable machine codes, no schema leaks.
+// The prediction math is the SAME module the browser loads
+// (public/prediction-core.js) — one implementation, two runtimes, no drift.
+var PredictionCoreV1 = require('./public/prediction-core.js').PredictionCore;
+
+function v1Error(res, status, code, message, retryable) {
+  return res.status(status).json({ error: { code: code, message: message, retryable: retryable === true } });
+}
+
+// v1 auth: same Supabase JWT verification as auth(), but errors in the
+// contract shape and no profile bootstrap side effects — v1 clients are
+// existing signed-in users, and a stats read must never create rows.
+async function authV1(req, res, next) {
+  var authHeader = req.headers.authorization;
+  var token = authHeader ? authHeader.replace('Bearer ', '') : null;
+  if (!token) return v1Error(res, 401, 'unauthenticated', 'Sign in required.');
+  try {
+    var result = await supabase.auth.getUser(token);
+    if (result.error || !result.data.user) return v1Error(res, 401, 'unauthenticated', 'Session expired — sign in again.');
+    req.user = result.data.user;
+    next();
+  } catch (e) {
+    console.error('[V1-AUTH] error:', e.message);
+    return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+  }
+}
+
+// 4.10 GET /prediction — shape implements the CURRENT shipped model
+// (2026-08-21 decisions), which post-dates the contract draft in two places:
+// no confidence number (removed as non-probabilistic), and rapid retests are
+// INCLUDED in interval math, not excluded (they are the escalation signal).
+// dayOfWeek is null until the personal grid statistically earns display
+// (35+ tests AND chi-square p<0.05); countyDayPattern carries the pooled
+// county-level fact instead. Extra fields beyond the draft are additive.
+app.get('/api/v1/prediction', authV1, async function(req, res) {
+  try {
+    var sched = await supabase.from('user_schedules')
+      .select('county, timezone').eq('user_id', req.user.id).maybeSingle();
+    var county = (sched.data && sched.data.county) || 'montgomery';
+
+    // Same window the web dashboard has always computed from, for parity.
+    var hist = await supabase.from('call_history').select('result, created_at')
+      .eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(500);
+    if (hist.error) {
+      console.error('[V1-PREDICTION] history read failed:', hist.error.message);
+      return v1Error(res, 500, 'internal', 'Could not load your call history.', true);
+    }
+
+    var sysStats = null;
+    try { sysStats = await computeSystemStats(); }
+    catch (e) { console.error('[V1-PREDICTION] system stats failed (personal-only fallback):', e.message); }
+
+    var p = PredictionCoreV1.computePrediction(hist.data || [], sysStats);
+    var countyPattern = PredictionCoreV1.countyDayPattern(sysStats);
+
+    if (!p) {
+      return res.json({
+        county: county,
+        nextWindow: null,
+        yourIntervalDays: null,
+        countyAverageIntervalDays: sysStats ? sysStats.scheduledAvg : null,
+        daysSinceLastTest: null,
+        testsCounted: 0,
+        observationDays: 0,
+        recentTests: [],
+        rapidRetestsIncluded: 0,
+        unobservedGapsExcluded: 0,
+        escalation: null,
+        dayOfWeek: null,
+        countyDayPattern: countyPattern,
+        basedOn: null,
+        notes: ['No MUST_TEST results recorded yet — prediction unlocks after your first required test.']
+      });
+    }
+
+    var notes = [
+      'Rapid retests are included in interval math — a quick re-call is the county\'s escalation signal.',
+      'The window is a range, not a promise: testing is possible any day.'
+    ];
+    if (p.longDropped > 0) notes.push(p.longDropped + ' long gap(s) excluded — schedule was off, so those gaps are unobserved, not real cadence.');
+    if (p.escalation) notes.push('Latest test came ' + p.escalation.lastGapDays + 'd after the previous — frequency may be increasing.');
+
+    res.json({
+      county: county,
+      nextWindow: p.predict ? { startDays: p.predict.lo, endDays: p.predict.hi } : null,
+      yourIntervalDays: p.avgDays !== null ? Math.round(p.avgDays * 10) / 10 : null,
+      countyAverageIntervalDays: sysStats ? sysStats.scheduledAvg : null,
+      daysSinceLastTest: p.daysSince,
+      testsCounted: p.tests,
+      observationDays: p.totalDays,
+      testsPerMonth: parseFloat(p.perMonth),
+      recentTests: p.recentTests,
+      rapidRetestsIncluded: p.sub7Count,
+      unobservedGapsExcluded: p.longDropped,
+      escalation: p.escalation,
+      dayOfWeek: p.dayGrid.show
+        ? ['sun','mon','tue','wed','thu','fri','sat'].map(function(d, i) {
+            return { day: d, percent: Math.round((p.dayGrid.counts[i] / p.tests) * 1000) / 10 };
+          })
+        : null,
+      dayOfWeekSuppressed: p.dayGrid.show ? null : p.dayGrid.reason,
+      weekOfMonth: p.dayGrid.show
+        ? p.weekOfMonthCounts.map(function(c, i) {
+            return { week: i + 1, percent: Math.round((c / p.tests) * 1000) / 10 };
+          })
+        : null,
+      countyDayPattern: countyPattern,
+      basedOn: p.sourceLabel,
+      notes: notes
+    });
+  } catch (e) {
+    console.error('[V1-PREDICTION] failed:', e.message);
+    return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+  }
+});
+
 // Fort Bend Color Analytics
 app.get("/api/ftbend/analytics", auth, async function(req, res) {
   try {

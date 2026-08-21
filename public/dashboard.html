@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Dashboard - ProbationCall</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="/prediction-core.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,sans-serif;background:#0a1929;color:#fff;min-height:100vh;position:relative;overflow-x:hidden}
@@ -337,7 +336,7 @@ select option { background: #1a1a2e; color: #fff; }
     </div>
     <div style="margin-top:12px;text-align:center">
       <div style="font-size:0.75rem;color:#8892b0;margin-bottom:6px" id="patternTitle">Test Likelihood by Day</div>
-      <div class="pattern-row" id="patternRow"></div><div style="font-size:0.65rem;color:#666;margin-top:8px" id="patternLegend">🟢 Low chance · 🟡 Medium · 🔴 High chance</div>
+      <div class="pattern-row" id="patternRow"></div><div style="font-size:0.65rem;color:#666;margin-top:8px" id="patternLegend">Darker = called more often in your history. No day is safe — any day can be a test day.</div>
     </div>
   </div>
   <div class="card" id="probationCard" style="display:none">
@@ -2292,93 +2291,99 @@ if (document.getElementById('schedCounty')) {
 }
 
 // Test Frequency Analysis
-function calculateTestStats(history, sysStats) {
+// Prediction now comes from GET /api/v1/prediction (API_CONTRACT.md 4.10).
+// The math runs server-side in the SAME prediction-core.js module — this
+// function only renders. Deleting the client-side computation is the point:
+// two implementations of the number people plan around would drift.
+function calculateTestStats() {
   var card = document.getElementById("testStatsCard");
-  if (!history || history.length < 2 || !window.PredictionCore) { card.style.display = "none"; return; }
-  var p = PredictionCore.computePrediction(history, sysStats);
-  if (!p) { card.style.display = "none"; return; }
-  card.style.display = "block";
-  document.getElementById("statAvgInterval").textContent = p.avgDays ? p.avgDays.toFixed(1) : "--";
-  document.getElementById("statTotalTests").textContent = p.tests;
-  document.getElementById("statDaysSince").textContent = p.daysSince;
-  document.getElementById("statTestRate").textContent = p.perMonth;
-  var dsBox = document.getElementById("statDaysSinceBox");
-  dsBox.className = "test-stat";
-  if (p.avgDays) {
-    if (p.daysSince >= p.avgDays) dsBox.className = "test-stat danger";
-    else if (p.daysSince >= p.avgDays * 0.7) dsBox.className = "test-stat warning";
-  }
-  var predictEl = document.getElementById("predictText");
-  var confEl = document.getElementById("predictConfidence");
-  if (p.predict) {
-    // Readiness framing: the RANGE is the headline, never a single "safe"
-    // date. A point estimate reads as a promise the data can't make.
-    if (p.predict.daysUntil <= 0) {
-      predictEl.textContent = "Test possible any day now — stay ready";
-      predictEl.style.color = "#ef4444";
-    } else if (p.predict.lo <= 1) {
-      predictEl.textContent = "Next test likely within " + p.predict.hi + " days — possible any day, stay ready";
-      predictEl.style.color = "#f59e0b";
-    } else {
-      predictEl.textContent = "Next test likely " + p.predict.lo + "\u2013" + p.predict.hi + " days out — but possible any day";
-      predictEl.style.color = "#00d9ff";
-    }
-    var confText = "Based on " + p.tests + " tests over " + p.totalDays + "d · " + p.sourceLabel;
-    if (p.sub7Count > 0) confText += " · " + p.sub7Count + " rapid retest" + (p.sub7Count > 1 ? "s" : "") + " included";
-    if (p.longDropped > 0) confText += " · " + p.longDropped + " unobserved gap" + (p.longDropped > 1 ? "s" : "") + " excluded";
-    if (p.escalation) confText += " · \u26A0 tested again " + p.escalation.lastGapDays + "d after the previous test — frequency may be increasing";
-    confEl.textContent = confText;
-  } else {
-    predictEl.textContent = "Need more data for prediction"; predictEl.style.color = "#8892b0";
-    confEl.textContent = "Keep logging tests to improve accuracy";
-  }
-  // Day grid: colored only when the personal sample statistically earns it.
-  // Below that, no dead neutral strip and no legend for colors that never
-  // appear — the space carries real information instead: the county-level
-  // weekday fact (labeled as county-wide, never as the user's own, never as
-  // safe days), progress toward the personal pattern, and the user's actual
-  // recent test dates.
-  var titleEl = document.getElementById("patternTitle");
-  var legendEl = document.getElementById("patternLegend");
-  var rowEl = document.getElementById("patternRow");
-  rowEl.style.flexWrap = "wrap";
-  if (p.dayGrid.show) {
-    if (titleEl) titleEl.textContent = "Test Likelihood by Day";
-    if (legendEl) legendEl.style.display = "block";
-    var dayNames = ["S","M","T","W","T","F","S"], patternHtml = "";
-    for (var d = 0; d < 7; d++) {
-      var cls = p.dayGrid.pct[d] >= 0.7 ? "high" : p.dayGrid.pct[d] >= 0.3 ? "med" : "low";
-      patternHtml += "<div class='pattern-day " + cls + "'>" + dayNames[d] + "</div>";
-    }
-    rowEl.innerHTML = patternHtml;
-  } else {
-    if (titleEl) titleEl.textContent = "Test Days";
-    if (legendEl) legendEl.style.display = "none";
-    var county = PredictionCore.countyDayPattern(sysStats);
-    var html = "<div style='text-align:center;font-size:0.75rem;color:#8892b0;line-height:1.6;width:100%'>";
-    if (county && county.fullWeekSignificant && !county.weekdaySignificant) {
-      html += "<b style='color:#e4e4e7'>Montgomery County overall:</b> " +
-        (county.total - county.weekendCount) + " of " + county.total + " recorded tests fell on weekdays — but which weekday looks random. " +
-        "<b style='color:#f59e0b'>Stay ready every weekday.</b> Weekend tests are rare, not never (" + county.weekendCount + " of " + county.total + ").";
-    } else {
-      html += "Testing looks random — <b style='color:#f59e0b'>stay ready any day.</b>";
-    }
-    html += "<br>Your own day pattern unlocks at " + PredictionCore.DAY_GRID_MIN_TESTS + " recorded tests (" + p.tests + " so far).";
-    if (p.recentTests && p.recentTests.length >= 2) {
-      var parts = [];
-      for (var r = 0; r < p.recentTests.length; r++) {
-        var dstr = new Date(p.recentTests[r] + "T12:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" });
-        if (r === 0) parts.push(dstr);
-        else {
-          var gap = Math.round((new Date(p.recentTests[r]) - new Date(p.recentTests[r-1])) / 86400000);
-          parts.push(dstr + " <span style='color:#666'>(+" + gap + "d)</span>");
-        }
+  fetch('/api/v1/prediction', { headers: { Authorization: 'Bearer ' + token } })
+    .then(function(r) { return r.json(); })
+    .then(function(p) {
+      if (!p || p.error || !p.testsCounted) { card.style.display = "none"; return; }
+      card.style.display = "block";
+      document.getElementById("statAvgInterval").textContent = p.yourIntervalDays !== null ? p.yourIntervalDays.toFixed(1) : "--";
+      document.getElementById("statTotalTests").textContent = p.testsCounted;
+      document.getElementById("statDaysSince").textContent = p.daysSinceLastTest;
+      document.getElementById("statTestRate").textContent = p.testsPerMonth;
+      var dsBox = document.getElementById("statDaysSinceBox");
+      dsBox.className = "test-stat";
+      if (p.yourIntervalDays) {
+        if (p.daysSinceLastTest >= p.yourIntervalDays) dsBox.className = "test-stat danger";
+        else if (p.daysSinceLastTest >= p.yourIntervalDays * 0.7) dsBox.className = "test-stat warning";
       }
-      html += "<br><span style='color:#666'>Your recent tests:</span> " + parts.join(" → ");
-    }
-    html += "</div>";
-    rowEl.innerHTML = html;
-  }
+      var predictEl = document.getElementById("predictText");
+      var confEl = document.getElementById("predictConfidence");
+      if (p.nextWindow) {
+        var lo = p.nextWindow.startDays, hi = p.nextWindow.endDays;
+        var daysUntil = Math.round((lo + hi) / 2);
+        if (hi <= 0 || (lo <= 0 && daysUntil <= 0)) {
+          predictEl.textContent = "Test possible any day now — stay ready";
+          predictEl.style.color = "#ef4444";
+        } else if (lo <= 1) {
+          predictEl.textContent = "Next test likely within " + hi + " days — possible any day, stay ready";
+          predictEl.style.color = "#f59e0b";
+        } else {
+          predictEl.textContent = "Next test likely " + lo + "\u2013" + hi + " days out — but possible any day";
+          predictEl.style.color = "#00d9ff";
+        }
+        var confText = "Based on " + p.testsCounted + " tests over " + p.observationDays + "d · " + (p.basedOn || "");
+        if (p.rapidRetestsIncluded > 0) confText += " · " + p.rapidRetestsIncluded + " rapid retest" + (p.rapidRetestsIncluded > 1 ? "s" : "") + " included";
+        if (p.unobservedGapsExcluded > 0) confText += " · " + p.unobservedGapsExcluded + " unobserved gap" + (p.unobservedGapsExcluded > 1 ? "s" : "") + " excluded";
+        if (p.escalation) confText += " · \u26A0 tested again " + p.escalation.lastGapDays + "d after the previous test — frequency may be increasing";
+        confEl.textContent = confText;
+      } else {
+        predictEl.textContent = "Need more data for prediction"; predictEl.style.color = "#8892b0";
+        confEl.textContent = "Keep logging tests to improve accuracy";
+      }
+      var titleEl = document.getElementById("patternTitle");
+      var legendEl = document.getElementById("patternLegend");
+      var rowEl = document.getElementById("patternRow");
+      rowEl.style.flexWrap = "wrap";
+      if (p.dayOfWeek) {
+        if (titleEl) titleEl.textContent = "Test Frequency by Day";
+        if (legendEl) legendEl.style.display = "block";
+        // Single-hue intensity ramp: darker = called more often. Never a
+        // green/amber/red scale — green reads as "safe day", and there is no
+        // safe day. Low intensity means "less often observed", not "fine".
+        var maxPct = Math.max.apply(null, p.dayOfWeek.map(function(d) { return d.percent; }));
+        var dayNames = ["S","M","T","W","T","F","S"], patternHtml = "";
+        p.dayOfWeek.forEach(function(d, i) {
+          var rel = maxPct > 0 ? d.percent / maxPct : 0;
+          var alpha = 0.12 + rel * 0.68;
+          patternHtml += "<div class='pattern-day' style='background:rgba(0,217,255," + alpha.toFixed(2) + ");color:" + (rel > 0.5 ? "#001018" : "#8892b0") + "' title='" + d.percent + "% of your tests'>" + dayNames[i] + "</div>";
+        });
+        rowEl.innerHTML = patternHtml;
+      } else {
+        if (titleEl) titleEl.textContent = "Test Days";
+        if (legendEl) legendEl.style.display = "none";
+        var county = p.countyDayPattern;
+        var html = "<div style='text-align:center;font-size:0.75rem;color:#8892b0;line-height:1.6;width:100%'>";
+        if (county && county.fullWeekSignificant && !county.weekdaySignificant) {
+          html += "<b style='color:#e4e4e7'>Montgomery County overall:</b> " +
+            (county.total - county.weekendCount) + " of " + county.total + " recorded tests fell on weekdays — but which weekday looks random. " +
+            "<b style='color:#f59e0b'>Stay ready every weekday.</b> Weekend tests are rare, not never (" + county.weekendCount + " of " + county.total + ").";
+        } else {
+          html += "Testing looks random — <b style='color:#f59e0b'>stay ready any day.</b>";
+        }
+        html += "<br>Your own day pattern unlocks at 35 recorded tests (" + p.testsCounted + " so far).";
+        if (p.recentTests && p.recentTests.length >= 2) {
+          var parts = [];
+          for (var r = 0; r < p.recentTests.length; r++) {
+            var dstr = new Date(p.recentTests[r] + "T12:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" });
+            if (r === 0) parts.push(dstr);
+            else {
+              var gap = Math.round((new Date(p.recentTests[r]) - new Date(p.recentTests[r-1])) / 86400000);
+              parts.push(dstr + " <span style='color:#666'>(+" + gap + "d)</span>");
+            }
+          }
+          html += "<br><span style='color:#666'>Your recent tests:</span> " + parts.join(" \u2192 ");
+        }
+        html += "</div>";
+        rowEl.innerHTML = html;
+      }
+    })
+    .catch(function() { card.style.display = "none"; });
 }
 function renderCallHistory(filter) {
   var el = document.getElementById("historyList");

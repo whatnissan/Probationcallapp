@@ -139,6 +139,14 @@
     var maxDay = Math.max.apply(null, dayCounts);
     var pct = dayCounts.map(function(c) { return maxDay > 0 ? c / maxDay : 0; });
 
+    // Week-of-month (1..5), same statistical gate as the day grid — five
+    // sparse bins lie just as fluently as seven.
+    var weekCounts = [0, 0, 0, 0, 0];
+    tests.forEach(function(t) {
+      var w = Math.min(5, Math.ceil(new Date(t.created_at).getDate() / 7));
+      weekCounts[w - 1]++;
+    });
+
     // Real recent history for display — actual dates, no inference.
     var recent = tests.slice(-6).map(function(t) { return String(t.created_at).slice(0, 10); });
 
@@ -157,7 +165,8 @@
       sourceLabel: sourceLabel,
       escalation: escalation,
       predict: predict,
-      dayGrid: { show: show, reason: reason, counts: dayCounts, pct: pct }
+      dayGrid: { show: show, reason: reason, counts: dayCounts, pct: pct },
+      weekOfMonthCounts: weekCounts
     };
   }
 
