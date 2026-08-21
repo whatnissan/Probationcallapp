@@ -787,7 +787,26 @@ async function handlePinExpiredResult(userId, lastTranscript, notifyNumber, noti
   }
   console.log('[PIN-EXPIRED] Schedule auto-disabled for ' + userId.slice(0, 8));
 
-  var userMsg = '⏸ ProbationCall paused\n\nThe hotline says your ID/PIN has expired, so we paused your daily check-ins to stop wasting credits.\n\nWhat to do:\n1. Verify directly with your probation officer or by calling the hotline yourself.\n2. Update your PIN at probationcall.com to resume calls.\n3. If your PIN is still valid and this looks wrong, contact us.\n\n- ProbationCall.com';
+  // Tell the user WHEN it started — "twice, first heard Aug 18" reads as a
+  // verified pattern, not a one-off mishear. Today's call_history row may
+  // not be inserted yet (this handler fires before the insert), so the
+  // oldest of the most recent rows is the streak's first occurrence either
+  // way. Date lookup is best-effort; the pause message never waits on it.
+  var firstHeard = null;
+  try {
+    var prevPin = await supabase.from('call_history')
+      .select('created_at')
+      .eq('user_id', userId)
+      .eq('result', 'PIN_EXPIRED')
+      .order('created_at', { ascending: false })
+      .limit(PIN_EXPIRED_STREAK_THRESHOLD);
+    if (prevPin.data && prevPin.data.length) {
+      firstHeard = new Date(prevPin.data[prevPin.data.length - 1].created_at)
+        .toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Chicago' });
+    }
+  } catch (e) { /* message goes out without the date */ }
+
+  var userMsg = '⏸ ProbationCall paused\n\nThe hotline says your ID/PIN has expired — we\'ve now heard this ' + PIN_EXPIRED_STREAK_THRESHOLD + ' times in a row' + (firstHeard ? ' (first on ' + firstHeard + ')' : '') + ', so we paused your daily check-ins to stop wasting credits.\n\nWhat to do:\n1. Verify directly with your probation officer or by calling the hotline yourself.\n2. Update your PIN at probationcall.com to resume calls.\n3. If your PIN is still valid and this looks wrong, contact us.\n\n- ProbationCall.com';
   await notify(notifyNumber, notifyEmail, notifyMethod, userMsg, 'pin_expired').catch(function() {});
 
   // Admin alert (one-shot at auto-disable).
@@ -861,6 +880,7 @@ async function finalFailMorning(state, existingRow) {
     target_number: state.target_number || '+19362834848',
     pin_used: state.pin,
     result: state.last_result,
+    transcript: state.last_transcript || null,
     recording_url: state.last_recording_url,
     created_at: new Date().toISOString()
   };
@@ -3475,6 +3495,11 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
           target_number: config.targetNumber || '+19362834848',
           pin_used: config.pin,
           result: result,
+          // Persist the words behind the verdict. Recordings purge after 30
+          // days; the transcript is the only durable evidence of what the
+          // hotline said (the May-2026 PIN_EXPIRED events are unverifiable
+          // forever because this wasn't stored).
+          transcript: transcript || null,
           recording_url: recordingUrl + '.mp3',
           created_at: new Date().toISOString()
         };
@@ -6200,10 +6225,25 @@ async function deliverFtbendNotification(row) {
         .catch(function(e) { console.error('[FTBEND] billing alert failed:', e.message); });
     }
   }
+  // Copy the office's announcement onto the user's row. The daily transcript
+  // lives in daily_county_status, but those rows aren't user-joined — the
+  // per-user copy is what made the Montgomery PIN_EXPIRED audit possible,
+  // and Fort Bend deserves the same evidence trail. Best-effort.
+  var ftTranscript = null;
+  try {
+    var dcs = await supabase.from('daily_county_status')
+      .select('transcript')
+      .eq('county', 'ftbend_' + oid)
+      .eq('date', todayDate)
+      .maybeSingle();
+    if (dcs.data && dcs.data.transcript) ftTranscript = dcs.data.transcript;
+  } catch (e) { /* transcript is evidence, not delivery-critical */ }
+
   var ftRow = {
     user_id: userId,
     target_number: FTBEND_OFFICES[oid] ? FTBEND_OFFICES[oid].number : COUNTIES.ftbend.number,
     result: row.has_phases ? 'P1:' + (row.phase1 || '?') + ' P2:' + (row.phase2 || '?') : 'COLOR:' + row.result,
+    transcript: ftTranscript,
     county: 'ftbend',
     ftbend_office: oid
   };
