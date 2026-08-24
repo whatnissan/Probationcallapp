@@ -118,7 +118,8 @@ charged" rather than inferring it from the result.
 Auto-resume is scoped `.eq('paused_reason','no_credits')` server-side. Do not widen.
 
 ### `notify_method`
-`push`, `sms`, `email`, `whatsapp`. Multiple allowed — see §4.7.
+`push`, `sms`, `email`. Multiple allowed — see §4.7. (`whatsapp` removed
+2026-08-24 — unreliable in production; zero users had it at removal.)
 
 ### `ftbend_office`
 `missouri` (Probation, 3668) · `rosenberg` (Pretrial, 3669) · `rosenberg2`
@@ -344,7 +345,7 @@ Pause takes `{"reason":"vacation until 9/2"}` and writes `enabled=false`,
 Resume must **reject with `insufficient_credits`** when balance is zero rather
 than enabling a schedule that will immediately re-pause.
 
-### 4.9 Test tools — `POST /test/call` · `/test/sms` · `/test/email` · `/test/whatsapp`
+### 4.9 Test tools — `POST /test/call` · `/test/sms` · `/test/email`
 
 None consume credits. Existing rate limits stand.
 

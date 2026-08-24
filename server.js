@@ -188,7 +188,6 @@ const TWILIO_VOICE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
 // These have fallbacks to the historical hardcoded values so the deploy
 // keeps working unchanged — set the env vars in Railway to override.
 const MESSAGING_SERVICE_SID = process.env.TWILIO_MESSAGING_SERVICE_SID || 'MG8adbb793f6b8c100da6770f6f0707258';
-const WHATSAPP_NUMBER = process.env.TWILIO_WHATSAPP_NUMBER || 'whatsapp:+15558965863';
 const FROM_EMAIL = process.env.FROM_EMAIL || 'alerts@probationcall.com';
 // Mass sends and support replies go out as support@ — a monitored-looking
 // address rather than alerts@. probationcall.com is DNS-authenticated in
@@ -3869,10 +3868,10 @@ async function notify(phone, email, method, message, callId) {
     if (phone) results.push(await sendSMS(phone, message, callId));
     return { success: results.some(function(r) { return r.success; }) };
   }
-  if (method === 'whatsapp' && phone) {
-    return await sendWhatsApp(phone, message, callId);
-  }
-  
+  // WhatsApp channel removed 2026-08-24 — unreliable in production, and zero
+  // schedules used it (verified against prod before removal). An unknown
+  // method now falls through to the error below instead of a dead channel.
+
   log(callId, 'No valid notification method', 'error');
   return { success: false, error: 'No notification method' };
 }
@@ -4100,22 +4099,6 @@ async function alertAdminEmailFailure(errMsg) {
   }
 }
 
-async function sendWhatsApp(to, message, callId) {
-  var toWA = to.indexOf('whatsapp:') === 0 ? to : 'whatsapp:' + to;
-  try {
-    var msg = await twilioClient.messages.create({ 
-      from: WHATSAPP_NUMBER, 
-      to: toWA, 
-      body: message 
-    });
-    log(callId, 'WhatsApp sent: ' + msg.sid, 'success');
-    return { success: true, sid: msg.sid };
-  } catch (e) {
-    log(callId, 'WhatsApp failed: ' + e.message, 'error');
-    return { success: false, error: e.message };
-  }
-}
-
 // === WELCOME MESSAGE ===
 async function sendWelcomeEmail(email, credits, callId) {
   var subject = 'Welcome To ProbationCall';
@@ -4178,11 +4161,6 @@ app.post('/api/test-email', auth, rateLimit('test-email', 3, 5 * 60 * 1000), asy
 
 app.post('/api/test-sms', auth, rateLimit('test-sms', 3, 5 * 60 * 1000), async function(req, res) {
   var result = await sendSMS(req.body.notifyNumber, 'Test SMS from ProbationCall!', 'test');
-  res.json(result);
-});
-
-app.post('/api/test-whatsapp', auth, rateLimit('test-whatsapp', 3, 5 * 60 * 1000), async function(req, res) {
-  var result = await sendWhatsApp(req.body.notifyNumber, '✅ Test WhatsApp from ProbationCall!\n\nIf you see this, WhatsApp notifications are working.', 'test');
   res.json(result);
 });
 
@@ -4463,7 +4441,6 @@ server.listen(PORT, function() {
   console.log('Voice: ' + TWILIO_VOICE_NUMBER);
   console.log('Email: ' + (process.env.BREVO_KEY ? 'Brevo configured' : 'Not configured'));
   console.log('SMS: Messaging Service ' + MESSAGING_SERVICE_SID);
-  console.log('WhatsApp: ' + WHATSAPP_NUMBER);
   console.log('Call Hours: ' + MIN_HOUR + ':00 AM - ' + MAX_HOUR + ':59 PM');
   console.log('Stagger Window: ' + STAGGER_MINUTES + ' minutes');
   console.log('Affiliate Commission: ' + AFFILIATE_COMMISSION_PERCENT + '%');
