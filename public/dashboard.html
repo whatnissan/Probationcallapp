@@ -446,6 +446,7 @@ select option { background: #1a1a2e; color: #fff; }
           <input type="hidden" id="schedMethod" value="email">
         </div>
         <div class="form-group" id="schedEmailGroup"><label>Your Email</label><input type="email" id="schedEmail" placeholder="you@example.com"></div>
+        <div id="relayNote" style="display:none;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);border-radius:8px;padding:10px;margin:-6px 0 14px;font-size:0.78rem;color:#f59e0b">Your Apple ID uses a hidden relay email. Mail to it depends on Apple's relay service — <b>SMS is the more reliable channel for test results</b>, or enter a direct email address here.</div>
         <div class="form-group" id="schedPhoneGroup" style="display:none"><label>Your Phone</label><input type="tel" id="schedNotify" placeholder="+1234567890" onblur="formatPhoneNumber(this)"></div>
         <div class="consent-box" id="schedSmsConsentBox" style="display:none">
           <h4>📱 SMS Notification Consent</h4>
@@ -476,6 +477,10 @@ select option { background: #1a1a2e; color: #fff; }
         </div>
         <button type="submit" class="btn" id="schedBtn">💾 Save Schedule</button>
       </form>
+      <div id="linkAppleRow" style="margin-top:16px;padding-top:14px;border-top:1px solid rgba(255,255,255,0.08);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+        <span style="color:#8892b0;font-size:0.8rem">Use Apple to sign in on your iPhone? Link it so both sign-ins reach this same account.</span>
+        <button class="btn" onclick="linkApple()" style="background:#000;color:#fff;border:1px solid rgba(255,255,255,0.25);padding:6px 14px;font-size:0.8rem;flex-shrink:0"> Link Apple ID</button>
+      </div>
     </div>
   </div>
   
@@ -1166,6 +1171,14 @@ function loadUser() {
         try { localStorage.removeItem('referralCode'); } catch (e) {}
       }
 
+      // Apple Private Relay: mail to @privaterelay.appleid.com depends on
+      // Apple's relay (senders must stay registered with Apple) — nudge these
+      // users toward SMS, the channel Apple can't drop.
+      var relayNote = document.getElementById('relayNote');
+      if (relayNote) relayNote.style.display = /@privaterelay\.appleid\.com$/i.test(d.user.email || '') ? 'block' : 'none';
+      // Hide the link-Apple row for accounts already signed in via Apple.
+      var linkRow = document.getElementById('linkAppleRow');
+      if (linkRow && d.user.identities && d.user.identities.some(function(i) { return i.provider === 'apple'; })) linkRow.style.display = 'none';
       document.getElementById('notifyEmail').value = d.user.email;
       document.getElementById('schedEmail').value = d.user.email;
       document.getElementById('testEmail').value = d.user.email;
@@ -1467,6 +1480,18 @@ function renderDashSub(s) {
   card.style.border = '1px solid ' + border;
   card.innerHTML = html;
   card.style.display = 'flex';
+}
+
+// P0 of the account-linking plan: linking from an AUTHENTICATED session is
+// the only cryptographically clean link — no email/phone inference. Requires
+// "manual linking" enabled in Supabase Auth settings.
+function linkApple() {
+  supabase.auth.linkIdentity({ provider: 'apple', options: { redirectTo: window.location.origin + '/dashboard' } })
+    .then(function(r) {
+      if (r.error) alert('Could not link Apple ID: ' + r.error.message);
+      // Success navigates to Apple and back; nothing else to do here.
+    })
+    .catch(function(e) { alert('Could not link Apple ID: ' + e.message); });
 }
 
 function redeemPromo() {

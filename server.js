@@ -4433,6 +4433,35 @@ async function checkMigrationDrift() {
   });
 }
 
+// === APPLE CLIENT SECRET EXPIRY CHECK ===
+// Apple caps the Sign in with Apple client secret (the JWT pasted into
+// Supabase) at 6 months. When it lapses, Apple sign-in dies with no error
+// on our side — signups just stop. APPLE_SECRET_EXPIRES is set in Railway
+// each time scripts/generate-apple-secret.js is run (the script prints the
+// date). Checked at boot and daily; log-only, same policy as the migration
+// drift check.
+function checkAppleSecretExpiry() {
+  var exp = process.env.APPLE_SECRET_EXPIRES;
+  if (!exp) {
+    console.log('[APPLE-SECRET-CHECK] APPLE_SECRET_EXPIRES not set — set it in Railway when the Apple provider secret is pasted into Supabase (scripts/generate-apple-secret.js prints the date).');
+    return;
+  }
+  var d = new Date(exp);
+  if (isNaN(d.getTime())) {
+    console.error('[APPLE-SECRET-CHECK] APPLE_SECRET_EXPIRES is not a parseable date: ' + exp);
+    return;
+  }
+  var days = Math.floor((d.getTime() - Date.now()) / 86400000);
+  if (days < 0) {
+    console.error('[APPLE-SECRET-CHECK] ⚠️⚠️ Apple client secret EXPIRED ' + (-days) + ' day(s) ago — Apple sign-in is DOWN until scripts/generate-apple-secret.js is re-run, the new secret pasted into Supabase, and APPLE_SECRET_EXPIRES updated.');
+  } else if (days <= 30) {
+    console.error('[APPLE-SECRET-CHECK] ⚠️ Apple client secret expires in ' + days + ' day(s) (' + exp + ') — re-run scripts/generate-apple-secret.js, paste into Supabase, update APPLE_SECRET_EXPIRES.');
+  } else {
+    console.log('[APPLE-SECRET-CHECK] OK — Apple client secret valid until ' + exp + ' (' + days + ' days)');
+  }
+}
+setInterval(checkAppleSecretExpiry, 24 * 60 * 60 * 1000);
+
 var PORT = process.env.PORT || 3000;
 server.listen(PORT, function() {
   console.log('========================================');
@@ -4451,6 +4480,7 @@ server.listen(PORT, function() {
   checkMigrationDrift().catch(function(e) {
     console.error('[MIGRATION-CHECK] threw (non-fatal):', e.message);
   });
+  checkAppleSecretExpiry();
 });
 // ========== ADMIN ROUTES ==========
 

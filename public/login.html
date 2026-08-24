@@ -33,13 +33,20 @@ p{color:#8892b0;margin-bottom:30px}
 <p style="color:#ccc;font-size:0.85rem;margin:0">We call the hotline for you every morning and text you the results. Set it up once, we handle the rest.</p>
 </div>
 <div style="background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.2);border-radius:10px;padding:12px">
-<p style="color:#ccc;font-size:0.8rem;margin:0">🔒 We use Google sign-in to keep your account secure. The next screen is Google verifying your identity — we only receive your name and email. <strong style="color:#22c55e">We never access your Google account data.</strong></p>
+<p style="color:#ccc;font-size:0.8rem;margin:0">🔒 We use Google or Apple sign-in to keep your account secure. The next screen is them verifying your identity — we only receive your name and email. <strong style="color:#22c55e">We never access your account data.</strong></p>
 </div>
 </div>
-<button class="btn" id="loginBtn" onclick="login()">
+<div id="loginButtons">
+<button class="btn" id="loginBtn" onclick="loginWith('google')">
 <img src="https://www.google.com/favicon.ico" alt="Google">
 Sign in with Google
 </button>
+<button class="btn" id="appleLoginBtn" onclick="loginWith('apple')" style="background:#000;color:#fff;border:1px solid rgba(255,255,255,0.25);margin-top:10px">
+<svg viewBox="0 0 814 1000" width="16" height="16" style="fill:#fff" aria-hidden="true"><path d="M788 341c-6 4-107 61-107 190 0 149 131 202 135 203-1 3-21 72-69 142-43 62-88 124-156 124s-86-40-165-40c-77 0-104 41-167 41s-107-57-157-127C44 790 0 668 0 552c0-186 121-285 240-285 63 0 116 42 156 42 38 0 97-44 169-44 27 0 125 2 223 76zM554 96c32-38 54-90 54-143 0-7-1-15-2-21-52 2-113 34-150 77-29 33-56 85-56 138 0 8 1 16 2 19 3 1 9 2 14 2 46 0 104-31 138-72z"/></svg>
+Sign in with Apple
+</button>
+<p style="color:#8892b0;font-size:0.72rem;margin-top:10px;max-width:340px;margin-left:auto;margin-right:auto">Already have an account? Sign in the way you did before — you can link Apple to it afterward from your Schedule page.</p>
+</div>
 <div class="loading" id="loading">
 <div class="spinner"></div>
 <div>Signing you in...</div>
@@ -56,7 +63,7 @@ var supabase = window.supabase.createClient(SUPA_URL, SUPA_KEY);
 async function handleOAuthCallback() {
   // Check for hash fragment (OAuth callback)
   if (window.location.hash && window.location.hash.includes('access_token')) {
-    document.getElementById('loginBtn').style.display = 'none';
+    document.getElementById('loginButtons').style.display = 'none';
     document.getElementById('loading').style.display = 'block';
     
     // Let Supabase handle the hash automatically
@@ -106,27 +113,26 @@ async function checkExistingSession() {
 
 function showError(msg) {
   document.getElementById('loading').style.display = 'none';
-  document.getElementById('loginBtn').style.display = 'inline-flex';
+  document.getElementById('loginButtons').style.display = 'block';
   var status = document.getElementById('status');
   status.style.display = 'block';
   status.className = 'status error';
   status.textContent = msg;
 }
 
-async function login() {
-  console.log('Login clicked');
+async function loginWith(provider) {
+  console.log('Login clicked:', provider);
   try {
-    document.getElementById('loginBtn').style.display = 'none';
+    document.getElementById('loginButtons').style.display = 'none';
     document.getElementById('loading').style.display = 'block';
     document.getElementById('status').style.display = 'none';
-    
+
     console.log('Calling signInWithOAuth...');
+    var options = { redirectTo: window.location.origin + '/login' };
+    if (provider === 'google') options.queryParams = { prompt: 'select_account' };
     var result = await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: {
-        queryParams: { prompt: 'select_account' },
-        redirectTo: window.location.origin + '/login'
-      }
+      provider: provider,
+      options: options
     });
     
     console.log('OAuth result:', result);
