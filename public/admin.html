@@ -647,7 +647,7 @@ function calcUserStats(calls,sysStats){
   if(win.state==='two_number'&&win.innerDays){
     var wl=Math.max(0,win.innerDays[0]-p.daysSince),wh=Math.max(0,win.innerDays[1]-p.daysSince);
     predict=wh<=0?"<span style='color:#ef4444'>Test possible any day — stay ready</span>"
-      :"<span style='color:#00d9ff'>Recent historical range: "+wl+"\u2013"+wh+"d out</span> <span style='color:#8892b0;font-size:0.75rem'>(has ranged "+win.outerDays[0]+"\u2013"+win.outerDays[1]+"d)</span>";
+      :"<span style='color:#00d9ff'>Recent gaps "+win.innerDays[0]+"\u2013"+win.innerDays[1]+"d between tests</span> <span style='color:#8892b0;font-size:0.75rem'>(all-time "+win.outerDays[0]+"\u2013"+win.outerDays[1]+"d · last test "+p.daysSince+"d ago)</span>";
   } else if(win.state==='irregular'){
     predict="<span style='color:#f59e0b'>Too irregular to narrow — any day</span> <span style='color:#8892b0;font-size:0.75rem'>(ranged "+win.outerDays[0]+"\u2013"+win.outerDays[1]+"d, n="+win.intervalsUsed+")</span>";
   } else {

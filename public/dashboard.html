@@ -2459,15 +2459,18 @@ function calculateTestStats() {
       // not error styling. No probabilistic wording anywhere: the old
       // always-on envelope measured 35% prospective misses.
       if (win.state === 'two_number' && p.nextWindow) {
-        var wlo = p.nextWindow.startDays, whi = p.nextWindow.endDays;
-        if (whi <= 0) {
+        // ONE unit on this card: interval lengths (days BETWEEN tests) for
+        // both bands, so inner and outer compare apples-to-apples; elapsed
+        // time is its own plain fact. Mixing a days-from-now band with an
+        // interval-length band read as the inner escaping the outer.
+        if (p.nextWindow.endDays <= 0) {
           predictEl.textContent = "Test possible any day now — stay ready";
           predictEl.style.color = "#ef4444";
         } else {
-          predictEl.textContent = "Recent historical range: " + wlo + "\u2013" + whi + " days out — possible any day";
+          predictEl.textContent = "Recent historical range: " + win.innerDays[0] + "\u2013" + win.innerDays[1] + " days between tests — possible any day";
           predictEl.style.color = "#00d9ff";
         }
-        confEl.textContent = "Has ranged " + win.outerDays[0] + "\u2013" + win.outerDays[1] + " days between tests · based on " + win.intervalsUsed + " completed intervals";
+        confEl.textContent = "It's been " + p.daysSinceLastTest + " day" + (p.daysSinceLastTest === 1 ? "" : "s") + " since your last test · all-time gaps " + win.outerDays[0] + "\u2013" + win.outerDays[1] + " days · " + win.intervalsUsed + " completed intervals";
       } else if (win.state === 'irregular') {
         predictEl.textContent = "Your history is too irregular to narrow — possible any day, stay ready";
         predictEl.style.color = "#f59e0b";
