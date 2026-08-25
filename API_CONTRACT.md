@@ -98,12 +98,19 @@ The outcome of a day's call.
 | `HOTLINE_DOWN` | Hotline unreachable | **No** |
 | `CALL_FAILED` | Call never connected | **No** |
 | `PIN_EXPIRED` | PIN no longer valid at the hotline. Montgomery only | **No** |
-| `WRONG_PIN` | PIN rejected as incorrect. Montgomery only | **No** |
+| `WRONG_PIN` | PIN rejected as incorrect. Montgomery only. **Aspirational — not currently emitted**: the backend cannot yet distinguish a wrong PIN from an expired one. Clients keep the distinct UI so improved detection needs no client change. | **No** |
 | `IN_PROGRESS` | Call running or retries pending | n/a |
-| `NOT_CALLED` | Schedule paused/disabled; no call made | n/a |
+| `SCHEDULED` | Enabled; this morning's call hasn't started yet. The user's answer is "wait" | n/a |
+| `NOT_CALLED` | Schedule paused/disabled; no call made. The user's answer is "nothing is coming" | n/a |
 
-`billed: bool` is returned explicitly per call — the client displays "you were not
-charged" rather than inferring it from the result.
+`SCHEDULED` and `NOT_CALLED` are deliberately separate states: overloading
+`NOT_CALLED` for "enabled but not yet called" renders the paused card — with a
+Resume affordance — at 5:02 AM on a perfectly healthy schedule.
+
+`billed: bool | null` is returned explicitly per call — the client displays
+"you were not charged" from `billed === false`, never inferring it from the
+result. `true`/`false` only once a call has resolved; `null` means no billable
+outcome exists yet (`SCHEDULED` / `IN_PROGRESS` / `NOT_CALLED`).
 
 ### `pause_reason`
 `null` when active.
@@ -160,7 +167,7 @@ bad connection, one round trip beats five.**
       "ftbendColor": null,
       "callTime": "06:05",
       "timezone": "America/Chicago",
-      "callWindow": { "opensAt": "06:00", "closesAt": "14:00" },
+      "callWindow": { "opensAt": "06:00", "closesAt": "14:59", "retryCutoff": "14:00" },
       "enabled": true,
       "pauseReason": null,
       "noCreditSkipCount": 0,
@@ -181,6 +188,16 @@ The client renders `schedules.first` and must not crash on zero or two.
 
 **Zero schedules means the user hasn't onboarded.** That's the signal to route
 into the onboarding flow, not an error.
+
+**`ftbendColor` is sourced from `profiles.user_color`** — the color lives on
+the profile, not the schedule row. The serializer joins it in; clients should
+not care, but whoever touches the backend should know where it comes from.
+
+**`GET /me` is the one deliberate exception to `authV1`'s no-side-effects
+rule:** when no profile row exists it bootstraps one, granting starter credits
+through the ledger exactly like the web `auth()` does. For an iOS-first signup,
+`/me` IS first touch — refusing to create the profile would strand the account.
+Every other v1 endpoint stays side-effect-free on read.
 
 **`pin` is returned in full, not masked.** It's the user's own PIN, on their own
 authenticated device, and they need to read it aloud while dialing the hotline
@@ -216,33 +233,45 @@ app can poll cheaply during the retry window.
   "result": "MUST_TEST",
   "billed": true,
   "resolvedAt": "2026-08-20T06:00:29-05:00",
-  "detail": "Testing opens 8:00 AM · Montgomery County CSCD",
   "attempt": 1,
   "maxAttempts": 1,
   "nextAttemptAt": null,
   "retryCutoffAt": null,
+  "pauseReason": null,
   "callLog": [
     { "at": "2026-08-20T06:00:02-05:00", "kind": "dial",   "text": "dialing Montgomery hotline" },
-    { "at": "2026-08-20T06:00:11-05:00", "kind": "ivr",    "text": "IVR menu detected" },
-    { "at": "2026-08-20T06:00:12-05:00", "kind": "dtmf",   "text": "press 1" },
-    { "at": "2026-08-20T06:00:17-05:00", "kind": "dtmf",   "text": "PIN sent 482913" },
-    { "at": "2026-08-20T06:00:27-05:00", "kind": "record", "text": "response recorded", "durationSeconds": 14 },
     { "at": "2026-08-20T06:00:29-05:00", "kind": "result", "text": "MUST_TEST" }
   ],
   "recording": {
     "callId": "uuid",
     "durationSeconds": 14,
-    "transcript": "Client four eight two nine one three is required to report...",
-    "matchConfidence": 0.98
+    "transcript": "Client four eight two nine one three is required to report..."
   },
   "fortBend": null
 }
 ```
 
+There is **no `detail` field** (dropped 2026-08-25): the client owns result
+copy — it can localize and restyle; a server string can't. And there is **no
+`matchConfidence`** on `recording`: Montgomery matching is keyword substring
+with no score, and inventing one is the pseudo-confidence pattern §4.10 bans.
+
+`recording.durationSeconds` is `int | null` — written by the recording webhook
+since migration 034; calls recorded before 2026-08-25 stay `null` (this also
+applies to `durationSeconds` in §4.2 rows and §4.4).
+
 `callLog[].kind` ∈ `dial` `connect` `ivr` `dtmf` `record` `transcribe` `color`
 `match` `result` `retry` `busy` `error`. Drives the timeline node styling.
+**Currently emitted: `dial` `retry` `error` `result` only** — the log is
+synthesized from durable data (`call_attempts` + `call_history`), and the
+richer kinds were never persisted anywhere. Emitting them requires a
+`call_events` table (backlogged, not built); until then a fuller log would be
+a fake narration of a real call. Clients must render whatever subset arrives.
 
-`nextAttemptAt` / `retryCutoffAt` are non-null only during Fort Bend retries.
+`nextAttemptAt` / `retryCutoffAt` are non-null only during **Montgomery**
+retries — per-user retries are Montgomery's `pending_retries` machinery.
+Fort Bend retries are office-level and invisible per user. (This sentence
+previously said Fort Bend; it was backwards.)
 
 For Fort Bend, `fortBend` carries the office board:
 
@@ -264,8 +293,14 @@ For Fort Bend, `fortBend` carries the office board:
 `announced` and `phases` are mutually exclusive. Both `null` means not heard yet.
 Rosenberg 2 is the office that reports phases.
 
+**Enabled schedules with no activity yet today** get `result: "SCHEDULED"`
+with `attempt`/`maxAttempts`/`billed` null and an empty `callLog` — the
+morning call simply hasn't started. Never render this as paused.
+
 **Paused users** get `result: "NOT_CALLED"` with the schedule's `pauseReason`
-echoed, an empty `callLog`, and null `recording`.
+echoed, an empty `callLog`, and null `recording`. (Schedules paused before
+pause-reason tagging shipped carry `pauseReason: null` — render the generic
+paused state.)
 
 ---
 
@@ -309,6 +344,12 @@ Full detail for one past call: same shape as `/today`'s `callLog` + `recording`.
 
 ```json
 { "url": "https://...signed...", "expiresAt": "...", "contentType": "audio/mpeg", "durationSeconds": 14 }
+```
+
+`durationSeconds` is `int | null` — null for calls recorded before 2026-08-25
+(§4.1).
+
+```json
 ```
 
 **Short-lived signed URL, never a permanent public link.** This is audio about a
@@ -398,7 +439,11 @@ claim yet" — clients render the absence honestly, never a zeroed chart.
   deliberately **no `peakDays` and no `confidence`**: the previous confidence
   score was `min(88, max(40, …))` — a clamped heuristic with no
   probabilistic meaning whose floor made thin data look moderately certain.
-  A number that looks rigorous and isn't is worse than no number. Headline
+  A number that looks rigorous and isn't is worse than no number. The same
+  ban removed `recording.matchConfidence` from §4.1 (2026-08-25): keyword
+  matching has no score, so any "confidence" there would be invented. Do not
+  reintroduce a confidence number anywhere in this API without a real
+  probabilistic model behind it. Headline
   copy labels any band **"recent historical range"** — never "most likely"
   or any probabilistic wording — and always pairs it with "possible any day".
 - **`window`** `{state, innerDays, outerDays, intervalsUsed, needed?,
