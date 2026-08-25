@@ -34,6 +34,9 @@ tokens. The client refreshes via Supabase and retries once.
 **Content type** `application/json` both directions. UTF-8.
 
 **Timestamps** ISO 8601 with offset, always. `"2026-08-20T06:00:29-05:00"`.
+Emitted values may include fractional seconds (Postgres emits microseconds)
+and may use `Z` instead of a numeric offset — e.g.
+`"2026-08-24T13:01:49.007851Z"`. Clients must accept all of these variants.
 Never bare dates for events. Calendar days (a testing date) use `"2026-08-20"`
 and are interpreted in the user's `timezone`.
 
