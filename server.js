@@ -1500,6 +1500,7 @@ app.get('/api/v1/prediction', authV1, async function(req, res) {
         escalation: null,
         dayOfWeek: null,
         countyDayPattern: countyPattern,
+        countyDayCounts: sysStats && sysStats.dayOfWeekCounts ? sysStats.dayOfWeekCounts : null,
         basedOn: null,
         notes: ['No MUST_TEST results recorded yet — prediction unlocks after your first required test.']
       });
@@ -1551,6 +1552,7 @@ app.get('/api/v1/prediction', authV1, async function(req, res) {
           })
         : null,
       countyDayPattern: countyPattern,
+      countyDayCounts: sysStats && sysStats.dayOfWeekCounts ? sysStats.dayOfWeekCounts : null,
       basedOn: p.sourceLabel,
       notes: notes
     });

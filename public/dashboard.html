@@ -325,9 +325,9 @@ select option { background: #1a1a2e; color: #fff; }
   <div class="test-stats-card" id="testStatsCard" style="display:none">
     <h3>📊 Test Frequency Analysis</h3>
     <div class="test-stats-grid">
-      <div class="test-stat highlight"><div class="value" id="statAvgInterval">--</div><div class="label">Avg Days Between Tests</div><div id="avgSpark"></div><div class="context" id="statAvgCtx"></div></div>
+      <div class="test-stat highlight"><div class="value" id="statAvgInterval">--</div><div class="label">Avg Days Between Tests</div><div class="context" id="statAvgCtx"></div></div>
       <div class="test-stat"><div class="value" id="statTotalTests">--</div><div class="label">Total Tests</div><div class="context" id="statTestsCtx"></div></div>
-      <div class="test-stat" id="statDaysSinceBox"><div style="display:flex;align-items:center;justify-content:center;gap:8px"><div class="value" id="statDaysSince">--</div><span id="daysRing"></span></div><div class="label">Days Since Last Test</div><div class="context" id="statDaysCtx"></div></div>
+      <div class="test-stat" id="statDaysSinceBox"><div id="daysGauge" style="display:flex;justify-content:center"></div><div class="label">Days Since Last Test</div><div class="context" id="statDaysCtx"></div></div>
       <div class="test-stat"><div class="value" id="statTestRate">--</div><div class="label">Tests Per Month</div><div class="context" id="statRateCtx"></div></div>
     </div>
     <div class="test-prediction" id="testPrediction">
@@ -2438,106 +2438,112 @@ if (document.getElementById('schedCounty')) {
 // proportional to length (thicker + more saturated); faint 7-day gridlines
 // give scale; the chain connects to TODAY (amber = preparation emphasis per
 // 4.11a) instead of ending in the past. Scrolls horizontally when narrow.
-function buildTestTimeline(recentTests, daysSince) {
+function buildTestTimeline(recentTests, daysSince, availWidth) {
   var pts = recentTests.map(function(iso) { return new Date(iso + "T12:00:00"); });
   var gaps = [];
   for (var i = 1; i < pts.length; i++) gaps.push(Math.round((pts[i] - pts[i - 1]) / 86400000));
   var maxGap = Math.max.apply(null, gaps.concat([1]));
-  var PX = 7, PAD = 42, H = 116, RY = 66;
+  var PAD = 42, TAIL = 58, H = 126, RY = 66;
+  var totalDays = gaps.reduce(function(a, b) { return a + b; }, 0) + Math.max(0, daysSince);
+  // One scale for the whole chart: fit the container when possible
+  // (px/day between 2.5 and 7), scroll only below the legibility floor.
+  var PX = 7;
+  if (availWidth && totalDays > 0) {
+    PX = Math.min(7, Math.max(2.5, (availWidth - PAD - TAIL) / totalDays));
+  }
   var xs = [PAD];
   gaps.forEach(function(g) { xs.push(xs[xs.length - 1] + g * PX); });
   var xToday = xs[xs.length - 1] + Math.max(0, daysSince) * PX;
-  var w = xToday + PAD + 46;
-  var totalDays = gaps.reduce(function(a, b) { return a + b; }, 0) + Math.max(0, daysSince);
+  var w = Math.ceil(xToday + TAIL);
   var s = "<svg width='" + w + "' height='" + H + "' style='display:block'>";
-  // 7-day gridlines, recessive
   for (var gd = 0; gd <= totalDays; gd += 7) {
     var gx = PAD + gd * PX;
-    s += "<line x1='" + gx + "' y1='30' x2='" + gx + "' y2='" + (H - 20) + "' stroke='rgba(255,255,255,0.045)' stroke-width='1'/>";
+    s += "<line x1='" + gx + "' y1='30' x2='" + gx + "' y2='" + (H - 22) + "' stroke='rgba(255,255,255,0.045)' stroke-width='1'/>";
   }
-  // base rail with a gradient along its length
   s += "<defs><linearGradient id='railGrad' x1='0' y1='0' x2='1' y2='0'>" +
     "<stop offset='0' stop-color='rgba(0,217,255,0.18)'/><stop offset='1' stop-color='rgba(0,217,255,0.55)'/></linearGradient></defs>";
   s += "<line x1='" + PAD + "' y1='" + RY + "' x2='" + xs[xs.length - 1] + "' y2='" + RY + "' stroke='url(#railGrad)' stroke-width='3' stroke-linecap='round'/>";
-  // gap segments: weight and saturation proportional to length
   gaps.forEach(function(g, i) {
     var rel = g / maxGap;
     s += "<line x1='" + xs[i] + "' y1='" + RY + "' x2='" + xs[i + 1] + "' y2='" + RY + "' stroke='rgba(0,217,255," + (0.18 + rel * 0.5).toFixed(2) + ")' stroke-width='" + (2 + rel * 5).toFixed(1) + "' stroke-linecap='round'/>";
     var mid = (xs[i] + xs[i + 1]) / 2;
-    s += "<text x='" + mid + "' y='" + (RY - 24) + "' text-anchor='middle' font-size='10' fill='#7d8aa8'>+" + g + "d</text>";
+    s += "<text x='" + mid + "' y='" + (RY - 24) + "' text-anchor='middle' font-size='11' fill='#94a3c0'>+" + g + "d</text>";
   });
-  // dashed connector to today
-  s += "<line x1='" + xs[xs.length - 1] + "' y1='" + RY + "' x2='" + xToday + "' y2='" + RY + "' stroke='rgba(245,158,11,0.45)' stroke-width='2' stroke-dasharray='4 5'/>";
-  // event markers: halo + ring + core
+  s += "<line x1='" + xs[xs.length - 1] + "' y1='" + RY + "' x2='" + xToday + "' y2='" + RY + "' stroke='rgba(245,158,11,0.5)' stroke-width='2' stroke-dasharray='4 5'/>";
+  var lastLabelEnd = -1e9, lastRow = 0;
   pts.forEach(function(p, i) {
     var label = p.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-    s += "<g><title>MUST_TEST \u2014 " + label + "</title>" +
+    s += "<g><title>Test required — " + label + "</title>" +
       "<circle cx='" + xs[i] + "' cy='" + RY + "' r='11' fill='rgba(0,217,255,0.10)'/>" +
       "<circle cx='" + xs[i] + "' cy='" + RY + "' r='7' fill='none' stroke='rgba(0,217,255,0.45)' stroke-width='1.5'/>" +
       "<circle cx='" + xs[i] + "' cy='" + RY + "' r='4.5' fill='#00d9ff'/></g>";
-    s += "<text x='" + xs[i] + "' y='" + (H - 4) + "' text-anchor='middle' font-size='10' fill='#8892b0'>" + label + "</text>";
+    // Stagger date labels onto a second row when neighbors would collide —
+    // colliding text is worse than an extra 13px of height.
+    // Centers closer than ~46px collide at 11px type; alternate rows.
+    var row = 0;
+    if (xs[i] - lastLabelEnd < 46 && lastRow === 0) row = 1;
+    var ly = row === 0 ? H - 18 : H - 5;
+    s += "<text x='" + xs[i] + "' y='" + ly + "' text-anchor='middle' font-size='11' fill='#94a3c0'>" + label + "</text>";
+    lastLabelEnd = xs[i];
+    lastRow = row;
   });
-  // today marker (amber, hollow)
-  s += "<g><title>today \u2014 " + daysSince + " days since last test</title>" +
+  s += "<g><title>Today — " + daysSince + " days since your last test</title>" +
     "<circle cx='" + xToday + "' cy='" + RY + "' r='6' fill='none' stroke='#f59e0b' stroke-width='2'/>" +
     "<circle cx='" + xToday + "' cy='" + RY + "' r='2' fill='#f59e0b'/></g>";
-  s += "<text x='" + (xToday + 12) + "' y='" + (RY - 24) + "' text-anchor='start' font-size='10' font-weight='600' fill='#f59e0b'>today \u00b7 " + daysSince + "d</text>";
-  return "<div style='overflow-x:auto'>" + s + "</svg></div>";
+  s += "<text x='" + Math.min(xToday + 10, w - 4) + "' y='" + (RY - 24) + "' text-anchor='" + (xToday + 70 > w ? "end" : "start") + "' font-size='11' font-weight='600' fill='#f59e0b'>today \u00b7 " + daysSince + "d</text>";
+  return "<div style='overflow-x:auto;max-width:100%'>" + s + "</svg></div>";
 }
 
 // Weekday chart: tall rounded cells, count INSIDE, day letter beneath,
 // single-hue intensity ramp with the dominant cell bordered. Counts wear ink
 // colors, never the series hue; weekends render low, never absent.
-function buildWeekdayVisual(county) {
-  var counts = window.systemStats && window.systemStats.dayOfWeekCounts;
+function buildWeekdayVisual(county, counts) {
   if (counts && counts.length === 7) {
     var mx = Math.max.apply(null, counts);
     var names = ["S", "M", "T", "W", "T", "F", "S"], cells = "";
     for (var i = 0; i < 7; i++) {
       var rel = mx > 0 ? counts[i] / mx : 0;
       var alpha = (0.08 + rel * 0.72).toFixed(2);
-      var ink = rel > 0.55 ? "#001018" : "#cfd6e4";
-      var border = counts[i] === mx ? "1px solid rgba(0,217,255,0.6)" : "1px solid rgba(255,255,255,0.06)";
-      cells += "<div style='display:flex;flex-direction:column;align-items:center;gap:3px'>" +
-        "<div title='" + counts[i] + " of " + county.total + " tests' style='width:34px;height:46px;border-radius:8px;border:" + border + ";display:flex;align-items:center;justify-content:center;font-size:0.78rem;font-weight:700;background:rgba(0,217,255," + alpha + ");color:" + ink + ";box-shadow:inset 0 1px 0 rgba(255,255,255,0.06)'>" + counts[i] + "</div>" +
-        "<div style='font-size:0.6rem;color:#8892b0'>" + names[i] + "</div></div>";
+      var ink = rel > 0.55 ? "#001018" : "#dbe3f0";
+      var border = counts[i] === mx ? "1.5px solid rgba(0,217,255,0.65)" : "1px solid rgba(255,255,255,0.07)";
+      cells += "<div style='display:flex;flex-direction:column;align-items:center;gap:4px'>" +
+        "<div title='" + counts[i] + " of " + county.total + " tests' style='width:40px;height:52px;border-radius:9px;border:" + border + ";display:flex;align-items:center;justify-content:center;font-size:0.95rem;font-weight:700;background:rgba(0,217,255," + alpha + ");color:" + ink + ";box-shadow:inset 0 1px 0 rgba(255,255,255,0.06)'>" + counts[i] + "</div>" +
+        "<div style='font-size:0.68rem;color:#94a3c0'>" + names[i] + "</div></div>";
     }
-    return "<div style='display:flex;gap:6px;margin:10px 0 2px'>" + cells + "</div>" +
-      "<div style='font-size:0.62rem;color:#666'>Montgomery County overall \u00b7 darker = more often \u00b7 no day is safe</div>";
+    return "<div style='display:flex;gap:7px;margin:10px 0 3px;flex-wrap:wrap'>" + cells + "</div>" +
+      "<div style='font-size:0.68rem;color:#7d8aa8'>tests recorded per day of week \u00b7 darker = more often \u00b7 no day is safe</div>";
   }
-  var wkPct = Math.max(2, Math.round(((county.total - county.weekendCount) / county.total) * 100));
-  return "<div style='display:flex;height:8px;border-radius:4px;overflow:hidden;margin:8px 0 2px'>" +
-    "<div style='width:" + wkPct + "%;background:rgba(0,217,255,0.6)' title='weekday tests'></div>" +
-    "<div style='flex:1;background:rgba(0,217,255,0.14)' title='weekend tests'></div></div>" +
-    "<div style='font-size:0.62rem;color:#666'>" + (county.total - county.weekendCount) + " weekday \u00b7 " + county.weekendCount + " weekend \u00b7 no day is safe</div>";
+  // Fallback split bar: both segments labeled ON the bar, weekend block
+  // fixed-width so 2-of-72 is visible, never a hairline.
+  var wk = county.total - county.weekendCount;
+  return "<div style='display:flex;height:22px;border-radius:6px;overflow:hidden;margin:10px 0 3px;font-size:0.68rem;font-weight:600'>" +
+    "<div style='flex:1;background:rgba(0,217,255,0.55);display:flex;align-items:center;padding-left:8px;color:#001018'>" + wk + " weekdays</div>" +
+    "<div style='width:92px;background:rgba(0,217,255,0.14);display:flex;align-items:center;justify-content:center;color:#dbe3f0'>" + county.weekendCount + " weekends</div></div>" +
+    "<div style='font-size:0.68rem;color:#7d8aa8'>no day is safe</div>";
 }
 
-// Tiny gap sparkline for the Avg tile: recent gaps as bars, de-emphasis hue,
-// latest bar in the accent. Ring for Days Since: overdue ratio on a
-// neutral -> amber -> red scale per 4.11a (never green).
-function buildGapSpark(recentTests) {
-  var gaps = [];
-  for (var i = 1; i < recentTests.length; i++) {
-    gaps.push(Math.round((new Date(recentTests[i]) - new Date(recentTests[i - 1])) / 86400000));
+// Days-since gauge: the ring WRAPS the number, so the number is its own
+// label. Fill = daysSince / average gap; past 1.0x the fill overflows onto
+// an outer lap. Ramp is dark slate -> amber -> red per 4.11a — NEVER green:
+// green at day 3 says "you're clear", and a person can be tested on day 3.
+// A tick at the top marks the 1.0x ("your usual gap") landmark.
+function buildDaysGauge(daysSince, avg) {
+  var size = 76, c = size / 2, R = 27, TRACK = 5;
+  var ratio = avg ? daysSince / avg : null;
+  var color = ratio === null ? '#8892b0' : ratio >= 1 ? '#ef4444' : ratio >= 0.7 ? '#f59e0b' : 'rgba(136,146,176,0.95)';
+  var C = 2 * Math.PI * R;
+  var frac1 = ratio === null ? 0 : Math.min(1, ratio);
+  var s = "<svg width='" + size + "' height='" + size + "'>";
+  s += "<title>" + (ratio !== null ? ratio.toFixed(1) + "\u00d7 your usual gap between tests" : "days since your last test") + "</title>";
+  s += "<circle cx='" + c + "' cy='" + c + "' r='" + R + "' fill='none' stroke='rgba(255,255,255,0.08)' stroke-width='" + TRACK + "'/>";
+  s += "<circle cx='" + c + "' cy='" + c + "' r='" + R + "' fill='none' stroke='" + color + "' stroke-width='" + TRACK + "' stroke-linecap='round' stroke-dasharray='" + (C * frac1).toFixed(1) + " " + C.toFixed(1) + "' transform='rotate(-90 " + c + " " + c + ")'/>";
+  if (ratio !== null && ratio > 1) {
+    var R2 = R + 5, C2 = 2 * Math.PI * R2, frac2 = Math.min(1, ratio - 1);
+    s += "<circle cx='" + c + "' cy='" + c + "' r='" + R2 + "' fill='none' stroke='#ef4444' stroke-width='2.5' stroke-linecap='round' stroke-dasharray='" + (C2 * frac2).toFixed(1) + " " + C2.toFixed(1) + "' transform='rotate(-90 " + c + " " + c + ")' opacity='0.85'/>";
   }
-  if (!gaps.length) return "";
-  var mx = Math.max.apply(null, gaps), W = 64, BH = 16, bw = Math.min(10, W / gaps.length - 2);
-  var s = "<svg width='" + W + "' height='" + BH + "' style='display:block;margin:4px auto 0'>";
-  gaps.forEach(function(g, i) {
-    var h = Math.max(2, (g / mx) * BH);
-    var fill = i === gaps.length - 1 ? "rgba(0,217,255,0.9)" : "rgba(0,217,255,0.30)";
-    s += "<rect x='" + (i * (bw + 2)) + "' y='" + (BH - h) + "' width='" + bw + "' height='" + h + "' rx='1.5' fill='" + fill + "'><title>+" + g + "d gap</title></rect>";
-  });
+  s += "<line x1='" + c + "' y1='" + (c - R - 7) + "' x2='" + c + "' y2='" + (c - R + 4) + "' stroke='rgba(255,255,255,0.5)' stroke-width='2'/>";
+  s += "<text x='" + c + "' y='" + (c + 7) + "' text-anchor='middle' font-size='21' font-weight='700' fill='#fff'>" + daysSince + "</text>";
   return s + "</svg>";
-}
-function buildDaysRing(daysSince, avg) {
-  if (!avg) return "";
-  var ratio = Math.min(1.5, daysSince / avg);
-  var color = ratio >= 1 ? "#ef4444" : ratio >= 0.7 ? "#f59e0b" : "rgba(136,146,176,0.9)";
-  var R = 9, C = 2 * Math.PI * R, frac = Math.min(1, ratio);
-  return "<svg width='24' height='24' style='display:block'><title>" + Math.round(ratio * 100) + "% of your average gap</title>" +
-    "<circle cx='12' cy='12' r='" + R + "' fill='none' stroke='rgba(255,255,255,0.08)' stroke-width='3'/>" +
-    "<circle cx='12' cy='12' r='" + R + "' fill='none' stroke='" + color + "' stroke-width='3' stroke-linecap='round' stroke-dasharray='" + (C * frac).toFixed(1) + " " + C.toFixed(1) + "' transform='rotate(-90 12 12)'/></svg>";
 }
 
 function calculateTestStats() {
@@ -2549,16 +2555,24 @@ function calculateTestStats() {
       card.style.display = "block";
       document.getElementById("statAvgInterval").textContent = p.yourIntervalDays !== null ? p.yourIntervalDays.toFixed(1) : "--";
       document.getElementById("statTotalTests").textContent = p.testsCounted;
-      document.getElementById("statDaysSince").textContent = p.daysSinceLastTest;
+      document.getElementById("daysGauge").innerHTML = buildDaysGauge(p.daysSinceLastTest, p.yourIntervalDays);
       document.getElementById("statTestRate").textContent = p.testsPerMonth;
-      // Contextual lines + micro-viz (dataviz stat-tile contract: label,
-      // value, context, optional trend). All data-derived, no new claims.
-      document.getElementById("statAvgCtx").textContent = "recency-weighted";
-      document.getElementById("statTestsCtx").textContent = "over " + p.observationDays + " days observed";
-      document.getElementById("statDaysCtx").textContent = p.yourIntervalDays ? "avg gap " + p.yourIntervalDays.toFixed(1) + "d" : "";
-      document.getElementById("statRateCtx").textContent = "MUST_TEST rate";
-      document.getElementById("avgSpark").innerHTML = p.recentTests && p.recentTests.length >= 3 ? buildGapSpark(p.recentTests) : "";
-      document.getElementById("daysRing").innerHTML = buildDaysRing(p.daysSinceLastTest, p.yourIntervalDays);
+      // Context lines: plain language only — no schema names, no method
+      // jargon. Every colored element is labeled where it appears.
+      document.getElementById("statAvgCtx").textContent = "recent tests count more";
+      document.getElementById("statTestsCtx").textContent = "over " + p.observationDays + " days";
+      var ratio = p.yourIntervalDays ? p.daysSinceLastTest / p.yourIntervalDays : null;
+      var daysCtx = document.getElementById("statDaysCtx");
+      if (ratio !== null) {
+        // Inline label for the ring (bug 1): same words, same color, right
+        // under the number it describes. Neutral -> amber -> red per 4.11a.
+        daysCtx.textContent = ratio >= 1
+          ? ratio.toFixed(1) + "\u00d7 your usual gap — stay ready"
+          : Math.round(ratio * 100) + "% of your usual gap";
+        daysCtx.style.color = ratio >= 1 ? "#ef4444" : ratio >= 0.7 ? "#f59e0b" : "#8892b0";
+      } else { daysCtx.textContent = ""; }
+      document.getElementById("statRateCtx").textContent = "tests per month on average";
+
       var dsBox = document.getElementById("statDaysSinceBox");
       dsBox.className = "test-stat";
       if (p.yourIntervalDays) {
@@ -2622,14 +2636,15 @@ function calculateTestStats() {
         if (titleEl) { titleEl.textContent = "Test Days"; titleEl.style.textAlign = "left"; }
         if (legendEl) legendEl.style.display = "none";
         var county = p.countyDayPattern;
-        var html = "<div style='text-align:left;width:100%;font-size:0.75rem'>";
+        var availW = Math.max(280, (rowEl.clientWidth || 600) - 8);
+        var html = "<div style='text-align:left;width:100%;min-width:0;font-size:0.8rem'>";
 
         // HERO — the timeline leads the lower half: the irregularity is the
         // story and the proportional spacing makes the argument.
         if (p.recentTests && p.recentTests.length >= 2) {
           html += "<div style='margin-bottom:16px'>" +
             "<div style='color:#8892b0;margin-bottom:2px'>Your recent tests</div>" +
-            buildTestTimeline(p.recentTests, p.daysSinceLastTest) +
+            buildTestTimeline(p.recentTests, p.daysSinceLastTest, availW) +
             "</div>";
         }
 
@@ -2639,7 +2654,7 @@ function calculateTestStats() {
             "<div style='color:#f59e0b;font-weight:700;font-size:1.02rem;margin-bottom:4px'>Stay ready every weekday.</div>" +
             "<div style='color:#8892b0;line-height:1.55'>Montgomery County overall: " +
             (county.total - county.weekendCount) + " of " + county.total + " recorded tests fell on weekdays — but which weekday looks random. Weekend tests are rare, not never (" + county.weekendCount + " of " + county.total + ").</div>" +
-            buildWeekdayVisual(county) +
+            buildWeekdayVisual(county, p.countyDayCounts) +
             "</div>";
         } else {
           html += "<div style='border-top:1px solid rgba(255,255,255,0.06);padding-top:12px;margin-bottom:16px'>" +
@@ -2651,8 +2666,10 @@ function calculateTestStats() {
         // Unlock progress — label and bar as one unit.
         var pctToUnlock = Math.min(100, Math.round((p.testsCounted / 35) * 100));
         html += "<div style='border-top:1px solid rgba(255,255,255,0.06);padding-top:12px'>" +
-          "<div style='color:#8892b0;margin-bottom:3px'>Your own day pattern unlocks at 35 recorded tests (" + p.testsCounted + " so far).</div>" +
-          "<div style='background:rgba(255,255,255,0.06);border-radius:3px;height:5px;overflow:hidden'><div style='background:rgba(0,217,255,0.55);height:100%;width:" + pctToUnlock + "%'></div></div>" +
+          "<div style='display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px'>" +
+          "<span style='color:#94a3c0'>Your own day pattern unlocks at 35 recorded tests.</span>" +
+          "<span style='color:#7d8aa8;font-size:0.72rem'>" + p.testsCounted + " of 35</span></div>" +
+          "<div style='background:rgba(255,255,255,0.06);border-radius:2px;height:4px;overflow:hidden'><div style='background:rgba(0,217,255,0.55);height:100%;width:" + pctToUnlock + "%'></div></div>" +
           "</div>";
 
         html += "</div>";
