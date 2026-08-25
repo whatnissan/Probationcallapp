@@ -1938,6 +1938,48 @@ async function hasSmsConsent(userId) {
   return !r.error && !!(r.data && r.data.length);
 }
 
+// One-time re-confirmation for pre-migration SMS users (part 4 of the
+// consent work). Records the same consent row as a schedule save, sourced
+// 'reconfirm_prompt'. Notifications are NEVER gated on this — the prompt
+// exists to build the record, not to threaten delivery.
+app.post('/api/sms-consent/reconfirm', auth, async function(req, res) {
+  var sched = await supabase.from('user_schedules')
+    .select('notify_method, notify_number').eq('user_id', req.user.id).maybeSingle();
+  if (!sched.data || ['sms', 'both'].indexOf(sched.data.notify_method) < 0) {
+    return res.status(400).json({ error: 'Nothing to confirm — your notifications are not set to SMS.' });
+  }
+  var ok = await recordSmsConsent(req.user.id, sched.data.notify_number, req, 'reconfirm_prompt');
+  if (!ok) return res.status(500).json({ error: 'Could not save your confirmation — please try again.' });
+  res.json({ success: true });
+});
+
+// The reconfirm prompt's polite alternative: switch notifications to email.
+// Guard (Dave, 2026-08-24): a user must never end up worse off for tapping
+// it — the switch requires a usable email (schedule email, else account
+// email). Relay-address users are allowed through but were warned inline
+// client-side; no-email users never see the option AND are rejected here.
+app.post('/api/notify-method', auth, async function(req, res) {
+  if (req.body.method !== 'email') {
+    return res.status(400).json({ error: 'Only switching to email is supported here.' });
+  }
+  var sched = await supabase.from('user_schedules')
+    .select('notify_email').eq('user_id', req.user.id).maybeSingle();
+  if (!sched.data) return res.status(400).json({ error: 'No schedule on file.' });
+  var email = sched.data.notify_email || req.user.email || null;
+  if (!email || !isValidEmail(email)) {
+    return res.status(400).json({ error: 'No email address on file — add one on the Schedule page first.' });
+  }
+  var upd = await supabase.from('user_schedules')
+    .update({ notify_method: 'email', notify_email: email })
+    .eq('user_id', req.user.id);
+  if (upd.error) {
+    console.error('[NOTIFY-METHOD] switch failed for ' + req.user.id.slice(0, 8) + ':', upd.error.message);
+    return res.status(500).json({ error: 'Could not update — please try again.' });
+  }
+  console.log('[NOTIFY-METHOD] user ' + req.user.id.slice(0, 8) + ' switched to email via reconfirm prompt');
+  res.json({ success: true });
+});
+
 app.post('/api/schedule', auth, async function(req, res) {
   var hour = parseInt(req.body.hour) || 6;
   var minute = parseInt(req.body.minute) || 0;

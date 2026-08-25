@@ -644,6 +644,27 @@ select option { background: #1a1a2e; color: #fff; }
   </div>
 </div>
 
+<!-- SMS RE-CONFIRMATION MODAL (one-time, pre-migration SMS users).
+     Tone is deliberately maintenance, not account-problem: these people
+     already agreed — we just have no record of it. Blocking (no X), but
+     notifications are never gated on it. -->
+<div class="modal" id="reconfirmModal">
+  <div class="modal-content" style="max-width:440px">
+    <div style="font-size:0.95rem;font-weight:700;color:#00d9ff;margin-bottom:6px">Quick confirmation</div>
+    <p style="color:#e4e4e7;font-size:0.86rem;line-height:1.55">You get your daily test results by text at <b id="reconfirmPhone"></b>. We're tidying up our records — please confirm you're happy to keep receiving them.</p>
+    <p style="color:#8892b0;font-size:0.76rem;margin-top:6px">Nothing changes about your schedule or notifications.</p>
+    <div class="consent-box" style="display:block;margin:14px 0">
+      <h4>📱 SMS Notification Consent</h4>
+      <p>By checking the box below, you agree to receive SMS text messages from ProbationCall. Message frequency: up to 1 per call. Msg &amp; data rates may apply. Reply STOP to unsubscribe.</p>
+      <label><input type="checkbox" id="reconfirmConsent"><span>I agree to receive SMS messages and have read the <a href="/terms.html" target="_blank">Terms</a> and <a href="/privacy.html" target="_blank">Privacy Policy</a>.</span></label>
+    </div>
+    <button class="btn" id="reconfirmBtn" onclick="submitReconfirm()" disabled style="width:100%;opacity:0.5">Confirm — keep texting me</button>
+    <div id="reconfirmRelayWarn" style="display:none;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);border-radius:8px;padding:9px;margin-top:12px;font-size:0.74rem;color:#f59e0b">Your Apple ID uses a hidden relay email — mail there can be less reliable. SMS is the recommended channel for test results.</div>
+    <span id="reconfirmAlt" onclick="reconfirmSwitchToEmail()" style="display:none;text-align:center;color:#8892b0;font-size:0.78rem;margin-top:12px;text-decoration:underline;cursor:pointer">Prefer email instead? Switch my notifications to email</span>
+    <div id="reconfirmStatus" style="display:none;color:#ef4444;font-size:0.78rem;margin-top:10px;text-align:center"></div>
+  </div>
+</div>
+
 <!-- BUY MODAL -->
 <div class="modal" id="buyModal">
   <div class="modal-content">
@@ -1317,6 +1338,15 @@ function loadUser() {
         }
       }
       
+      // One-time SMS re-confirmation (part 4). Deferred so the terms and
+      // onboarding modals keep precedence; skipped entirely while either is up.
+      if (d.needsSmsReconfirm) {
+        window._reconfirmData = {
+          phone: (d.schedule && d.schedule.notify_number) || '',
+          email: (d.schedule && d.schedule.notify_email) || d.user.email || ''
+        };
+        setTimeout(maybeShowReconfirm, 900);
+      }
       window.callHistoryData = d.history || [];
       renderCallHistory("all");
       calculateTestStats(d.history, window.systemStats);
@@ -1499,6 +1529,78 @@ function linkApple() {
       // Success navigates to Apple and back; nothing else to do here.
     })
     .catch(function(e) { alert('Could not link Apple ID: ' + e.message); });
+}
+
+function maskPhone(e164) {
+  var digits = String(e164 || '').replace(/[^0-9]/g, '').replace(/^1/, '');
+  if (digits.length !== 10) return 'your number on file';
+  return '(' + digits.slice(0, 3) + ') \u2022\u2022\u2022-\u2022\u2022' + digits.slice(8);
+}
+
+function maybeShowReconfirm() {
+  var data = window._reconfirmData;
+  if (!data) return;
+  // Terms / onboarding win; try again shortly rather than stacking modals.
+  var disclaimer = document.getElementById('disclaimerModal');
+  var onboarding = document.getElementById('onboardingModal');
+  if ((disclaimer && disclaimer.classList.contains('active')) || (onboarding && onboarding.classList.contains('active'))) {
+    setTimeout(maybeShowReconfirm, 3000);
+    return;
+  }
+  document.getElementById('reconfirmPhone').textContent = maskPhone(data.phone);
+  // The polite alternative must never make anyone worse off: hidden when no
+  // usable email exists; shown with the relay warning when the only email is
+  // an Apple hidden-relay address (the less reliable path).
+  var alt = document.getElementById('reconfirmAlt');
+  var warn = document.getElementById('reconfirmRelayWarn');
+  var email = data.email || '';
+  if (!email) {
+    alt.style.display = 'none'; warn.style.display = 'none';
+  } else if (/@privaterelay\.appleid\.com$/i.test(email)) {
+    alt.style.display = 'block'; warn.style.display = 'block';
+  } else {
+    alt.style.display = 'block'; warn.style.display = 'none';
+  }
+  var box = document.getElementById('reconfirmConsent');
+  var btn = document.getElementById('reconfirmBtn');
+  box.onchange = function() { btn.disabled = !box.checked; btn.style.opacity = box.checked ? '1' : '0.5'; };
+  document.getElementById('reconfirmModal').classList.add('active');
+}
+
+function submitReconfirm() {
+  if (!document.getElementById('reconfirmConsent').checked) return;
+  var st = document.getElementById('reconfirmStatus');
+  fetch('/api/sms-consent/reconfirm', { method: 'POST', headers: { Authorization: 'Bearer ' + token } })
+    .then(function(r) { return r.json(); })
+    .then(function(res) {
+      if (res.success) {
+        window._reconfirmData = null;
+        document.getElementById('reconfirmModal').classList.remove('active');
+      } else {
+        st.style.display = 'block'; st.textContent = res.error || 'Could not save — please try again.';
+      }
+    })
+    .catch(function() { st.style.display = 'block'; st.textContent = 'Network error — please try again.'; });
+}
+
+function reconfirmSwitchToEmail() {
+  var st = document.getElementById('reconfirmStatus');
+  fetch('/api/notify-method', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({ method: 'email' })
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(res) {
+      if (res.success) {
+        window._reconfirmData = null;
+        document.getElementById('reconfirmModal').classList.remove('active');
+        loadUser(); // refresh the schedule display with the new method
+      } else {
+        st.style.display = 'block'; st.textContent = res.error || 'Could not switch — please try again.';
+      }
+    })
+    .catch(function() { st.style.display = 'block'; st.textContent = 'Network error — please try again.'; });
 }
 
 function redeemPromo() {
