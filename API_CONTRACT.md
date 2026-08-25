@@ -470,6 +470,11 @@ claim yet" — clients render the absence honestly, never a zeroed chart.
   `dayOfWeekSuppressed` (human-readable reason with progress, e.g.
   "needs 35+ tests (15 so far)") plus `countyDayPattern` — never an empty
   or zeroed chart.
+- **`countyDayCounts`** `[int x7] | null` — pooled county MUST_TEST counts
+  Sun..Sat, for the weekday-frequency cells. Added 2026-08-26 so clients
+  need no second fetch (the web dashboard's cells raced /api/system-stats
+  and lost). Render per §4.11a: single-hue intensity, counts in ink colors,
+  weekends low — never absent, never green.
 - **`countyDayPattern`** `{total, weekendCount, fullWeekSignificant,
   weekdaySignificant} | null` — pooled county-level facts, two-stage tested.
   Production reality: the full-week chi-square clears (p<0.01) ENTIRELY on
