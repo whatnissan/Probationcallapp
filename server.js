@@ -1488,6 +1488,7 @@ app.get('/api/v1/prediction', authV1, async function(req, res) {
       return res.json({
         county: county,
         nextWindow: null,
+        window: { state: 'insufficient', intervalsUsed: 0, needed: 5, innerDays: null, outerDays: null, scoredOrigins: 0, innerCoverage: null },
         yourIntervalDays: null,
         countyAverageIntervalDays: sysStats ? sysStats.scheduledAvg : null,
         daysSinceLastTest: null,
@@ -1506,14 +1507,28 @@ app.get('/api/v1/prediction', authV1, async function(req, res) {
 
     var notes = [
       'Rapid retests are included in interval math — a quick re-call is the county\'s escalation signal.',
-      'The window is a range, not a promise: testing is possible any day.'
+      'Any window shown is a recent historical range, not a probability: testing is possible any day.'
     ];
     if (p.longDropped > 0) notes.push(p.longDropped + ' long gap(s) excluded — schedule was off, so those gaps are unobserved, not real cadence.');
     if (p.escalation) notes.push('Latest test came ' + p.escalation.lastGapDays + 'd after the previous — frequency may be increasing.');
+    if (p.window && p.window.state === 'irregular') notes.push('Intervals too irregular to narrow: no defensible window exists; the has-ranged bound is a fact about the past, not a forecast.');
+    if (p.window && p.window.state === 'insufficient') notes.push('Fewer than ' + p.window.needed + ' completed intervals: window estimation not attempted.');
 
+    // nextWindow is populated ONLY when the user's own walk-forward self-test
+    // certifies an inner band (window.state === 'two_number') — the 2026-08-25
+    // backtest measured the old always-on envelope at 35% prospective misses.
+    var win = p.window || null;
+    var nextWindow = null;
+    if (win && win.state === 'two_number' && win.innerDays) {
+      nextWindow = {
+        startDays: Math.max(0, win.innerDays[0] - p.daysSince),
+        endDays: Math.max(0, win.innerDays[1] - p.daysSince)
+      };
+    }
     res.json({
       county: county,
-      nextWindow: p.predict ? { startDays: p.predict.lo, endDays: p.predict.hi } : null,
+      nextWindow: nextWindow,
+      window: win,
       yourIntervalDays: p.avgDays !== null ? Math.round(p.avgDays * 10) / 10 : null,
       countyAverageIntervalDays: sysStats ? sysStats.scheduledAvg : null,
       daysSinceLastTest: p.daysSince,

@@ -33,6 +33,64 @@
   var DAY_GRID_MIN_TESTS = 35;
   var CHI2_CRIT_DF6_P05 = 12.592;
   var ESCALATION_MIN_INTERVALS = 4;
+  // Window classification (2026-08-25 backtest, 17 walk-forward forecasts):
+  // the old min-max envelope missed 35% prospectively — most misses are new
+  // record extremes, which an envelope cannot contain by definition — and
+  // every tighter percentile band traded width for MORE misses (P20-P80:
+  // 41% coverage). Below MIN_PRIORS completed intervals, each observation
+  // carries 20%+ of the distribution's mass, so a "percentile" is one data
+  // point in costume. A user earns the two-number presentation only when
+  // their own walk-forward self-test clears STABILITY_* — otherwise the
+  // honest output is "too irregular to narrow", which the backtest showed
+  // is the correct answer for most users.
+  var MIN_PRIORS = 5;
+  var STABILITY_MIN_ORIGINS = 3;
+  var STABILITY_MIN_COVERAGE = 0.7;
+
+  // Weighted quantile: value-sorted pairs, c_j = (S_j - w_j/2)/W, linear
+  // interpolation between the c's.
+  function wquantile(vals, weights, p) {
+    var pairs = vals.map(function(v, i) { return [v, weights[i]]; }).sort(function(a, b) { return a[0] - b[0]; });
+    var W = pairs.reduce(function(s, x) { return s + x[1]; }, 0);
+    var S = 0;
+    var c = pairs.map(function(x) { S += x[1]; return (S - x[1] / 2) / W; });
+    if (p <= c[0]) return pairs[0][0];
+    if (p >= c[c.length - 1]) return pairs[pairs.length - 1][0];
+    for (var j = 0; j + 1 < c.length; j++) {
+      if (p >= c[j] && p <= c[j + 1]) {
+        return pairs[j][0] + ((p - c[j]) / (c[j + 1] - c[j])) * (pairs[j + 1][0] - pairs[j][0]);
+      }
+    }
+    return pairs[pairs.length - 1][0];
+  }
+
+  // Recency-weighted P10-P90 (half-life 4 intervals), rounded OUTWARD.
+  function innerBandOf(priors) {
+    var w = priors.map(function(_, i) { return Math.pow(0.5, (priors.length - 1 - i) / HALF_LIFE_INTERVALS); });
+    return [Math.floor(wquantile(priors, w, 0.10)), Math.ceil(wquantile(priors, w, 0.90))];
+  }
+
+  // Classify what window, if any, the user's history can honestly support.
+  // 'two_number': inner recent-historical-range + outer has-ranged bound.
+  // 'irregular': the user's own walk-forward self-test failed — no narrow
+  //              window is defensible; show the outer bound as history-fact.
+  // 'insufficient': fewer than MIN_PRIORS completed intervals.
+  function classifyWindow(used) {
+    if (used.length < MIN_PRIORS) {
+      return { state: 'insufficient', intervalsUsed: used.length, needed: MIN_PRIORS, innerDays: null, outerDays: null, scoredOrigins: 0, innerCoverage: null };
+    }
+    var outer = [Math.min.apply(null, used), Math.max.apply(null, used)];
+    var scored = 0, hits = 0;
+    for (var t = MIN_PRIORS; t < used.length; t++) {
+      var b = innerBandOf(used.slice(0, t));
+      scored++;
+      if (used[t] >= b[0] && used[t] <= b[1]) hits++;
+    }
+    var stable = scored >= STABILITY_MIN_ORIGINS && (hits / scored) >= STABILITY_MIN_COVERAGE;
+    var base = { intervalsUsed: used.length, outerDays: outer, scoredOrigins: scored, innerCoverage: scored ? Math.round((hits / scored) * 100) / 100 : null };
+    if (!stable) return Object.assign({ state: 'irregular', innerDays: null }, base);
+    return Object.assign({ state: 'two_number', innerDays: innerBandOf(used) }, base);
+  }
 
   function computePrediction(history, sysStats, nowMs) {
     var now = nowMs || Date.now();
@@ -166,7 +224,8 @@
       escalation: escalation,
       predict: predict,
       dayGrid: { show: show, reason: reason, counts: dayCounts, pct: pct },
-      weekOfMonthCounts: weekCounts
+      weekOfMonthCounts: weekCounts,
+      window: classifyWindow(used)
     };
   }
 

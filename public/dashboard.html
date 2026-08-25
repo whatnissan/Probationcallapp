@@ -2452,28 +2452,36 @@ function calculateTestStats() {
       }
       var predictEl = document.getElementById("predictText");
       var confEl = document.getElementById("predictConfidence");
-      if (p.nextWindow) {
-        var lo = p.nextWindow.startDays, hi = p.nextWindow.endDays;
-        var daysUntil = Math.round((lo + hi) / 2);
-        if (hi <= 0 || (lo <= 0 && daysUntil <= 0)) {
+      var win = p.window || { state: 'insufficient', intervalsUsed: 0, needed: 5 };
+      // Three window states (2026-08-25 backtest). The irregular and
+      // not-enough-history states are the PRIMARY experience -- 14 of 15
+      // current users see one of them -- so they are full, calm sentences,
+      // not error styling. No probabilistic wording anywhere: the old
+      // always-on envelope measured 35% prospective misses.
+      if (win.state === 'two_number' && p.nextWindow) {
+        var wlo = p.nextWindow.startDays, whi = p.nextWindow.endDays;
+        if (whi <= 0) {
           predictEl.textContent = "Test possible any day now — stay ready";
           predictEl.style.color = "#ef4444";
-        } else if (lo <= 1) {
-          predictEl.textContent = "Next test likely within " + hi + " days — possible any day, stay ready";
-          predictEl.style.color = "#f59e0b";
         } else {
-          predictEl.textContent = "Next test likely " + lo + "\u2013" + hi + " days out — but possible any day";
+          predictEl.textContent = "Recent historical range: " + wlo + "\u2013" + whi + " days out — possible any day";
           predictEl.style.color = "#00d9ff";
         }
-        var confText = "Based on " + p.testsCounted + " tests over " + p.observationDays + "d · " + (p.basedOn || "");
-        if (p.rapidRetestsIncluded > 0) confText += " · " + p.rapidRetestsIncluded + " rapid retest" + (p.rapidRetestsIncluded > 1 ? "s" : "") + " included";
-        if (p.unobservedGapsExcluded > 0) confText += " · " + p.unobservedGapsExcluded + " unobserved gap" + (p.unobservedGapsExcluded > 1 ? "s" : "") + " excluded";
-        if (p.escalation) confText += " · \u26A0 tested again " + p.escalation.lastGapDays + "d after the previous test — frequency may be increasing";
-        confEl.textContent = confText;
+        confEl.textContent = "Has ranged " + win.outerDays[0] + "\u2013" + win.outerDays[1] + " days between tests · based on " + win.intervalsUsed + " completed intervals";
+      } else if (win.state === 'irregular') {
+        predictEl.textContent = "Your history is too irregular to narrow — possible any day, stay ready";
+        predictEl.style.color = "#f59e0b";
+        confEl.textContent = "Tests have ranged " + win.outerDays[0] + "\u2013" + win.outerDays[1] + " days apart (" + win.intervalsUsed + " completed intervals) — a fact about the past, not a forecast";
       } else {
-        predictEl.textContent = "Need more data for prediction"; predictEl.style.color = "#8892b0";
-        confEl.textContent = "Keep logging tests to improve accuracy";
+        predictEl.textContent = "Not enough history yet to estimate timing — stay ready any day";
+        predictEl.style.color = "#f59e0b";
+        confEl.textContent = (win.intervalsUsed || 0) + " of " + (win.needed || 5) + " completed intervals recorded";
       }
+      var extras = [];
+      if (p.rapidRetestsIncluded > 0) extras.push(p.rapidRetestsIncluded + " rapid retest" + (p.rapidRetestsIncluded > 1 ? "s" : "") + " included");
+      if (p.unobservedGapsExcluded > 0) extras.push(p.unobservedGapsExcluded + " unobserved gap" + (p.unobservedGapsExcluded > 1 ? "s" : "") + " excluded");
+      if (p.escalation) extras.push("\u26A0 tested again " + p.escalation.lastGapDays + "d after the previous test — frequency may be increasing");
+      if (extras.length) confEl.textContent += " · " + extras.join(" · ");
       var titleEl = document.getElementById("patternTitle");
       var legendEl = document.getElementById("patternLegend");
       var rowEl = document.getElementById("patternRow");

@@ -643,10 +643,15 @@ function calcUserStats(calls,sysStats){
   var p=PredictionCore.computePrediction(calls,sysStats);
   if(!p) return null;
   var predict="";
-  if(p.predict){
-    if(p.predict.daysUntil<=0) predict="<span style='color:#ef4444'>Test possible any day — stay ready</span>";
-    else if(p.predict.lo<=1) predict="<span style='color:#f59e0b'>Likely within "+p.predict.hi+"d — possible any day</span>";
-    else predict="<span style='color:#00d9ff'>Likely "+p.predict.lo+"\u2013"+p.predict.hi+"d out — possible any day</span>";
+  var win=p.window||{state:'insufficient',intervalsUsed:0,needed:5};
+  if(win.state==='two_number'&&win.innerDays){
+    var wl=Math.max(0,win.innerDays[0]-p.daysSince),wh=Math.max(0,win.innerDays[1]-p.daysSince);
+    predict=wh<=0?"<span style='color:#ef4444'>Test possible any day — stay ready</span>"
+      :"<span style='color:#00d9ff'>Recent historical range: "+wl+"\u2013"+wh+"d out</span> <span style='color:#8892b0;font-size:0.75rem'>(has ranged "+win.outerDays[0]+"\u2013"+win.outerDays[1]+"d)</span>";
+  } else if(win.state==='irregular'){
+    predict="<span style='color:#f59e0b'>Too irregular to narrow — any day</span> <span style='color:#8892b0;font-size:0.75rem'>(ranged "+win.outerDays[0]+"\u2013"+win.outerDays[1]+"d, n="+win.intervalsUsed+")</span>";
+  } else {
+    predict="<span style='color:#8892b0'>Not enough history ("+(win.intervalsUsed||0)+" of "+(win.needed||5)+" intervals)</span>";
   }
   var confText="Based on "+p.tests+" tests · "+p.sourceLabel;
   if(p.sub7Count>0) confText+=" · "+p.sub7Count+" rapid retest"+(p.sub7Count>1?"s":"")+" included";

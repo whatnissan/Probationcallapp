@@ -109,3 +109,29 @@ test('no MUST_TEST history returns null', function() {
     PredictionCore.computePrediction([{ created_at: new Date().toISOString(), result: 'NO_TEST' }], null, Date.now()),
     null);
 });
+
+test('window classification: regular history earns two_number with inner+outer', function() {
+  const offs = []; for (let i = 0; i <= 9; i++) offs.push(i * 20 + (i % 2));
+  const w = PredictionCore.computePrediction(tests(offs), null, daysAfter(200)).window;
+  assert.strictEqual(w.state, 'two_number');
+  assert.ok(w.innerDays[0] >= w.outerDays[0] && w.innerDays[1] <= w.outerDays[1], 'inner within outer');
+  assert.ok(w.scoredOrigins >= 3 && w.innerCoverage >= 0.7, 'self-test cleared the stability gate');
+});
+
+test('window classification: scattered history is irregular — no inner band, outer preserved', function() {
+  // bittersweet-shaped: gaps 30,21,16,17,45,21,28,49,13 → self-test coverage 50%
+  const w = PredictionCore.computePrediction(tests([0, 30, 51, 67, 84, 129, 150, 178, 227, 240]), null, daysAfter(250)).window;
+  assert.strictEqual(w.state, 'irregular');
+  assert.strictEqual(w.innerDays, null);
+  assert.deepStrictEqual(w.outerDays, [13, 49]);
+  assert.ok(w.innerCoverage < 0.7);
+});
+
+test('window classification: below MIN_PRIORS (5) is insufficient — no bands at all', function() {
+  const w = PredictionCore.computePrediction(tests([0, 20, 40, 60]), null, daysAfter(61)).window;
+  assert.strictEqual(w.state, 'insufficient');
+  assert.strictEqual(w.needed, 5);
+  assert.strictEqual(w.intervalsUsed, 3);
+  assert.strictEqual(w.innerDays, null);
+  assert.strictEqual(w.outerDays, null);
+});
