@@ -1456,6 +1456,266 @@ async function authV1(req, res, next) {
   }
 }
 
+// ---- shared v1 helpers (sections 3 / 4.1) ----
+var FTBEND_OFFICE_META = {
+  missouri:   { program: 'Probation',  code: '3668' },
+  rosenberg:  { program: 'Pretrial',   code: '3669' },
+  rosenberg2: { program: 'Drug Court', code: '3671' }
+};
+function v1Time(h, m) { return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0'); }
+function v1NotifyMethods(m) {
+  if (m === 'both') return ['email', 'sms'];
+  if (m === 'sms') return ['sms'];
+  return ['email'];
+}
+function v1CallWindow(county) {
+  // Truthful values from the scheduler: Montgomery schedules run 6:00–14:59
+  // local with the retry engine cutting off at 14:00; Fort Bend detection
+  // starts ~5:05 with the office-retry cutoff at 9:30.
+  return county === 'ftbend'
+    ? { opensAt: '05:00', closesAt: '09:00', retryCutoff: '09:30' }
+    : { opensAt: '06:00', closesAt: '14:59', retryCutoff: '14:00' };
+}
+function v1Schedule(row, profile) {
+  return {
+    id: row.id,
+    county: row.county || 'montgomery',
+    pin: (row.county === 'ftbend') ? null : (row.pin || null), // unmasked per §3
+    ftbendOffice: row.county === 'ftbend' ? (row.ftbend_office || 'missouri') : null,
+    // The user's color lives on profiles.user_color, not the schedule row.
+    ftbendColor: row.county === 'ftbend' ? ((profile && profile.user_color) || null) : null,
+    callTime: v1Time(row.hour !== null && row.hour !== undefined ? row.hour : 6, row.minute || 0),
+    timezone: row.timezone || 'America/Chicago',
+    callWindow: v1CallWindow(row.county || 'montgomery'),
+    enabled: row.enabled !== false,
+    pauseReason: row.paused_reason || null,
+    noCreditSkipCount: row.no_credit_skip_count || 0,
+    consecutivePinExpired: row.consecutive_pin_expired || 0,
+    notifyMethods: v1NotifyMethods(row.notify_method || 'email'),
+    notifyNumber: row.notify_number || null,
+    notifyEmail: row.notify_email || null,
+    quietMode: !!row.quiet_mode
+  };
+}
+
+// §3 GET /me — the bootstrap call: one round trip renders the first frame.
+// Bootstraps a missing profile exactly like the web auth() does (starter
+// credits through the ledger) — for an iOS-first signup this IS first touch.
+app.get('/api/v1/me', authV1, async function(req, res) {
+  try {
+    var pr = await supabase.from('profiles').select('*').eq('id', req.user.id).single();
+    var profile = pr.data;
+    if (!profile) {
+      var startCredits = isDev(req.user.email) ? 9999 : 5;
+      var ins = await supabase.from('profiles').insert({
+        id: req.user.id, email: req.user.email, credits: 0,
+        referral_code: generateReferralCode(),
+        affiliate_balance_cents: 0, affiliate_total_earned_cents: 0
+      });
+      if (ins.error) {
+        var rf = await supabase.from('profiles').select('*').eq('id', req.user.id).single();
+        if (!rf.data) return v1Error(res, 500, 'internal', 'Account setup failed — please try again.', true);
+        profile = rf.data;
+      } else {
+        var granted = await recordCreditAdd({
+          userId: req.user.id, amount: startCredits, source: 'signup_bonus',
+          note: isDev(req.user.email) ? 'Dev account starting credits' : 'New user starter credits'
+        });
+        var rf2 = await supabase.from('profiles').select('*').eq('id', req.user.id).single();
+        if (!rf2.data) return v1Error(res, 500, 'internal', 'Account setup failed — please try again.', true);
+        profile = rf2.data;
+      }
+    }
+
+    var sched = await supabase.from('user_schedules').select('*').eq('user_id', req.user.id).maybeSingle();
+
+    var probEnd = profile.probation_end_date || null;
+    var daysRemaining = null, creditsNeeded = null;
+    if (probEnd) {
+      var t = new Date(); t.setHours(0, 0, 0, 0);
+      daysRemaining = Math.max(0, Math.ceil((new Date(probEnd) - t) / 86400000));
+      creditsNeeded = daysRemaining; // 1 credit per remaining day
+    }
+    var meta = req.user.user_metadata || {};
+
+    res.json({
+      user: {
+        id: req.user.id,
+        email: req.user.email,
+        displayName: meta.full_name || meta.name || null,
+        isAdmin: profile.is_admin === true,
+        createdAt: req.user.created_at || null
+      },
+      credits: {
+        balance: profile.credits || 0,
+        probationEndDate: probEnd,
+        daysRemaining: daysRemaining,
+        creditsNeeded: creditsNeeded,
+        lowBalance: (profile.credits || 0) <= 3 // same threshold as the low-credit alert
+      },
+      // Array by contract even though it is one row today; [] = not onboarded.
+      schedules: sched.data ? [v1Schedule(sched.data, profile)] : []
+    });
+  } catch (e) {
+    console.error('[V1-ME] failed:', e.message);
+    return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+  }
+});
+
+// §4.1 GET /today — the morning result, with If-None-Match/304 so the app
+// can poll cheaply during the retry window.
+//
+// Honesty notes vs the contract (flagged, not silent): callLog is
+// synthesized from DURABLE data only (call_attempts + call_history +
+// pending_retries) so it can carry dial/retry/error/result kinds — the
+// richer ivr/dtmf/connect kinds were never persisted anywhere and would be
+// fiction. recording.durationSeconds and matchConfidence are null: duration
+// is not stored, and no confidence number exists for keyword matching —
+// inventing one is the pseudo-confidence pattern this codebase already
+// removed twice.
+var V1_USABLE_TODAY = /^(MUST_TEST|NO_TEST|PIN_EXPIRED|UNKNOWN|HOTLINE_DOWN|CALL_FAILED|TRANSCRIBER_DOWN|RECORDING_UNAVAILABLE|COLOR:|P1:)/;
+app.get('/api/v1/today', authV1, async function(req, res) {
+  try {
+    var sched = await supabase.from('user_schedules').select('*').eq('user_id', req.user.id).maybeSingle();
+    if (!sched.data) return v1Error(res, 404, 'schedule_missing', 'Set up your daily call first.');
+    var row = sched.data;
+    var county = row.county || 'montgomery';
+    var tz = row.timezone || 'America/Chicago';
+    var today = formatLocalDay(new Date(), tz);
+
+    var payload = {
+      date: today,
+      scheduleId: row.id,
+      county: county,
+      result: 'NOT_CALLED',
+      // billed semantics (§2): true/false only when a call resolved —
+      // false means "this call didn't bill". null means "no billable
+      // outcome yet" (SCHEDULED / IN_PROGRESS / NOT_CALLED). The client
+      // renders the not-charged chip off `billed === false`, so a false
+      // here would show it on states where no call even happened.
+      billed: null,
+      resolvedAt: null,
+      detail: null,
+      attempt: null,
+      maxAttempts: null,
+      nextAttemptAt: null,
+      retryCutoffAt: null,
+      pauseReason: null,
+      callLog: [],
+      recording: null,
+      fortBend: null
+    };
+
+    if (row.enabled === false) {
+      payload.pauseReason = row.paused_reason || null;
+    } else {
+      var calls = await supabase.from('call_history').select('*')
+        .eq('user_id', req.user.id)
+        .gte('created_at', today + 'T00:00:00')
+        .lte('created_at', today + 'T23:59:59')
+        .order('created_at', { ascending: true });
+      var attempts = await supabase.from('call_attempts').select('*')
+        .eq('user_id', req.user.id)
+        .gte('created_at', today + 'T00:00:00')
+        .lte('created_at', today + 'T23:59:59')
+        .order('created_at', { ascending: true });
+      var retry = await supabase.from('pending_retries').select('*')
+        .eq('user_id', req.user.id).maybeSingle();
+
+      (attempts.data || []).forEach(function(a) {
+        if (a.outcome === 'create_failed') {
+          payload.callLog.push({ at: a.created_at, kind: 'error', text: 'dial rejected: ' + (a.error || 'unknown') });
+        } else {
+          payload.callLog.push({ at: a.created_at, kind: a.retry_count > 0 ? 'retry' : 'dial',
+            text: (a.retry_count > 0 ? 'retry #' + a.retry_count + ' — ' : '') + 'dialing ' + (county === 'ftbend' ? 'Fort Bend' : 'Montgomery') + ' hotline' });
+        }
+      });
+
+      var finals = (calls.data || []).filter(function(c) { return V1_USABLE_TODAY.test(c.result || ''); });
+      var resultRow = finals.length ? finals[finals.length - 1] : null;
+
+      if (resultRow) {
+        payload.result = resultRow.result;
+        payload.billed = !!resultRow.billed_at;
+        payload.resolvedAt = resultRow.created_at;
+        payload.attempt = Math.max(1, (attempts.data || []).length);
+        payload.maxAttempts = payload.attempt;
+        payload.callLog.push({ at: resultRow.created_at, kind: 'result', text: resultRow.result });
+        if (resultRow.transcript || resultRow.recording_url) {
+          payload.recording = {
+            callId: resultRow.id,
+            durationSeconds: null,     // not persisted — see honesty notes
+            transcript: resultRow.transcript || null,
+            matchConfidence: null      // no such number exists for keyword matching
+          };
+        }
+      } else if (retry.data) {
+        // Per-user retries are MONTGOMERY's machinery (pending_retries);
+        // contract text says Fort Bend — flagged for amendment.
+        payload.result = 'IN_PROGRESS';
+        payload.attempt = (retry.data.attempt_number || 0) + 1;
+        payload.maxAttempts = 4;
+        payload.nextAttemptAt = retry.data.next_attempt_at || null;
+        payload.retryCutoffAt = today + 'T14:00:00';
+      } else if ((attempts.data || []).length) {
+        payload.result = 'IN_PROGRESS';
+        payload.attempt = attempts.data.length;
+        payload.maxAttempts = 4;
+      } else {
+        // Enabled, nothing yet today. The contract amendment added
+        // SCHEDULED for exactly this state — NOT_CALLED is reserved for
+        // paused/disabled schedules, and the client keys its paused card
+        // (with a Resume affordance) off NOT_CALLED. attempt/maxAttempts
+        // stay null: there is no attempt to count yet.
+        payload.result = 'SCHEDULED';
+      }
+    }
+
+    if (county === 'ftbend') {
+      var board = await supabase.from('daily_county_status').select('*')
+        .in('county', ['ftbend_missouri', 'ftbend_rosenberg', 'ftbend_rosenberg2'])
+        .eq('date', today);
+      var byOffice = {};
+      (board.data || []).forEach(function(b) { byOffice[b.county.replace('ftbend_', '')] = b; });
+      payload.fortBend = {
+        yourOffice: row.ftbend_office || 'missouri',
+        yourColor: null, // filled from profile below
+        offices: ['missouri', 'rosenberg', 'rosenberg2'].map(function(o) {
+          var b = byOffice[o];
+          // daily_county_status puts the announced value in phase1_color for
+          // EVERY office (single colors included), and Rosenberg 2 sometimes
+          // announces a plain color — so classify by the VALUE, not the
+          // office: phases only when it actually reads "Phase N".
+          var isPhases = b && (/^phase\s/i.test(b.phase1_color || '') || /^phase\s/i.test(b.phase2_color || ''));
+          var phases = isPhases
+            ? [b.phase1_color, b.phase2_color].filter(Boolean).map(function(p) { return String(p).replace(/^phase\s*/i, ''); })
+            : null;
+          var announced = (!isPhases && b && b.color) ? [String(b.color).toLowerCase()] : null;
+          return {
+            office: o,
+            program: FTBEND_OFFICE_META[o].program,
+            code: FTBEND_OFFICE_META[o].code,
+            announced: announced,   // mutually exclusive with phases
+            phases: phases,
+            heardAt: b ? b.created_at : null
+          };
+        })
+      };
+      var prColor = await supabase.from('profiles').select('user_color').eq('id', req.user.id).maybeSingle();
+      if (prColor.data) payload.fortBend.yourColor = prColor.data.user_color || null;
+    }
+
+    // ETag on the full payload; If-None-Match -> 304 for cheap polling.
+    var etag = '"' + require('crypto').createHash('md5').update(JSON.stringify(payload)).digest('hex') + '"';
+    res.set('ETag', etag);
+    if (req.headers['if-none-match'] === etag) return res.status(304).end();
+    res.json(payload);
+  } catch (e) {
+    console.error('[V1-TODAY] failed:', e.message);
+    return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+  }
+});
+
 // 4.10 GET /prediction — shape implements the CURRENT shipped model
 // (2026-08-21 decisions), which post-dates the contract draft in two places:
 // no confidence number (removed as non-probabilistic), and rapid retests are
