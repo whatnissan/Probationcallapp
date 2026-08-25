@@ -1225,6 +1225,7 @@ app.get('/r/:code', function(req, res) {
 });
 
 app.get('/api/user', auth, async function(req, res) {
+  var _smsConsentOnFile = await hasSmsConsent(req.user.id);
   var historyResult = await supabase.from('call_history').select('*').eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(500);
   var scheduleResult = await supabase.from('user_schedules').select('*').eq('user_id', req.user.id).single();
   
@@ -1245,6 +1246,12 @@ app.get('/api/user', auth, async function(req, res) {
     // When false, the client hides the Earn Cash tab and skips any
     // auto-apply of a saved referral code from localStorage.
     affiliateEnabled: AFFILIATE_ENABLED,
+    // A2P consent state. smsConsentOnFile pre-checks the boxes client-side;
+    // needsSmsReconfirm powers the one-time re-confirmation prompt for
+    // pre-migration SMS users (part 4 — flag shipped, prompt pending
+    // approved flow). Notifications are NEVER gated on this flag.
+    smsConsentOnFile: _smsConsentOnFile,
+    needsSmsReconfirm: !_smsConsentOnFile && !!(scheduleResult.data && ['sms', 'both'].indexOf(scheduleResult.data.notify_method) >= 0),
     probationEndDate: req.profile.probation_end_date,
     userColor: req.profile.user_color,
     onboardingComplete: req.profile.onboarding_complete,
@@ -1891,6 +1898,46 @@ app.get('/api/affiliate/connect-status', auth, requireAffiliateEnabled, async fu
   }
 });
 
+// === SMS CONSENT (A2P proof of opt-in, migration 033) ===
+// The checkbox existed since 2025-12-02 but was browser-only theater: never
+// enforced server-side, never persisted, and the client check skipped
+// method 'both' entirely. Consent is now recorded append-only in
+// sms_consents (survives schedule deletion) and enforced here — client
+// alerts are UX, this is the enforcement.
+//
+// Version pins WHICH wording was agreed to. v1 verbatim (do not reword —
+// carrier-required language): "By checking the box below, you agree to
+// receive SMS text messages from ProbationCall. Message frequency: up to 1
+// per call. Msg & data rates may apply. Reply STOP to unsubscribe." +
+// "I agree to receive SMS messages and have read the Terms and Privacy
+// Policy." Bump the version when the wording changes.
+var SMS_CONSENT_TEXT_VERSION = 'v1-2025-12-02';
+
+// Railway sits behind a proxy; req.ip is the proxy without trust-proxy set.
+function clientIp(req) {
+  var xf = req.headers['x-forwarded-for'];
+  if (xf) return String(xf).split(',')[0].trim();
+  return req.ip || null;
+}
+
+async function recordSmsConsent(userId, phone, req, source) {
+  var ins = await supabase.from('sms_consents').insert({
+    user_id: userId,
+    phone: phone || null,
+    ip: clientIp(req),
+    consent_text_version: SMS_CONSENT_TEXT_VERSION,
+    source: source
+  });
+  if (ins.error) console.error('[SMS-CONSENT] record failed for ' + userId.slice(0, 8) + ' (' + source + '):', ins.error.message);
+  else console.log('[SMS-CONSENT] recorded: user=' + userId.slice(0, 8) + ' source=' + source + ' version=' + SMS_CONSENT_TEXT_VERSION);
+  return !ins.error;
+}
+
+async function hasSmsConsent(userId) {
+  var r = await supabase.from('sms_consents').select('id').eq('user_id', userId).limit(1);
+  return !r.error && !!(r.data && r.data.length);
+}
+
 app.post('/api/schedule', auth, async function(req, res) {
   var hour = parseInt(req.body.hour) || 6;
   var minute = parseInt(req.body.minute) || 0;
@@ -1940,6 +1987,18 @@ app.post('/api/schedule', auth, async function(req, res) {
   }
   if ((notifyMethod === 'email' || notifyMethod === 'both') && !notifyEmail) {
     return res.status(400).json({ error: 'An email address is required for email notifications' });
+  }
+
+  // A2P: SMS delivery requires recorded consent. A ticked box on this save
+  // records a fresh consent row; otherwise an existing record satisfies
+  // (users don't re-tick on every save). Neither -> reject, because a direct
+  // POST must not bypass what the browser checkbox implies.
+  if (notifyMethod === 'sms' || notifyMethod === 'both') {
+    if (req.body.smsConsent === true) {
+      await recordSmsConsent(req.user.id, notifyNumber, req, req.body.consentSource === 'onboarding' ? 'onboarding' : 'schedule_save');
+    } else if (!(await hasSmsConsent(req.user.id))) {
+      return res.status(400).json({ error: 'Please confirm SMS consent to receive text notifications' });
+    }
   }
 
   var data = {
@@ -2999,6 +3058,16 @@ app.post('/api/call', auth, async function(req, res) {
   if (!/^\+\d{10,15}$/.test(targetNumber)) return res.status(400).json({ error: 'Invalid phone format' });
   if (pin && (pin.length !== 6 || !/^\d+$/.test(pin))) return res.status(400).json({ error: 'PIN must be 6 digits' });
   
+  // A2P: same consent gate as /api/schedule — a manual call that texts the
+  // result is still an SMS to the user.
+  if (notifyMethod === 'sms' || notifyMethod === 'both') {
+    if (req.body.smsConsent === true) {
+      await recordSmsConsent(req.user.id, normalizePhoneE164(notifyNumber) || notifyNumber, req, 'manual_call');
+    } else if (!(await hasSmsConsent(req.user.id))) {
+      return res.status(400).json({ error: 'Please confirm SMS consent to receive text notifications' });
+    }
+  }
+
   try {
     // Credit is deducted in /webhook/recording once a result is known.
     var result = await initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notifyMethod, req.user.id, 0, county);

@@ -1,6 +1,11 @@
 # Dependencies
 node_modules/
 
+# Apple Sign In signing key — must NEVER be committed. The .p8 downloads
+# exactly once from the Apple Developer portal; it exists on disk only long
+# enough to generate the Supabase client secret, and lives nowhere in git.
+*.p8
+
 # Environment variables
 .env
 .env.local
