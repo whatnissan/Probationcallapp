@@ -2366,7 +2366,7 @@ function calculateTestStats() {
       var rowEl = document.getElementById("patternRow");
       rowEl.style.flexWrap = "wrap";
       if (p.dayOfWeek) {
-        if (titleEl) titleEl.textContent = "Test Frequency by Day";
+        if (titleEl) { titleEl.textContent = "Test Frequency by Day"; titleEl.style.textAlign = "center"; }
         if (legendEl) legendEl.style.display = "block";
         // Single-hue intensity ramp: darker = called more often. Never a
         // green/amber/red scale — green reads as "safe day", and there is no
@@ -2380,30 +2380,52 @@ function calculateTestStats() {
         });
         rowEl.innerHTML = patternHtml;
       } else {
-        if (titleEl) titleEl.textContent = "Test Days";
+        if (titleEl) { titleEl.textContent = "Test Days"; titleEl.style.textAlign = "left"; }
         if (legendEl) legendEl.style.display = "none";
         var county = p.countyDayPattern;
-        var html = "<div style='text-align:center;font-size:0.75rem;color:#8892b0;line-height:1.6;width:100%'>";
+        // Three zones, left-aligned: headline fact, pattern progress, recent
+        // tests. Same numbers and caveats as before — layout only.
+        var html = "<div style='text-align:left;width:100%;font-size:0.75rem'>";
+
+        // Zone 1 — the takeaway leads, largest; supporting numbers beneath, muted.
         if (county && county.fullWeekSignificant && !county.weekdaySignificant) {
-          html += "<b style='color:#e4e4e7'>Montgomery County overall:</b> " +
-            (county.total - county.weekendCount) + " of " + county.total + " recorded tests fell on weekdays — but which weekday looks random. " +
-            "<b style='color:#f59e0b'>Stay ready every weekday.</b> Weekend tests are rare, not never (" + county.weekendCount + " of " + county.total + ").";
+          html += "<div style='margin-bottom:14px'>" +
+            "<div style='color:#f59e0b;font-weight:700;font-size:1.02rem;margin-bottom:4px'>Stay ready every weekday.</div>" +
+            "<div style='color:#8892b0;line-height:1.55'>Montgomery County overall: " +
+            (county.total - county.weekendCount) + " of " + county.total + " recorded tests fell on weekdays — but which weekday looks random. Weekend tests are rare, not never (" + county.weekendCount + " of " + county.total + ").</div>" +
+            "</div>";
         } else {
-          html += "Testing looks random — <b style='color:#f59e0b'>stay ready any day.</b>";
+          html += "<div style='margin-bottom:14px'>" +
+            "<div style='color:#f59e0b;font-weight:700;font-size:1.02rem;margin-bottom:4px'>Stay ready any day.</div>" +
+            "<div style='color:#8892b0;line-height:1.55'>Testing looks random.</div>" +
+            "</div>";
         }
-        html += "<br>Your own day pattern unlocks at 35 recorded tests (" + p.testsCounted + " so far).";
+
+        // Zone 2 — progress toward the personal pattern, with a thin bar.
+        var pctToUnlock = Math.min(100, Math.round((p.testsCounted / 35) * 100));
+        html += "<div style='margin-bottom:14px'>" +
+          "<div style='color:#8892b0;margin-bottom:5px'>Your own day pattern unlocks at 35 recorded tests (" + p.testsCounted + " so far).</div>" +
+          "<div style='background:rgba(255,255,255,0.06);border-radius:3px;height:5px;overflow:hidden'><div style='background:rgba(0,217,255,0.55);height:100%;width:" + pctToUnlock + "%'></div></div>" +
+          "</div>";
+
+        // Zone 3 — recent tests: dates readable, deltas muted, scrolls
+        // horizontally instead of wrapping on narrow screens.
         if (p.recentTests && p.recentTests.length >= 2) {
           var parts = [];
           for (var r = 0; r < p.recentTests.length; r++) {
             var dstr = new Date(p.recentTests[r] + "T12:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" });
-            if (r === 0) parts.push(dstr);
+            if (r === 0) parts.push("<span style='color:#e4e4e7;font-size:0.85rem'>" + dstr + "</span>");
             else {
               var gap = Math.round((new Date(p.recentTests[r]) - new Date(p.recentTests[r-1])) / 86400000);
-              parts.push(dstr + " <span style='color:#666'>(+" + gap + "d)</span>");
+              parts.push("<span style='color:#666;font-size:0.7rem'> \u2192 +" + gap + "d \u2192 </span><span style='color:#e4e4e7;font-size:0.85rem'>" + dstr + "</span>");
             }
           }
-          html += "<br><span style='color:#666'>Your recent tests:</span> " + parts.join(" \u2192 ");
+          html += "<div>" +
+            "<div style='color:#8892b0;margin-bottom:5px'>Your recent tests</div>" +
+            "<div style='overflow-x:auto;white-space:nowrap;padding-bottom:2px'>" + parts.join("") + "</div>" +
+            "</div>";
         }
+
         html += "</div>";
         rowEl.innerHTML = html;
       }
