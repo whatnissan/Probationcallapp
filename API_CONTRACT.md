@@ -393,13 +393,48 @@ output for all 15 production users.)
 Field by field. Every nullable field means "the data does not support this
 claim yet" — clients render the absence honestly, never a zeroed chart.
 
-- **`nextWindow`** `{startDays:int, endDays:int} | null` — a RANGE, nothing
-  else. There is deliberately **no `peakDays` and no `confidence`**: the
-  previous confidence score was `min(88, max(40, …))` — a clamped heuristic
-  with no probabilistic meaning whose floor made thin data look moderately
-  certain. A number that looks rigorous and isn't is worse than no number.
-  Headline copy leads with the range and "possible any day", never a point
-  estimate. `null` until any interval data exists.
+- **`nextWindow`** `{startDays:int, endDays:int} | null` — populated ONLY
+  when `window.state === 'two_number'` (below); otherwise `null`. There is
+  deliberately **no `peakDays` and no `confidence`**: the previous confidence
+  score was `min(88, max(40, …))` — a clamped heuristic with no
+  probabilistic meaning whose floor made thin data look moderately certain.
+  A number that looks rigorous and isn't is worse than no number. Headline
+  copy labels any band **"recent historical range"** — never "most likely"
+  or any probabilistic wording — and always pairs it with "possible any day".
+- **`window`** `{state, innerDays, outerDays, intervalsUsed, needed?,
+  scoredOrigins, innerCoverage}` — the window classification, three states.
+  **Units: `innerDays` and `outerDays` are INTERVAL LENGTHS (days between
+  tests); `nextWindow` is days FROM NOW.** Clients must never place the two
+  frames side by side unlabeled — display both bands in the interval frame
+  and show days-since-last-test as its own fact, or the inner band appears
+  to escape the outer (inner minus elapsed days starts below the outer
+  minimum).
+  - `two_number`: `innerDays` = recency-weighted P10–P90 of completed
+    intervals (half-life 4 intervals, rounded outward), labeled "recent
+    historical range"; `outerDays` = min–max, presented as "has ranged X–Y".
+    Granted only when the user's own walk-forward self-test clears
+    ≥3 scored origins at ≥70% inner-band coverage.
+  - `irregular`: the self-test failed — no narrow window is defensible.
+    Clients show "too irregular to narrow" with `outerDays` as a fact about
+    the past, never as a forecast. This and `insufficient` are the PRIMARY
+    states (14 of 15 users at introduction) — design them as the main
+    experience, not a fallback.
+  - `insufficient`: fewer than `needed` (= 5) completed intervals — no
+    bands of any kind; show "not enough history yet (n of 5)".
+
+  **Methodology (2026-08-25 backtest — read before proposing to narrow the
+  window).** Walk-forward, leakage-free, 17 forecast origins across all
+  production history: the old always-on min–max envelope missed **35%**
+  prospectively — most misses are new record extremes, which an envelope
+  cannot contain by definition, so it was never "wide but honest".
+  Every tighter fixed band traded width for MORE misses (P10–P90: 59%
+  coverage; P20–P80: 41%), and the extra misses landed on escalation
+  days — the highest-stakes forecasts. Whoever next proposes narrowing
+  must beat those numbers on the same walk-forward method first.
+  **MIN_PRIORS = 5** because below 5 completed intervals each observation
+  carries ≥20% of the distribution's mass — a "percentile" of fewer
+  points is a single data point in costume. Sample sizes count COMPLETED
+  INTERVALS (N tests → N−1 intervals), never tests.
 - **`yourIntervalDays`** `number | null` — recency-weighted mean interval
   (exponential decay, half-life 4 intervals), blended toward the county
   average when personal history is thin (full personal weight at 8+
