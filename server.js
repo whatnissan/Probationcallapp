@@ -1565,14 +1565,12 @@ app.get('/api/v1/me', authV1, async function(req, res) {
 // §4.1 GET /today — the morning result, with If-None-Match/304 so the app
 // can poll cheaply during the retry window.
 //
-// Honesty notes vs the contract (flagged, not silent): callLog is
-// synthesized from DURABLE data only (call_attempts + call_history +
-// pending_retries) so it can carry dial/retry/error/result kinds — the
-// richer ivr/dtmf/connect kinds were never persisted anywhere and would be
-// fiction. recording.durationSeconds and matchConfidence are null: duration
-// is not stored, and no confidence number exists for keyword matching —
-// inventing one is the pseudo-confidence pattern this codebase already
-// removed twice.
+// callLog is synthesized from DURABLE data only (call_attempts +
+// call_history + pending_retries), so it carries the honest subset of
+// kinds: dial/retry/error/result. The contract's richer ivr/dtmf/connect
+// kinds require a call_events table (backlogged, not built) and are not
+// emitted — synthesizing them would narrate a call from data we never
+// stored.
 var V1_USABLE_TODAY = /^(MUST_TEST|NO_TEST|PIN_EXPIRED|UNKNOWN|HOTLINE_DOWN|CALL_FAILED|TRANSCRIBER_DOWN|RECORDING_UNAVAILABLE|COLOR:|P1:)/;
 app.get('/api/v1/today', authV1, async function(req, res) {
   try {
@@ -1595,7 +1593,6 @@ app.get('/api/v1/today', authV1, async function(req, res) {
       // here would show it on states where no call even happened.
       billed: null,
       resolvedAt: null,
-      detail: null,
       attempt: null,
       maxAttempts: null,
       nextAttemptAt: null,
@@ -1644,14 +1641,18 @@ app.get('/api/v1/today', authV1, async function(req, res) {
         if (resultRow.transcript || resultRow.recording_url) {
           payload.recording = {
             callId: resultRow.id,
-            durationSeconds: null,     // not persisted — see honesty notes
-            transcript: resultRow.transcript || null,
-            matchConfidence: null      // no such number exists for keyword matching
+            // Written by the recording webhook since migration 034; calls
+            // recorded before 2026-08-25 stay null. No matchConfidence —
+            // no such number exists for keyword matching, and the contract
+            // bans pseudo-confidence outright.
+            durationSeconds: typeof resultRow.recording_duration_seconds === 'number'
+              ? resultRow.recording_duration_seconds : null,
+            transcript: resultRow.transcript || null
           };
         }
       } else if (retry.data) {
         // Per-user retries are MONTGOMERY's machinery (pending_retries);
-        // contract text says Fort Bend — flagged for amendment.
+        // Fort Bend retries are office-level and invisible per user.
         payload.result = 'IN_PROGRESS';
         payload.attempt = (retry.data.attempt_number || 0) + 1;
         payload.maxAttempts = 4;
@@ -3541,8 +3542,11 @@ app.post('/webhook/recording', validateTwilio, async function(req, res) {
       .eq('date', today);
     console.log('[RECORDING] Saved Fort Bend daily recording for', countyKey, today);
   } else if (config.callSid) {
+    // RecordingDuration arrives in the same Twilio-validated POST as
+    // RecordingUrl; before migration 034 it was discarded.
+    var recDur = parseInt(req.body.RecordingDuration, 10);
     await supabase.from('call_history')
-      .update({ recording_url: mp3Url })
+      .update({ recording_url: mp3Url, recording_duration_seconds: isNaN(recDur) ? null : recDur })
       .eq('call_sid', config.callSid);
     console.log('[RECORDING] Saved Montgomery recording for', config.callSid);
   }
