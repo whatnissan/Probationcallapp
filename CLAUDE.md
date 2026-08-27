@@ -49,6 +49,13 @@ must report for testing.
 6. An empty hotline transcript is an outage signal — keep the retry logic and admin
    alerting intact.
 7. Assume rollback may be needed. Avoid sweeping multi-file changes that are hard to revert.
+8. Browser sessions in the Chrome profile may belong to real subscribers, not to me.
+   Never sign a session out, never modify account data, and never screenshot, quote, or
+   report what an account's pages contain. Close the tab and tell me. A subscriber's
+   probation status is not ours to read, and a signed-in profile is not consent.
+   Verify live pages in ways that don't need an account: fetch the served HTML, or
+   exercise page functions directly. Note that /login auto-redirects an existing session
+   to /dashboard, so "just open /login" is not a safe way to check the signed-out flow.
 
 ## Environment variables (names only — values live in Railway, never commit them)
 STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, DEEPGRAM_API_KEY,
