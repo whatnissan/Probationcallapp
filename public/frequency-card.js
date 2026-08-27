@@ -56,12 +56,18 @@ function buildTestTimeline(recentTests, daysSince, availWidth) {
   s += "<g><title>Today — " + daysSince + " days since your last test</title>" +
     "<circle cx='" + xToday + "' cy='" + RY + "' r='6' fill='none' stroke='#f59e0b' stroke-width='2'/>" +
     "<circle cx='" + xToday + "' cy='" + RY + "' r='2' fill='#f59e0b'/></g>";
-  // When the label must right-anchor (no room past the marker), it slides
-  // left over the last gap labels \u2014 lift it a row, same collision rule as
-  // the staggered date labels.
-  var todayEndAnchored = xToday + 70 > w;
-  var todayY = todayEndAnchored ? RY - 38 : RY - 24;
-  s += "<text x='" + Math.min(xToday + 10, w - 4) + "' y='" + todayY + "' text-anchor='" + (todayEndAnchored ? "end" : "start") + "' font-size='11' font-weight='600' fill='#f59e0b'>today \u00b7 " + daysSince + "d</text>";
+  // The today label always right-anchors (w is always xToday+TAIL), so it
+  // extends leftward and can land on the last "+Nd" gap label once the
+  // scale compresses. Lift it a row only when they actually overlap \u2014
+  // measured, not assumed, so a roomy chart renders exactly as before.
+  var todayLabel = "today \u00b7 " + daysSince + "d";
+  var todayLeft = xToday + 10 - todayLabel.length * 6;
+  var lastGapRight = -1e9;
+  if (gaps.length) {
+    lastGapRight = (xs[xs.length - 2] + xs[xs.length - 1]) / 2 + ("+" + gaps[gaps.length - 1] + "d").length * 3;
+  }
+  var todayY = (todayLeft - lastGapRight < 6) ? RY - 38 : RY - 24;
+  s += "<text x='" + Math.min(xToday + 10, w - 4) + "' y='" + todayY + "' text-anchor='" + (xToday + 70 > w ? "end" : "start") + "' font-size='11' font-weight='600' fill='#f59e0b'>" + todayLabel + "</text>";
   return "<div style='overflow-x:auto;max-width:100%'>" + s + "</svg></div>";
 }
 
