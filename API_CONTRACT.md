@@ -192,6 +192,18 @@ The client renders `schedules.first` and must not crash on zero or two.
 **Zero schedules means the user hasn't onboarded.** That's the signal to route
 into the onboarding flow, not an error.
 
+**`daysRemaining` goes NEGATIVE once the probation end date has passed** —
+`-42` means it ended 42 days ago. It was clamped at 0 until 2026-08-28, which
+made "today is your last day" and "your date passed six weeks ago" the same
+value; the app rendered the second as "covered through the end". `0` now means
+exactly one thing: today is the last day. A sign is unmissable, where a
+separate `ended` boolean would be a field a client can forget to check —
+and forgetting lands straight back on "0 days left".
+
+**`creditsNeeded` stays clamped at 0** and never goes negative: you do not
+need credits for days that have already elapsed. So the two fields diverge
+once the date passes, deliberately.
+
 **`ftbendColor` is sourced from `profiles.user_color`** — the color lives on
 the profile, not the schedule row. The serializer joins it in; clients should
 not care, but whoever touches the backend should know where it comes from.
