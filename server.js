@@ -1458,9 +1458,9 @@ async function authV1(req, res, next) {
 
 // ---- shared v1 helpers (sections 3 / 4.1) ----
 var FTBEND_OFFICE_META = {
-  missouri:   { program: 'Probation',  code: '3668' },
-  rosenberg:  { program: 'Pretrial',   code: '3669' },
-  rosenberg2: { program: 'Drug Court', code: '3671' }
+  missouri:   { program: 'Probation',  code: '3668', name: 'Missouri City' },
+  rosenberg:  { program: 'Pretrial',   code: '3669', name: 'Rosenberg' },
+  rosenberg2: { program: 'Drug Court', code: '3671', name: 'Rosenberg 2' }
 };
 function v1Time(h, m) { return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0'); }
 function v1NotifyMethods(m) {
@@ -1713,6 +1713,429 @@ app.get('/api/v1/today', authV1, async function(req, res) {
     res.json(payload);
   } catch (e) {
     console.error('[V1-TODAY] failed:', e.message);
+    return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+  }
+});
+
+// ---- §4.2 / §4.3 / §4.4 shared helpers ----
+
+// call_history.result is an OPERATIONAL string that predates the §2 enum, and
+// for Fort Bend it stores what the hotline ANNOUNCED ("COLOR:Turquoise"), not
+// the user's verdict. Every typed field a client sees goes through this
+// mapper so a legacy value can never leak out as if it were an enum member.
+var V1_RESULT_PASSTHROUGH = /^(MUST_TEST|NO_TEST|UNKNOWN|HOTLINE_DOWN|CALL_FAILED|PIN_EXPIRED|WRONG_PIN|IN_PROGRESS|NOT_CALLED|SCHEDULED)$/;
+// call_attempts (migration 032) began recording on this date. Rows older than
+// it have no attempt data at all — `attempts` is null there rather than 1,
+// because 1 would be a number we made up.
+var V1_ATTEMPTS_LOGGED_SINCE = '2026-08-15T00:00:00.000Z';
+
+function v1ParseAnnouncement(raw) {
+  var r = String(raw || '');
+  var m = r.match(/^COLOR:\s*(.+)$/i);
+  if (m) return { colors: [m[1].trim()], phases: null };
+  if (/^P1:/i.test(r)) {
+    var phases = [];
+    r.replace(/P\d:\s*([^P]+)/gi, function(_, v) { phases.push(v.trim()); return ''; });
+    phases = phases.filter(Boolean);
+    return { colors: null, phases: phases };
+  }
+  return null;
+}
+
+function v1MapResult(raw, userColor) {
+  var r = String(raw || '');
+  if (V1_RESULT_PASSTHROUGH.test(r)) return r;
+  if (r === 'RETRY_PENDING') return 'IN_PROGRESS';
+  if (r === 'NO_CREDITS') return 'NOT_CALLED';       // skipped, no call placed
+  if (r === 'TRANSCRIBER_DOWN' || r === 'RECORDING_UNAVAILABLE') return 'UNKNOWN';
+  var ann = v1ParseAnnouncement(r);
+  if (ann) {
+    // Fort Bend: the per-user verdict was never persisted, so re-derive it
+    // from the user's CURRENT color. Correct unless their color changed since
+    // that call. Phase announcements can't be derived at all (no per-user
+    // phase is stored anywhere), so they stay UNKNOWN. Either way `summary`
+    // carries the raw announcement, so the honest fact is always on screen.
+    if (ann.colors && userColor) {
+      var want = String(userColor).trim().toLowerCase();
+      var hit = ann.colors.some(function(c) { return String(c).trim().toLowerCase() === want; });
+      return hit ? 'MUST_TEST' : 'NO_TEST';
+    }
+    return 'UNKNOWN';
+  }
+  return 'UNKNOWN';
+}
+
+function v1County(row) {
+  return String(row.county || '').indexOf('ftbend') === 0 ? 'ftbend' : 'montgomery';
+}
+
+// Plain-language row label. Not stored anywhere — derived. The contract's
+// example ("PIN called · Conroe") implies a location we have never recorded,
+// so the place is the county/office we actually know.
+function v1Summary(row) {
+  var isFt = v1County(row) === 'ftbend';
+  var place = isFt
+    ? ((FTBEND_OFFICE_META[row.ftbend_office] || {}).name || 'Fort Bend')
+    : 'Montgomery County';
+  if (row.result === 'NO_CREDITS') return 'Skipped — out of credits · ' + place;
+  var ann = v1ParseAnnouncement(row.result);
+  if (ann) {
+    var what = (ann.colors || ann.phases || []).join(' / ');
+    return (what ? what + ' announced' : 'Nothing announced') + ' · ' + place;
+  }
+  if (!isFt && row.pin_used) return 'PIN ' + row.pin_used + ' · ' + place;
+  return place;
+}
+
+// billed is tri-state (§2): true/false once a call resolved, null when no
+// billable outcome exists — a skipped or in-flight call was never a charge.
+//
+// billed_at was only added on 2026-05-19, and 1229 of 1662 billable rows
+// predate it. Credits WERE deducted then; there is just no marker. Returning
+// false for those would render "You were not charged" on calls the user paid
+// for, so unrecorded reads as unknown (null), never as a denial.
+var V1_BILLED_TRACKED_SINCE = '2026-05-19T00:00:00.000Z';
+function v1Billed(row, mapped) {
+  if (mapped === 'NOT_CALLED' || mapped === 'IN_PROGRESS' || mapped === 'SCHEDULED') return null;
+  if (row.billed_at) return true;
+  if (row.created_at < V1_BILLED_TRACKED_SINCE) return null;
+  return false;
+}
+
+// callLog for one historical call, from DURABLE data only (same honest subset
+// as §4.1: dial/retry/error/result). Richer kinds need a call_events table.
+function v1CallLogFor(row, attempts, county) {
+  var log = [];
+  (attempts || []).forEach(function(a) {
+    if (a.outcome === 'create_failed') {
+      log.push({ at: a.created_at, kind: 'error', text: 'dial rejected: ' + (a.error || 'unknown') });
+    } else {
+      log.push({ at: a.created_at, kind: a.retry_count > 0 ? 'retry' : 'dial',
+        text: (a.retry_count > 0 ? 'retry #' + a.retry_count + ' — ' : '') + 'dialing ' + (county === 'ftbend' ? 'Fort Bend' : 'Montgomery') + ' hotline' });
+    }
+  });
+  log.push({ at: row.created_at, kind: 'result', text: row.result });
+  return log;
+}
+
+function v1RecordingFor(row) {
+  if (!row.transcript && !row.recording_url) return null;
+  return {
+    callId: row.id,
+    durationSeconds: typeof row.recording_duration_seconds === 'number' ? row.recording_duration_seconds : null,
+    transcript: row.transcript || null
+  };
+}
+
+// §4.2 GET /history — cursor pagination. Offset pagination double-serves and
+// skips rows when a morning call lands mid-scroll.
+app.get('/api/v1/history', authV1, async function(req, res) {
+  try {
+    var limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 25));
+    var filter = req.query.result ? String(req.query.result).toUpperCase() : null;
+    var before = null;
+    if (req.query.cursor) {
+      try {
+        var decoded = JSON.parse(Buffer.from(String(req.query.cursor), 'base64').toString('utf8'));
+        before = decoded && decoded.t ? decoded.t : null;
+        if (!before) throw new Error('no t');
+      } catch (e) {
+        return v1Error(res, 400, 'validation_failed', 'That page link is not valid.');
+      }
+    }
+
+    var prof = await supabase.from('profiles').select('user_color').eq('id', req.user.id).maybeSingle();
+    var userColor = prof.data ? prof.data.user_color : null;
+
+    // With a filter we may have to walk several raw pages to fill one page of
+    // matches, because the §2 result is computed (Fort Bend rows store an
+    // announcement, not a verdict) and so cannot be filtered in SQL.
+    var picked = [], hasMore = false, rounds = 0, lastSeen = null;
+    while (picked.length < limit && rounds < 5) {
+      rounds++;
+      var q = supabase.from('call_history').select('*')
+        .eq('user_id', req.user.id)
+        .order('created_at', { ascending: false })
+        .limit(limit + 1);
+      if (before) q = q.lt('created_at', before);
+      var page = await q;
+      if (page.error) throw new Error(page.error.message);
+      var rows = page.data || [];
+      if (!rows.length) { hasMore = false; break; }
+      hasMore = rows.length > limit;
+      if (hasMore) rows = rows.slice(0, limit);
+      lastSeen = rows[rows.length - 1];
+      before = lastSeen.created_at;
+      rows.forEach(function(r) {
+        var mapped = v1MapResult(r.result, userColor);
+        if (filter && mapped !== filter) return;
+        if (picked.length < limit) picked.push({ row: r, mapped: mapped });
+      });
+      if (!filter || !hasMore) break;
+    }
+
+    // One batched lookup for attempt counts instead of a query per row.
+    var sids = picked.map(function(p) { return p.row.call_sid; }).filter(Boolean);
+    var attemptCounts = {};
+    if (sids.length) {
+      var at = await supabase.from('call_attempts').select('call_sid').in('call_sid', sids);
+      (at.data || []).forEach(function(a) { attemptCounts[a.call_sid] = (attemptCounts[a.call_sid] || 0) + 1; });
+    }
+
+    var items = picked.map(function(p) {
+      var r = p.row;
+      var instrumented = r.created_at >= V1_ATTEMPTS_LOGGED_SINCE;
+      var count = r.call_sid ? attemptCounts[r.call_sid] : null;
+      return {
+        callId: r.id,
+        date: formatLocalDay(new Date(r.created_at), 'America/Chicago'),
+        result: p.mapped,
+        billed: v1Billed(r, p.mapped),
+        resolvedAt: r.created_at,
+        county: v1County(r),
+        summary: v1Summary(r),
+        // null = this call predates dial-time logging, not "zero attempts".
+        attempts: instrumented ? (count || null) : null,
+        hasRecording: !!r.recording_url,
+        durationSeconds: typeof r.recording_duration_seconds === 'number' ? r.recording_duration_seconds : null,
+        // §4.5 POST /calls/{id}/tested is not built and nothing stores a
+        // confirmation, so this is null for every row until it is.
+        userConfirmedTested: null
+      };
+    });
+
+    res.json({
+      items: items,
+      nextCursor: (hasMore && lastSeen)
+        ? Buffer.from(JSON.stringify({ t: lastSeen.created_at, id: lastSeen.id })).toString('base64')
+        : null,
+      hasMore: !!hasMore
+    });
+  } catch (e) {
+    console.error('[V1-HISTORY] failed:', e.message);
+    return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+  }
+});
+
+// §4.3 GET /calls/{callId} — full detail for one past call.
+// Ownership is enforced IN THE QUERY, and a call belonging to someone else
+// returns the same 404 as one that does not exist: a distinct 403 would
+// confirm the id is real, which is enough to enumerate other people's calls.
+app.get('/api/v1/calls/:callId', authV1, async function(req, res) {
+  try {
+    var callId = String(req.params.callId || '');
+    if (!/^[0-9a-f-]{36}$/i.test(callId)) {
+      return v1Error(res, 404, 'not_found', 'That call could not be found.');
+    }
+    var row = await supabase.from('call_history').select('*')
+      .eq('id', callId).eq('user_id', req.user.id).maybeSingle();
+    if (row.error) throw new Error(row.error.message);
+    if (!row.data) return v1Error(res, 404, 'not_found', 'That call could not be found.');
+
+    var attempts = [];
+    if (row.data.call_sid) {
+      var at = await supabase.from('call_attempts').select('*')
+        .eq('call_sid', row.data.call_sid)
+        .eq('user_id', req.user.id)
+        .order('created_at', { ascending: true });
+      attempts = at.data || [];
+    }
+    res.json({
+      callLog: v1CallLogFor(row.data, attempts, v1County(row.data)),
+      recording: v1RecordingFor(row.data)
+    });
+  } catch (e) {
+    console.error('[V1-CALL] failed:', e.message);
+    return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+  }
+});
+
+// ---- §4.4 recording links ----
+// Twilio's media URL is NOT public (it 401s without our account credentials),
+// but it also cannot be signed per-object, and those credentials must never
+// reach a client. So we mint our own capability token: scoped to ONE call,
+// 15-minute expiry, HMAC'd server-side. Deliberately NOT the user's Supabase
+// JWT in a query string — that would put a full session credential into
+// browser history, proxy logs, and Referer headers, and it would stay valid
+// for the life of the session rather than 15 minutes.
+var V1_RECORDING_TTL_MS = 15 * 60 * 1000;
+
+function v1RecordingToken(callId, ownerId, expMs) {
+  var secret = process.env.RECORDING_TOKEN_SECRET;
+  if (!secret) return null;
+  var sig = require('crypto').createHmac('sha256', secret)
+    .update(callId + '.' + ownerId + '.' + expMs).digest('hex');
+  return expMs + '.' + sig;
+}
+
+function v1VerifyRecordingToken(token, callId, ownerId) {
+  var secret = process.env.RECORDING_TOKEN_SECRET;
+  if (!secret || !token) return false;
+  var parts = String(token).split('.');
+  if (parts.length !== 2) return false;
+  var expMs = parseInt(parts[0], 10);
+  if (!expMs || Date.now() > expMs) return false;
+  var crypto = require('crypto');
+  var expect = crypto.createHmac('sha256', secret)
+    .update(callId + '.' + ownerId + '.' + expMs).digest('hex');
+  var a = Buffer.from(String(parts[1] || ''), 'utf8');
+  var b = Buffer.from(expect, 'utf8');
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+app.get('/api/v1/calls/:callId/recording', authV1, async function(req, res) {
+  try {
+    var callId = String(req.params.callId || '');
+    if (!/^[0-9a-f-]{36}$/i.test(callId)) {
+      return v1Error(res, 404, 'not_found', 'That call could not be found.');
+    }
+    var row = await supabase.from('call_history')
+      .select('id, recording_url, recording_duration_seconds')
+      .eq('id', callId).eq('user_id', req.user.id).maybeSingle();
+    if (row.error) throw new Error(row.error.message);
+    if (!row.data) return v1Error(res, 404, 'not_found', 'That call could not be found.');
+    // Recordings are deleted from Twilio after 30 days by the cleanup job, so
+    // most history genuinely has no audio. Say so plainly.
+    if (!row.data.recording_url) {
+      return v1Error(res, 404, 'not_found', 'The recording for this call is no longer available.');
+    }
+    if (!process.env.RECORDING_TOKEN_SECRET) {
+      console.error('[V1-RECORDING] RECORDING_TOKEN_SECRET is not set — cannot mint links');
+      return v1Error(res, 500, 'internal', 'Recording playback is unavailable right now.', true);
+    }
+    var expMs = Date.now() + V1_RECORDING_TTL_MS;
+    res.json({
+      url: process.env.BASE_URL + '/api/v1/recordings/' + callId + '?t=' + v1RecordingToken(callId, req.user.id, expMs),
+      expiresAt: new Date(expMs).toISOString(),
+      contentType: 'audio/mpeg',
+      durationSeconds: typeof row.data.recording_duration_seconds === 'number' ? row.data.recording_duration_seconds : null
+    });
+  } catch (e) {
+    console.error('[V1-RECORDING] failed:', e.message);
+    return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+  }
+});
+
+// The stream itself. Token-authenticated rather than bearer-authenticated,
+// because an <audio> element will not send an Authorization header. The token
+// is verified against the call's REAL owner, so a valid token for one call
+// grants nothing anywhere else.
+app.get('/api/v1/recordings/:callId', async function(req, res) {
+  try {
+    var callId = String(req.params.callId || '');
+    if (!/^[0-9a-f-]{36}$/i.test(callId)) {
+      return v1Error(res, 404, 'not_found', 'That recording could not be found.');
+    }
+    var row = await supabase.from('call_history')
+      .select('id, user_id, recording_url').eq('id', callId).maybeSingle();
+    if (!row.data || !row.data.recording_url) {
+      return v1Error(res, 404, 'not_found', 'That recording could not be found.');
+    }
+    if (!v1VerifyRecordingToken(req.query.t, callId, row.data.user_id)) {
+      return v1Error(res, 403, 'forbidden', 'This playback link has expired. Reopen the call to get a new one.');
+    }
+    var sid = (row.data.recording_url.match(/RE[a-f0-9]{32}/) || [])[0];
+    if (!sid) return v1Error(res, 404, 'not_found', 'That recording could not be found.');
+
+    require('https').get({
+      hostname: 'api.twilio.com',
+      path: '/2010-04-01/Accounts/' + process.env.TWILIO_ACCOUNT_SID + '/Recordings/' + sid + '.mp3',
+      auth: process.env.TWILIO_ACCOUNT_SID + ':' + process.env.TWILIO_AUTH_TOKEN
+    }, function(twilioRes) {
+      if (twilioRes.statusCode !== 200) {
+        twilioRes.resume();
+        return v1Error(res, 404, 'not_found', 'The recording for this call is no longer available.');
+      }
+      res.set('Content-Type', 'audio/mpeg');
+      res.set('Cache-Control', 'private, max-age=900');
+      twilioRes.pipe(res);
+    }).on('error', function(e) {
+      console.error('[V1-RECORDING] stream error:', e.message);
+      if (!res.headersSent) v1Error(res, 500, 'internal', 'Could not play that recording.', true);
+    });
+  } catch (e) {
+    console.error('[V1-RECORDING] stream failed:', e.message);
+    return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+  }
+});
+
+// §4.13 POST /checkout-link — returns the Stripe URL and logs the attribution.
+// The logging is the point: external link-outs are 0% commission today, but a
+// fee is coming on remand, and "which purchases started in the app" cannot be
+// reconstructed after the fact. The row is written BEFORE the Stripe call, so
+// a tap that fails to convert is still counted.
+app.post('/api/v1/checkout-link', authV1, rateLimit('checkout', 10, 5 * 60 * 1000), async function(req, res) {
+  try {
+    var intent = String((req.body && req.body.intent) || 'credits');
+    if (intent !== 'credits') {
+      return v1Error(res, 400, 'validation_failed', 'That purchase type is not available in the app yet.');
+    }
+    var credits = parseInt(req.body && req.body.creditCount, 10);
+    if (!Number.isFinite(credits) || credits < 1 || credits > MAX_EXACT_CREDITS) {
+      return v1Error(res, 400, 'validation_failed', 'Choose between 1 and ' + MAX_EXACT_CREDITS + ' credits.');
+    }
+    // Authoritative server-side price. A client-supplied price is never read.
+    var priceCents = computeTieredPriceCents(credits);
+    if (priceCents < 500) {
+      console.error('[V1-CHECKOUT] price below Stripe minimum for', credits, 'credits');
+      return v1Error(res, 500, 'internal', 'Could not price that purchase.', true);
+    }
+
+    var attribution = await supabase.from('checkout_attributions').insert({
+      user_id: req.user.id,
+      source: 'ios_app',
+      intent: intent,
+      credit_count: credits,
+      price_cents: priceCents
+    }).select('id').single();
+    if (attribution.error || !attribution.data) {
+      console.error('[V1-CHECKOUT] attribution insert failed:', attribution.error && attribution.error.message);
+      return v1Error(res, 500, 'internal', 'Could not start checkout — please try again.', true);
+    }
+    var attributionId = attribution.data.id;
+    console.log('[V1-CHECKOUT] tap attribution=' + attributionId + ' user=' + req.user.id.slice(0, 8) + ' credits=' + credits + ' cents=' + priceCents);
+
+    var session;
+    try {
+      session = await stripe.checkout.sessions.create({
+        payment_method_types: ['card'],
+        line_items: [{
+          price_data: {
+            currency: 'usd',
+            product_data: { name: 'ProbationCall - ' + credits + ' Credits' },
+            unit_amount: priceCents
+          },
+          quantity: 1
+        }],
+        mode: 'payment',
+        success_url: process.env.BASE_URL + '/dashboard?success=true',
+        cancel_url: process.env.BASE_URL + '/dashboard?canceled=true',
+        // package_id/credits match the existing one-time bundle webhook path,
+        // so this rides the same idempotent credit grant. attribution_id is
+        // additive and ignored by that handler.
+        metadata: {
+          user_id: req.user.id,
+          package_id: 'custom',
+          credits: String(credits),
+          attribution_id: attributionId,
+          source: 'ios_app'
+        }
+      });
+    } catch (e) {
+      logStripeError('v1 checkout-link (user ' + req.user.id.slice(0, 8) + ')', e);
+      return v1Error(res, 502, 'internal', 'Could not start checkout — please try again.', true);
+    }
+
+    // Link the tap to the session so revenue can be joined back to it later.
+    var linked = await supabase.from('checkout_attributions')
+      .update({ stripe_session_id: session.id }).eq('id', attributionId);
+    if (linked.error) {
+      console.error('[V1-CHECKOUT] could not link session to attribution ' + attributionId + ':', linked.error.message);
+    }
+
+    res.json({ url: session.url, attributionId: attributionId, priceCents: priceCents });
+  } catch (e) {
+    console.error('[V1-CHECKOUT] failed:', e.message);
     return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
   }
 });
