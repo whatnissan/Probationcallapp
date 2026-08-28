@@ -1742,7 +1742,7 @@ function v1ParseAnnouncement(raw) {
   return null;
 }
 
-function v1MapResult(raw, userColor) {
+function v1MapResult(raw, userColor, storedVerdict) {
   var r = String(raw || '');
   if (V1_RESULT_PASSTHROUGH.test(r)) return r;
   if (r === 'RETRY_PENDING') return 'IN_PROGRESS';
@@ -1750,6 +1750,8 @@ function v1MapResult(raw, userColor) {
   if (r === 'TRANSCRIBER_DOWN' || r === 'RECORDING_UNAVAILABLE') return 'UNKNOWN';
   var ann = v1ParseAnnouncement(r);
   if (ann) {
+    // Recorded at call time (migration 036) — the truth, not a reconstruction.
+    if (storedVerdict) return storedVerdict;
     // Fort Bend: the per-user verdict was never persisted, so re-derive it
     // from the user's CURRENT color. Correct unless their color changed since
     // that call. Phase announcements can't be derived at all (no per-user
@@ -1867,7 +1869,7 @@ app.get('/api/v1/history', authV1, async function(req, res) {
       lastSeen = rows[rows.length - 1];
       before = lastSeen.created_at;
       rows.forEach(function(r) {
-        var mapped = v1MapResult(r.result, userColor);
+        var mapped = v1MapResult(r.result, userColor, r.verdict);
         if (filter && mapped !== filter) return;
         if (picked.length < limit) picked.push({ row: r, mapped: mapped });
       });
@@ -7339,14 +7341,25 @@ async function deliverFtbendNotification(row) {
   var todayDisplay = row.today_display || '';
   var isUnknown = !!row.is_unknown;
 
+  // The verdict is decided HERE, in the same branches that choose what the
+  // user is told, and written to call_history (migration 036). Deriving it
+  // later from the announcement and their CURRENT color is wrong the moment
+  // anyone's color changes — and this is a compliance record.
+  var ftVerdict;
   var personalMsg;
   if (isUnknown) {
+    ftVerdict = 'UNKNOWN';
     personalMsg = '⚠️ Could not detect today\'s color.\n\nPlease call the hotline to verify:\n' + (FTBEND_OFFICES[oid] ? FTBEND_OFFICES[oid].number : '+12812383668') + '\n\n- ProbationCall.com';
   } else if (userColor && todayColors.indexOf(userColor) >= 0) {
+    ftVerdict = 'MUST_TEST';
     personalMsg = '🚨 TEST REQUIRED! 🚨\n\nToday\'s color is ' + todayDisplay + '.\n\nYour color (' + userColor.charAt(0).toUpperCase() + userColor.slice(1) + ') was called. You MUST test today.\n\n- ProbationCall.com';
   } else if (userColor) {
+    ftVerdict = 'NO_TEST';
     personalMsg = '✅ No test today!\n\nToday\'s color is ' + todayDisplay + '.\nYour color (' + userColor.charAt(0).toUpperCase() + userColor.slice(1) + ') was NOT called. Enjoy your day!\n\n- ProbationCall.com';
   } else {
+    // No color on file: we showed them the announcement and asked them to
+    // check it themselves, so we did not reach a verdict either.
+    ftVerdict = 'UNKNOWN';
     personalMsg = '🎨 Today\'s Color: ' + todayDisplay + '\n\nFort Bend ' + office.name + '\n\nCheck if this is your assigned color.\n\n- ProbationCall.com';
   }
   if (row.verified_via_finishprobation) {
@@ -7406,7 +7419,11 @@ async function deliverFtbendNotification(row) {
     result: row.has_phases ? 'P1:' + (row.phase1 || '?') + ' P2:' + (row.phase2 || '?') : 'COLOR:' + row.result,
     transcript: ftTranscript,
     county: 'ftbend',
-    ftbend_office: oid
+    ftbend_office: oid,
+    // What it MEANT for this user, plus the colour that decision was made
+    // against — so a later colour change can never rewrite this record.
+    verdict: ftVerdict || 'UNKNOWN',
+    verdict_color: userColor || null
   };
   if (shouldMarkFtBilled) ftRow.billed_at = new Date().toISOString();
   await supabase.from('call_history').insert(ftRow);
