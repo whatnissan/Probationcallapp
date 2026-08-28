@@ -118,18 +118,34 @@ small{color:#666;font-size:0.75rem}
 .audio-player audio{width:100%;height:35px;border-radius:8px}
 .play-btn{background:linear-gradient(135deg,#00d4aa,#00b894);border:none;color:#fff;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:0.75rem;display:inline-flex;align-items:center;gap:5px}
 .play-btn:hover{opacity:0.9}
-.history-item{background:rgba(255,255,255,0.03);border-radius:10px;padding:12px 15px;margin-bottom:10px;border:1px solid rgba(255,255,255,0.05)}
+.history-item{display:block;background:rgba(255,255,255,0.035);border-radius:12px;padding:16px 18px;margin-bottom:14px;border:1px solid rgba(255,255,255,0.07);box-shadow:0 4px 14px rgba(0,0,0,0.25)}
 .history-item:hover{border-color:rgba(0,212,170,0.3)}
-.history-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px}
-.history-date{color:#8892b0;font-size:0.85rem}
-.history-county{font-size:0.7rem;color:#00d4aa;background:rgba(0,212,170,0.1);padding:2px 8px;border-radius:4px;margin-left:8px}
-.history-result{padding:4px 10px;border-radius:6px;font-size:0.8rem;font-weight:600}
+/* HEADER zone: one line of facts on the left, the verdict and its action on
+   the right. Nothing here is allowed to wrap mid-word. */
+.history-header{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.hh-left{display:flex;align-items:center;gap:9px;flex-wrap:wrap;min-width:0}
+.hh-right{display:flex;align-items:center;gap:10px;margin-left:auto;flex-shrink:0}
+.history-date{color:#c3ccdf;font-size:0.86rem;font-weight:600;white-space:nowrap;font-variant-numeric:tabular-nums}
+.history-county{font-size:0.7rem;color:#00d4aa;background:rgba(0,212,170,0.1);padding:3px 9px;border-radius:5px;white-space:nowrap}
+.history-pin{font-size:0.7rem;color:#8892b0;background:rgba(255,255,255,0.05);padding:3px 9px;border-radius:5px;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.history-result{padding:5px 12px;border-radius:6px;font-size:0.76rem;font-weight:700;letter-spacing:0.06em;white-space:nowrap}
+.rec-load{background:rgba(255,255,255,0.06);color:#c3ccdf;border:1px solid rgba(255,255,255,0.14);border-radius:8px;padding:6px 12px;font-size:0.75rem;font-weight:600;cursor:pointer;white-space:nowrap;font-family:inherit}
+.rec-load:hover{background:rgba(0,217,255,0.12);border-color:rgba(0,217,255,0.4);color:#fff}
+.rec-load:disabled{opacity:0.6;cursor:default}
+/* TRANSCRIPT zone: full width beneath the header, never competing for
+   horizontal space with the header chips. */
+.tr-zone{margin-top:12px;padding:11px 13px;background:rgba(0,0,0,0.28);border-radius:8px;border-left:3px solid rgba(255,255,255,0.12)}
+.tr-op{font-size:0.9rem;line-height:1.45;font-weight:600}
+.tr-repeat{font-size:0.68rem;color:#7d8aa8;font-weight:400;margin-left:6px}
+.tr-pre{font-size:0.75rem;color:#7d8aa8;line-height:1.55;margin-top:7px}
+.tr-toggle{margin-top:8px;background:none;border:none;color:#8892b0;font-size:0.72rem;cursor:pointer;padding:0;text-decoration:underline;font-family:inherit}
+.tr-toggle:hover{color:#00d9ff}
 .history-result.NO_TEST{background:rgba(0,212,170,0.2);color:#00d4aa}
 .history-result.MUST_TEST{background:rgba(255,107,107,0.2);color:#ff6b6b}
 .history-result.UNKNOWN{background:rgba(245,158,11,0.2);color:#f59e0b}
 .history-result.FTBEND{background:rgba(139,92,246,0.2);color:#a78bfa}
 .history-result.RETRY_PENDING{background:rgba(100,100,255,0.2);color:#6b7fff}
-.history-transcript{font-size:0.75rem;color:#666;margin-top:8px;padding:8px;background:rgba(0,0,0,0.2);border-radius:6px;font-style:italic}
+.history-transcript{font-size:0.75rem;color:#8892b0;margin-top:8px;padding:8px;background:rgba(0,0,0,0.2);border-radius:6px;line-height:1.55}
 .ftbend-recording{background:rgba(0,212,170,0.05);border:1px solid rgba(0,212,170,0.2);border-radius:10px;padding:15px;margin-top:15px}
 .ftbend-recording h4{color:#00d4aa;margin:0 0 10px 0;font-size:0.9rem}
 /* Disclaimer Modal */
@@ -2619,6 +2635,72 @@ function calculateTestStats() {
     })
     .catch(function() { card.style.display = "none"; });
 }
+// "Wed, Aug 26 · 8:10 AM" on ONE line. toLocaleString() produced a
+// three-line stack in a narrow column.
+function historyWhen(iso) {
+  var dt = new Date(iso);
+  var day = dt.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  var time = dt.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  return day + " \u00b7 " + time;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, function(c) {
+    return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c];
+  });
+}
+
+// These transcripts are near-identical every day — the same IVR preamble
+// wrapping one operative sentence that is the entire content. Lead with that
+// sentence and fold the boilerplate away, rather than printing a grey
+// paragraph whose only varying clause is buried in the middle.
+var TR_OPERATIVE = /(do not test|not required to (report|test)|are required to (report|test)|must (report|test)|colors? for today (is|are)|the color for today)/i;
+
+function transcriptZone(h, isFtbend) {
+  if (!h.transcript) return "";
+  // Avoid lookbehind — older mobile Safari does not support it.
+  var sentences = (String(h.transcript).match(/[^.!?]+[.!?]*/g) || []).map(function(s) { return s.trim(); }).filter(Boolean);
+  var ops = [], rest = [];
+  sentences.forEach(function(s) { (TR_OPERATIVE.test(s) ? ops : rest).push(s); });
+
+  var accent = h.result === "MUST_TEST" ? "#ff6b6b"
+    : h.result === "NO_TEST" ? "#00d4aa"
+    : isFtbend ? "#a78bfa" : "#f59e0b";
+
+  var body = "";
+  if (ops.length) {
+    // The hotline repeats the operative line; say so once rather than
+    // three times, but never silently drop the repetition.
+    var distinct = ops.filter(function(s, i, arr) {
+      return arr.map(function(x) { return x.toLowerCase(); }).indexOf(s.toLowerCase()) === i;
+    });
+    var repeatNote = (distinct.length === 1 && ops.length > 1)
+      ? "<span class='tr-repeat'>repeated " + ops.length + "\u00d7</span>" : "";
+    body += "<div class='tr-op' style='color:" + accent + "'>" + escapeHtml(distinct.join(" ")) + repeatNote + "</div>";
+  } else {
+    // No recognised operative line: show the transcript itself rather than
+    // pretending we understood it.
+    body += "<div class='tr-op' style='color:#c3ccdf'>" + escapeHtml(sentences.slice(0, 2).join(" ")) + "</div>";
+    rest = sentences.slice(2);
+  }
+
+  var hidden = rest.join(" ");
+  if (hidden) {
+    var tid = "tr" + (h.id || Math.random().toString(36).slice(2));
+    body += "<div class='tr-pre' id='" + tid + "' style='display:none'>" + escapeHtml(hidden) + "</div>" +
+      "<button class='tr-toggle' onclick=\"toggleTranscript(this,'" + tid + "')\">Show full transcript</button>";
+  }
+  return "<div class='tr-zone' style='border-left-color:" + accent + "44'>" + body + "</div>";
+}
+
+function toggleTranscript(btn, id) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  var open = el.style.display !== "none";
+  el.style.display = open ? "none" : "block";
+  btn.textContent = open ? "Show full transcript" : "Hide full transcript";
+}
+
 function renderCallHistory(filter) {
   var el = document.getElementById("historyList");
   var data = window.callHistoryData || [];
@@ -2641,25 +2723,36 @@ function renderCallHistory(filter) {
       office = office.charAt(0).toUpperCase() + office.slice(1);
       countyLabel = "Ft Bend - " + office;
       if (h.result && h.result.startsWith("COLOR:")) {
-        txt = "🎨 " + h.result.replace("COLOR:", "");
+        txt = h.result.replace("COLOR:", "").trim().toUpperCase();
       } else if (h.result && h.result.startsWith("P1:")) {
-        txt = "🎨 " + h.result.replace("P1:", "").replace("P2:", " / ");
+        txt = h.result.replace("P1:", "").replace("P2:", " / ").trim().toUpperCase();
       } else if (h.result === "NO_CREDITS") {
-        txt = "⚠️ No Credits";
+        txt = "NO CREDITS";
       } else {
-        txt = h.result || "Notified";
+        txt = (h.result || "NOTIFIED").toUpperCase();
       }
     } else {
       countyLabel = "Montgomery";
-      txt = h.result === "NO_TEST" ? "✅ No Test" : h.result === "MUST_TEST" ? "🚨 Must Test" : h.result === "RETRY_PENDING" ? "🔄 Retrying..." : "⚠️ " + (h.result || "Unknown");
+      txt = h.result === "NO_TEST" ? "NO TEST" : h.result === "MUST_TEST" ? "MUST TEST" : h.result === "RETRY_PENDING" ? "RETRYING" : (h.result || "UNKNOWN").toUpperCase();
     }
-    var pin = h.pin_used ? "<br><small>PIN: " + h.pin_used + "</small>" : "";
+    var pin = h.pin_used ? "<span class='history-pin'>PIN " + h.pin_used + "</span>" : "";
     // Playback links are minted per click and expire in 15 minutes, so they
     // are fetched on demand rather than embedded in every row.
     var recMatch = h.recording_url ? h.recording_url.match(/RE[a-f0-9]{32}/) : null;
-    var recording = recMatch ? "<div class='audio-player'><button class='rec-load' onclick='loadRecording(this)' data-recsid='" + recMatch[0] + "'>▶ Load recording</button></div>" : "";
-    var transcript = h.transcript ? "<div class='history-transcript'>\"" + h.transcript + "\"</div>" : "";
-    return "<div class='history-item'><div class='history-header'><div><span class='history-date'>" + new Date(h.created_at).toLocaleString() + "</span><span class='history-county'>" + countyLabel + "</span>" + pin + "</div><span class='history-result " + (isFtbend ? "FTBEND" : h.result) + "'>" + txt + "</span></div>" + recording + transcript + "</div>";
+    var recording = recMatch ? "<button class='rec-load' onclick='loadRecording(this)' data-recsid='" + recMatch[0] + "'>▶ Recording</button>" : "";
+    return "<div class='history-item'>" +
+      "<div class='history-header'>" +
+        "<div class='hh-left'>" +
+          "<span class='history-date'>" + historyWhen(h.created_at) + "</span>" +
+          "<span class='history-county'>" + countyLabel + "</span>" + pin +
+        "</div>" +
+        "<div class='hh-right'>" +
+          "<span class='history-result " + (isFtbend ? "FTBEND" : h.result) + "'>" + txt + "</span>" +
+          recording +
+        "</div>" +
+      "</div>" +
+      transcriptZone(h, isFtbend) +
+      "</div>";
   }).join("");
 }
 function filterHistory(filter) {
