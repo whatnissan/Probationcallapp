@@ -314,6 +314,7 @@ paused state.)
 ```
 
 Cursor pagination — offset pagination breaks when rows land mid-scroll.
+`cursor` is opaque; pass back exactly what `nextCursor` gave you.
 
 ```json
 {
@@ -339,6 +340,43 @@ Cursor pagination — offset pagination breaks when rows land mid-scroll.
 
 List rows deliberately omit transcript and log — fetch those per call.
 
+**Several fields are derived or unknowable, and say so honestly rather than
+guessing.** The backend never invents a value to satisfy a type:
+
+- **`result` is MAPPED, not stored.** `call_history.result` is an operational
+  string that predates this enum: `RETRY_PENDING` → `IN_PROGRESS`,
+  `NO_CREDITS` → `NOT_CALLED`, `TRANSCRIBER_DOWN` / `RECORDING_UNAVAILABLE` →
+  `UNKNOWN`. Anything unrecognised maps to `UNKNOWN`.
+- **Fort Bend rows store the office ANNOUNCEMENT, not the user's verdict.**
+  Since 2026-08-27 the verdict is recorded at call time (with the colour it
+  was matched against) and is served as-is. Older rows have no verdict, so it
+  is re-derived by comparing the announcement to the user's *current* colour —
+  a best effort that is wrong if their colour ever changed. Either way
+  `summary` carries the raw announcement, so the underlying fact is always on
+  screen.
+- **`summary` is derived, not stored** — e.g. `"PIN 482913 · Montgomery
+  County"`, `"Auburn announced · Missouri City"`, `"Skipped — out of credits ·
+  Rosenberg 2"`. There is no location data anywhere in the system, so the
+  place is the county or office, never a city like "Conroe".
+- **`attempts` is `int | null`** — null for calls before 2026-08-15, when
+  dial-time logging (`call_attempts`) began. Those calls have no attempt
+  record at all, and `1` would be a number we made up.
+- **`billed` is `bool | null`** — `billed_at` was only added on 2026-05-19,
+  and most historical billable rows predate it. Credits *were* deducted then;
+  there is simply no marker. Unrecorded therefore reads as `null` (unknown),
+  never `false` — because the client renders "you were not charged" from
+  `false`, and that would deny a charge the user actually paid.
+- **`userConfirmedTested` is always `null`** until §4.5 ships; nothing stores
+  a confirmation yet.
+- **`hasRecording` is usually `false`** on older rows — see the 30-day
+  retention note in §4.4.
+
+**Filtering by `result` can return an empty page with `hasMore: true`.**
+Because the enum value is computed rather than stored, the filter cannot run
+in SQL; the server walks a bounded number of raw pages per request. An empty
+page is not the end of the list — keep following `nextCursor` until
+`hasMore` is `false`.
+
 ### 4.3 `GET /calls/{callId}`
 
 Full detail for one past call: same shape as `/today`'s `callLog` + `recording`.
@@ -346,18 +384,34 @@ Full detail for one past call: same shape as `/today`'s `callLog` + `recording`.
 ### 4.4 `GET /calls/{callId}/recording`
 
 ```json
-{ "url": "https://...signed...", "expiresAt": "...", "contentType": "audio/mpeg", "durationSeconds": 14 }
+{ "url": "https://www.probationcall.com/api/recordings/RE…?t=…",
+  "expiresAt": "2026-08-27T14:15:00Z", "contentType": "audio/mpeg",
+  "durationSeconds": 14 }
 ```
 
-`durationSeconds` is `int | null` — null for calls recorded before 2026-08-25
-(§4.1).
+**Short-lived capability link, never a permanent public link.** This is audio
+about a named person's probation status. 15-minute expiry; the client
+re-fetches rather than caching the URL. Caching the *audio* locally is fine.
 
-```json
-```
+**How this actually works** (the original spec asked for a signed URL, which
+the storage cannot provide). Recordings live at Twilio's REST media URL, which
+is *not* public — it returns 401 without our account credentials — but Twilio
+offers no per-object signing, and those credentials must never reach a client.
+So the server mints its own capability token: HMAC-SHA256, scoped to ONE
+recording, 15-minute expiry, constant-time verified, and proxies the audio.
 
-**Short-lived signed URL, never a permanent public link.** This is audio about a
-named person's probation status. 15-minute expiry; the client re-fetches rather
-than caching the URL. Caching the *audio* locally is fine.
+The token is deliberately **not** a Supabase JWT. A session credential in a
+query string lands in browser history, proxy logs and Referer headers, and
+stays valid for the life of the session; a capability token grants one
+recording for fifteen minutes and nothing else. (Two routes did exactly this
+until 2026-08-27 and were deleted.)
+
+**Recordings are deleted from Twilio after 30 days.** Most history therefore
+has no audio: `hasRecording` is `false` on those rows and this endpoint
+returns `404 not_found`. That is the honest answer, not an error to retry.
+
+`durationSeconds` is `int | null` — null for calls recorded before 2026-08-25,
+when duration capture began (§4.1).
 
 ### 4.5 `POST /calls/{callId}/tested`
 
@@ -633,7 +687,13 @@ APNs `Unregistered` receipts.
 ```json
 { "intent": "credits", "creditCount": 95 }
 ```
-→ `{ "url": "https://...", "attributionId": "uuid", "priceCents": 3700 }`
+→ `{ "url": "https://...", "attributionId": "uuid", "priceCents": 4185 }`
+
+**`priceCents` is computed server-side and is authoritative.** A
+client-supplied price is never read. The tiers are 50¢ for the first 30
+credits, 42¢ for the next 60, then 33¢ — so 95 credits is
+(30 × 50) + (60 × 42) + (5 × 33) = **4185**, not the 3700 this example
+claimed before 2026-08-27.
 
 **Log the attribution ID on every tap from day one.** US external link-outs are
 currently 0% commission, but the district court is setting a fee on remand. When
