@@ -1006,8 +1006,13 @@ function loadFtbendColors() {
         if (officeData && officeData.recording_url) {
           var recSid = officeData.recording_url.match(/RE[a-f0-9]{32}/);
           if (recSid) {
-            audioEl.src = "/api/recording/" + recSid[0] + "?token=" + encodeURIComponent(token || "");
-            recDiv.style.display = "block";
+            // Ask the server for a short-lived playback link. The session
+            // token never goes into a URL.
+            recordingLink(recSid[0]).then(function(url) {
+              if (!url) return;
+              audioEl.src = url;
+              recDiv.style.display = "block";
+            });
           }
         } else {
           recDiv.style.display = "none";
@@ -1746,10 +1751,49 @@ function requestPayout() {
   });
 }
 
+// Ask the server for a 15-minute playback link for one recording. Returns
+// null if the server declines, so callers can stay quiet.
+async function recordingLink(sid) {
+  try {
+    var r = await fetch("/api/recording-link", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
+      body: JSON.stringify({ recordingSid: sid })
+    });
+    if (!r.ok) return null;
+    var j = await r.json();
+    return j.url || null;
+  } catch (e) { return null; }
+}
+
+async function loadRecording(btn) {
+  btn.disabled = true;
+  btn.textContent = "Loading…";
+  var url = await recordingLink(btn.getAttribute("data-recsid"));
+  if (!url) {
+    btn.disabled = false;
+    btn.textContent = "▶ Recording unavailable — retry";
+    return;
+  }
+  var audio = document.createElement("audio");
+  audio.controls = true;
+  audio.src = url;
+  btn.parentNode.replaceChild(audio, btn);
+  audio.play().catch(function() { /* the user can press play */ });
+}
+
 var ws;
-function connectWS() {
+async function connectWS() {
   if (!token) { setTimeout(connectWS, 2000); return; }
-  ws = new WebSocket((location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws?token=' + encodeURIComponent(token));
+  // A 60-second ticket, not the session JWT — a socket URL is logged in the
+  // same places any other URL is.
+  var ticket = null;
+  try {
+    var tr = await fetch("/api/ws-ticket", { method: "POST", headers: { "Authorization": "Bearer " + token } });
+    if (tr.ok) ticket = (await tr.json()).ticket;
+  } catch (e) { /* fall through to retry */ }
+  if (!ticket) { setTimeout(connectWS, 5000); return; }
+  ws = new WebSocket((location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws?ticket=' + encodeURIComponent(ticket));
   ws.onmessage = function(e) {
     var d = JSON.parse(e.data);
     if (d.type === 'log') addLog(d.log.message, d.log.type);
@@ -2610,12 +2654,10 @@ function renderCallHistory(filter) {
       txt = h.result === "NO_TEST" ? "✅ No Test" : h.result === "MUST_TEST" ? "🚨 Must Test" : h.result === "RETRY_PENDING" ? "🔄 Retrying..." : "⚠️ " + (h.result || "Unknown");
     }
     var pin = h.pin_used ? "<br><small>PIN: " + h.pin_used + "</small>" : "";
-    var recUrl = h.recording_url;
-    if (recUrl && recUrl.includes("Recordings/")) {
-      var sid = recUrl.match(/Recordings\/([A-Za-z0-9]+)/);
-      if (sid) recUrl = "/api/recording/" + sid[1] + "?token=" + encodeURIComponent(token || "");
-    }
-    var recording = h.recording_url ? "<div class='audio-player'><audio controls preload='none' src='" + recUrl + "'></audio></div>" : "";
+    // Playback links are minted per click and expire in 15 minutes, so they
+    // are fetched on demand rather than embedded in every row.
+    var recMatch = h.recording_url ? h.recording_url.match(/RE[a-f0-9]{32}/) : null;
+    var recording = recMatch ? "<div class='audio-player'><button class='rec-load' onclick='loadRecording(this)' data-recsid='" + recMatch[0] + "'>▶ Load recording</button></div>" : "";
     var transcript = h.transcript ? "<div class='history-transcript'>\"" + h.transcript + "\"</div>" : "";
     return "<div class='history-item'><div class='history-header'><div><span class='history-date'>" + new Date(h.created_at).toLocaleString() + "</span><span class='history-county'>" + countyLabel + "</span>" + pin + "</div><span class='history-result " + (isFtbend ? "FTBEND" : h.result) + "'>" + txt + "</span></div>" + recording + transcript + "</div>";
   }).join("");

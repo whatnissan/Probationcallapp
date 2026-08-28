@@ -1961,16 +1961,20 @@ app.get('/api/v1/calls/:callId', authV1, async function(req, res) {
 // browser history, proxy logs, and Referer headers, and it would stay valid
 // for the life of the session rather than 15 minutes.
 var V1_RECORDING_TTL_MS = 15 * 60 * 1000;
+var WS_TICKET_TTL_MS = 60 * 1000;
 
-function v1RecordingToken(callId, ownerId, expMs) {
+// A capability token over ONE recording SID, valid for 15 minutes. Issued
+// only after an ownership check, and deliberately NOT the user's Supabase
+// JWT: a session credential in a URL leaks into browser history, proxy logs
+// and Referer headers, and stays valid for the life of the session.
+function recordingCapToken(sid, expMs) {
   var secret = process.env.RECORDING_TOKEN_SECRET;
   if (!secret) return null;
-  var sig = require('crypto').createHmac('sha256', secret)
-    .update(callId + '.' + ownerId + '.' + expMs).digest('hex');
+  var sig = require('crypto').createHmac('sha256', secret).update(sid + '.' + expMs).digest('hex');
   return expMs + '.' + sig;
 }
 
-function v1VerifyRecordingToken(token, callId, ownerId) {
+function verifyRecordingCapToken(token, sid) {
   var secret = process.env.RECORDING_TOKEN_SECRET;
   if (!secret || !token) return false;
   var parts = String(token).split('.');
@@ -1978,12 +1982,104 @@ function v1VerifyRecordingToken(token, callId, ownerId) {
   var expMs = parseInt(parts[0], 10);
   if (!expMs || Date.now() > expMs) return false;
   var crypto = require('crypto');
-  var expect = crypto.createHmac('sha256', secret)
-    .update(callId + '.' + ownerId + '.' + expMs).digest('hex');
+  var expect = crypto.createHmac('sha256', secret).update(sid + '.' + expMs).digest('hex');
   var a = Buffer.from(String(parts[1] || ''), 'utf8');
   var b = Buffer.from(expect, 'utf8');
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
+
+// Same idea for the WebSocket: a 60-second ticket bound to the user id,
+// instead of the full session JWT that used to sit in the socket URL.
+function wsTicket(userId, expMs) {
+  var secret = process.env.RECORDING_TOKEN_SECRET;
+  if (!secret) return null;
+  var sig = require('crypto').createHmac('sha256', secret).update('ws.' + userId + '.' + expMs).digest('hex');
+  return userId + '.' + expMs + '.' + sig;
+}
+
+function verifyWsTicket(ticket) {
+  var secret = process.env.RECORDING_TOKEN_SECRET;
+  if (!secret || !ticket) return null;
+  var parts = String(ticket).split('.');
+  if (parts.length !== 3) return null;
+  var userId = parts[0];
+  var expMs = parseInt(parts[1], 10);
+  if (!expMs || Date.now() > expMs) return null;
+  var crypto = require('crypto');
+  var expect = crypto.createHmac('sha256', secret).update('ws.' + userId + '.' + expMs).digest('hex');
+  var a = Buffer.from(String(parts[2] || ''), 'utf8');
+  var b = Buffer.from(expect, 'utf8');
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  return userId;
+}
+
+function recordingLinkFor(sid) {
+  var expMs = Date.now() + V1_RECORDING_TTL_MS;
+  return { url: '/api/recordings/' + sid + '?t=' + recordingCapToken(sid, expMs), expiresAt: new Date(expMs).toISOString() };
+}
+
+// The stream. Token-authenticated rather than bearer-authenticated because an
+// <audio> element cannot send an Authorization header. Twilio's own media URL
+// needs our account credentials, which must never reach a client, so the
+// audio is proxied.
+app.get('/api/recordings/:sid', async function(req, res) {
+  var sid = String(req.params.sid || '');
+  if (!/^RE[a-f0-9]{32}$/.test(sid)) {
+    return v1Error(res, 404, 'not_found', 'That recording could not be found.');
+  }
+  if (!verifyRecordingCapToken(req.query.t, sid)) {
+    return v1Error(res, 403, 'forbidden', 'This playback link has expired. Reopen the call to get a new one.');
+  }
+  require('https').get({
+    hostname: 'api.twilio.com',
+    path: '/2010-04-01/Accounts/' + process.env.TWILIO_ACCOUNT_SID + '/Recordings/' + sid + '.mp3',
+    auth: process.env.TWILIO_ACCOUNT_SID + ':' + process.env.TWILIO_AUTH_TOKEN
+  }, function(twilioRes) {
+    if (twilioRes.statusCode !== 200) {
+      twilioRes.resume();
+      return v1Error(res, 404, 'not_found', 'The recording for this call is no longer available.');
+    }
+    res.set('Content-Type', 'audio/mpeg');
+    res.set('Cache-Control', 'private, max-age=900');
+    twilioRes.pipe(res);
+  }).on('error', function(e) {
+    console.error('[RECORDING] stream error:', e.message);
+    if (!res.headersSent) v1Error(res, 500, 'internal', 'Could not play that recording.', true);
+  });
+});
+
+// Web dashboard link minting. Carries the SAME three ownership rules the old
+// /api/recording/:sid route enforced: your own call, a county-wide Fort Bend
+// daily recording, or an admin.
+app.post('/api/recording-link', auth, async function(req, res) {
+  var sid = String((req.body && req.body.recordingSid) || '');
+  if (!/^RE[a-f0-9]{32}$/.test(sid)) return res.status(400).json({ error: 'Invalid recording id' });
+  if (!process.env.RECORDING_TOKEN_SECRET) {
+    console.error('[RECORDING] RECORDING_TOKEN_SECRET is not set — cannot mint links');
+    return res.status(500).json({ error: 'Recording playback is unavailable right now' });
+  }
+  var allowed = false;
+  var own = await supabase.from('call_history').select('id').eq('user_id', req.user.id).ilike('recording_url', '%' + sid + '%').limit(1);
+  if (own.data && own.data.length > 0) allowed = true;
+  if (!allowed) {
+    var county = await supabase.from('daily_county_status').select('id').ilike('recording_url', '%' + sid + '%').limit(1);
+    if (county.data && county.data.length > 0) allowed = true;
+  }
+  if (!allowed && req.profile && req.profile.is_admin && !req.profile.is_disabled) allowed = true;
+  if (!allowed) return res.status(403).json({ error: 'Not your recording' });
+  res.json(recordingLinkFor(sid));
+});
+
+// Short-lived WebSocket ticket, replacing the session JWT that used to be
+// passed in the socket URL.
+app.post('/api/ws-ticket', auth, function(req, res) {
+  if (!process.env.RECORDING_TOKEN_SECRET) {
+    console.error('[WS] RECORDING_TOKEN_SECRET is not set — cannot mint tickets');
+    return res.status(500).json({ error: 'Live updates are unavailable right now' });
+  }
+  var expMs = Date.now() + WS_TICKET_TTL_MS;
+  res.json({ ticket: wsTicket(req.user.id, expMs), expiresAt: new Date(expMs).toISOString() });
+});
 
 app.get('/api/v1/calls/:callId/recording', authV1, async function(req, res) {
   try {
@@ -2005,58 +2101,17 @@ app.get('/api/v1/calls/:callId/recording', authV1, async function(req, res) {
       console.error('[V1-RECORDING] RECORDING_TOKEN_SECRET is not set — cannot mint links');
       return v1Error(res, 500, 'internal', 'Recording playback is unavailable right now.', true);
     }
-    var expMs = Date.now() + V1_RECORDING_TTL_MS;
+    var sid = (String(row.data.recording_url).match(/RE[a-f0-9]{32}/) || [])[0];
+    if (!sid) return v1Error(res, 404, 'not_found', 'The recording for this call is no longer available.');
+    var link = recordingLinkFor(sid);
     res.json({
-      url: process.env.BASE_URL + '/api/v1/recordings/' + callId + '?t=' + v1RecordingToken(callId, req.user.id, expMs),
-      expiresAt: new Date(expMs).toISOString(),
+      url: process.env.BASE_URL + link.url,
+      expiresAt: link.expiresAt,
       contentType: 'audio/mpeg',
       durationSeconds: typeof row.data.recording_duration_seconds === 'number' ? row.data.recording_duration_seconds : null
     });
   } catch (e) {
     console.error('[V1-RECORDING] failed:', e.message);
-    return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
-  }
-});
-
-// The stream itself. Token-authenticated rather than bearer-authenticated,
-// because an <audio> element will not send an Authorization header. The token
-// is verified against the call's REAL owner, so a valid token for one call
-// grants nothing anywhere else.
-app.get('/api/v1/recordings/:callId', async function(req, res) {
-  try {
-    var callId = String(req.params.callId || '');
-    if (!/^[0-9a-f-]{36}$/i.test(callId)) {
-      return v1Error(res, 404, 'not_found', 'That recording could not be found.');
-    }
-    var row = await supabase.from('call_history')
-      .select('id, user_id, recording_url').eq('id', callId).maybeSingle();
-    if (!row.data || !row.data.recording_url) {
-      return v1Error(res, 404, 'not_found', 'That recording could not be found.');
-    }
-    if (!v1VerifyRecordingToken(req.query.t, callId, row.data.user_id)) {
-      return v1Error(res, 403, 'forbidden', 'This playback link has expired. Reopen the call to get a new one.');
-    }
-    var sid = (row.data.recording_url.match(/RE[a-f0-9]{32}/) || [])[0];
-    if (!sid) return v1Error(res, 404, 'not_found', 'That recording could not be found.');
-
-    require('https').get({
-      hostname: 'api.twilio.com',
-      path: '/2010-04-01/Accounts/' + process.env.TWILIO_ACCOUNT_SID + '/Recordings/' + sid + '.mp3',
-      auth: process.env.TWILIO_ACCOUNT_SID + ':' + process.env.TWILIO_AUTH_TOKEN
-    }, function(twilioRes) {
-      if (twilioRes.statusCode !== 200) {
-        twilioRes.resume();
-        return v1Error(res, 404, 'not_found', 'The recording for this call is no longer available.');
-      }
-      res.set('Content-Type', 'audio/mpeg');
-      res.set('Cache-Control', 'private, max-age=900');
-      twilioRes.pipe(res);
-    }).on('error', function(e) {
-      console.error('[V1-RECORDING] stream error:', e.message);
-      if (!res.headersSent) v1Error(res, 500, 'internal', 'Could not play that recording.', true);
-    });
-  } catch (e) {
-    console.error('[V1-RECORDING] stream failed:', e.message);
     return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
   }
 });
@@ -4981,10 +5036,10 @@ app.post('/api/test-sms', auth, rateLimit('test-sms', 3, 5 * 60 * 1000), async f
   res.json(result);
 });
 
-wss.on('connection', async function(ws, req) {
-  // Only accept /ws connections with a valid Supabase access token in the
-  // query string. We tag the socket with userId so broadcastToClients can
-  // route per-call events to only that user.
+wss.on('connection', function(ws, req) {
+  // Only accept /ws connections carrying a valid short-lived ticket. We tag
+  // the socket with userId so broadcastToClients can route per-call events to
+  // only that user.
   try {
     var url = req.url || '';
     if (url.indexOf('/ws') !== 0) {
@@ -4994,17 +5049,15 @@ wss.on('connection', async function(ws, req) {
     var qIndex = url.indexOf('?');
     var query = qIndex >= 0 ? url.slice(qIndex + 1) : '';
     var params = new URLSearchParams(query);
-    var token = params.get('token');
-    if (!token) {
+    // Was ?token=<supabase JWT>. A socket URL is logged in exactly the same
+    // places an HTTP URL is, so it carried the same defect as the old
+    // recording route. Now a 60-second ticket from POST /api/ws-ticket.
+    var ticketUserId = verifyWsTicket(params.get('ticket'));
+    if (!ticketUserId) {
       ws.close(1008, 'auth required');
       return;
     }
-    var authRes = await supabase.auth.getUser(token);
-    if (authRes.error || !authRes.data || !authRes.data.user) {
-      ws.close(1008, 'invalid token');
-      return;
-    }
-    ws.userId = authRes.data.user.id;
+    ws.userId = ticketUserId;
     wsClients.add(ws);
     ws.on('close', function() { wsClients.delete(ws); });
   } catch (e) {
@@ -7546,66 +7599,11 @@ app.get("/api/ftbend/colors", auth, async function(req, res) {
 // call_history rows, is a county-wide Fort Bend daily recording, or they
 // are an admin. Previously this endpoint was unauthenticated and proxied
 // ANY recording in the Twilio account to anyone holding its SID.
-app.get('/api/recording/:recordingSid', async function(req, res) {
-  var recordingSid = req.params.recordingSid;
-  if (!/^RE[a-f0-9]{32}$/.test(recordingSid)) {
-    return res.status(400).json({ error: 'Invalid recording id' });
-  }
-
-  var authHeader = req.headers.authorization;
-  var token = req.query.token || (authHeader ? authHeader.replace('Bearer ', '') : null);
-  if (!token) return res.status(401).json({ error: 'Auth required' });
-  var authRes;
-  try {
-    authRes = await supabase.auth.getUser(token);
-  } catch (e) {
-    return res.status(500).json({ error: 'Auth error' });
-  }
-  if (authRes.error || !authRes.data || !authRes.data.user) {
-    return res.status(401).json({ error: 'Invalid token' });
-  }
-  var userId = authRes.data.user.id;
-
-  var allowed = false;
-  var own = await supabase.from('call_history')
-    .select('id')
-    .eq('user_id', userId)
-    .ilike('recording_url', '%' + recordingSid + '%')
-    .limit(1);
-  if (own.data && own.data.length > 0) allowed = true;
-  if (!allowed) {
-    // Fort Bend daily recordings are county-wide info — any authed user.
-    var county = await supabase.from('daily_county_status')
-      .select('id')
-      .ilike('recording_url', '%' + recordingSid + '%')
-      .limit(1);
-    if (county.data && county.data.length > 0) allowed = true;
-  }
-  if (!allowed) {
-    var prof = await supabase.from('profiles').select('is_admin, is_disabled').eq('id', userId).single();
-    if (prof.data && prof.data.is_admin && !prof.data.is_disabled) allowed = true;
-  }
-  if (!allowed) return res.status(403).json({ error: 'Not your recording' });
-
-  var https = require('https');
-
-  var options = {
-    hostname: 'api.twilio.com',
-    path: '/2010-04-01/Accounts/' + process.env.TWILIO_ACCOUNT_SID + '/Recordings/' + recordingSid + '.mp3',
-    auth: process.env.TWILIO_ACCOUNT_SID + ':' + process.env.TWILIO_AUTH_TOKEN
-  };
-  
-  https.get(options, function(twilioRes) {
-    if (twilioRes.statusCode !== 200) {
-      return res.status(404).json({ error: 'Recording not found' });
-    }
-    res.set('Content-Type', 'audio/mpeg');
-    twilioRes.pipe(res);
-  }).on('error', function(e) {
-    console.error('[RECORDING] Proxy error:', e.message);
-    res.status(500).json({ error: e.message });
-  });
-});
+// /api/recording/:sid?token=<supabase JWT> was DELETED on 2026-08-27. It put
+// a full session credential in a query string, where it lands in browser
+// history, proxy logs and Referer headers and stays valid for the life of the
+// session. Playback now goes through POST /api/recording-link (ownership
+// check) -> GET /api/recordings/:sid?t=<15-minute capability token>.
 
 app.get("/api/ftbend/today", async function(req, res) {
   // Colors stay public (cheap to share, useful for the landing page), but
