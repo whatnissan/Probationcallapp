@@ -1533,8 +1533,13 @@ app.get('/api/v1/me', authV1, async function(req, res) {
     var daysRemaining = null, creditsNeeded = null;
     if (probEnd) {
       var t = new Date(); t.setHours(0, 0, 0, 0);
-      daysRemaining = Math.max(0, Math.ceil((new Date(probEnd) - t) / 86400000));
-      creditsNeeded = daysRemaining; // 1 credit per remaining day
+      // NEGATIVE when the end date has passed (-42 = ended 42 days ago).
+      // Clamping to 0 made "today is your last day" and "your date passed six
+      // weeks ago" identical, and the app rendered the second as "covered
+      // through the end". A sign is unmissable; a separate boolean is a field
+      // a client can forget to check, which lands back on "0 days left".
+      daysRemaining = Math.ceil((new Date(probEnd) - t) / 86400000);
+      creditsNeeded = Math.max(0, daysRemaining); // never need credits for elapsed days
     }
     var meta = req.user.user_metadata || {};
 
@@ -4008,6 +4013,13 @@ app.post('/webhook/recording', validateTwilio, async function(req, res) {
   }
 
   var mp3Url = recordingUrl + '.mp3';
+  // Twilio posts RecordingDuration in this same validated body. Captured once
+  // here and written wherever the row is created, because the row for this
+  // call usually does not exist yet at this point — it is INSERTed further
+  // down this same handler, which is why the UPDATE below silently affected
+  // zero rows and migration 034 never populated anything.
+  var recDurRaw = parseInt(req.body.RecordingDuration, 10);
+  var recordingDurationSeconds = isNaN(recDurRaw) ? null : recDurRaw;
   var config = await getPendingCall(callId);
 
   if (!config) return;
@@ -4016,19 +4028,32 @@ app.post('/webhook/recording', validateTwilio, async function(req, res) {
   if (config.isFtbendDaily) {
     var today = formatLocalDay(new Date(), 'America/Chicago');
     var countyKey = 'ftbend_' + (config.officeId || 'missouri');
-    await supabase.from('daily_county_status')
+    var ftUpd = await supabase.from('daily_county_status')
       .update({ recording_url: mp3Url })
       .eq('county', countyKey)
-      .eq('date', today);
-    console.log('[RECORDING] Saved Fort Bend daily recording for', countyKey, today);
+      .eq('date', today)
+      .select('id');
+    if (ftUpd.error) {
+      console.error('[RECORDING] Fort Bend daily update FAILED for', countyKey, today, ':', ftUpd.error.message);
+    } else {
+      console.log('[RECORDING] Fort Bend daily recording', countyKey, today, '— rows updated:', (ftUpd.data || []).length);
+    }
   } else if (config.callSid) {
-    // RecordingDuration arrives in the same Twilio-validated POST as
-    // RecordingUrl; before migration 034 it was discarded.
-    var recDur = parseInt(req.body.RecordingDuration, 10);
-    await supabase.from('call_history')
-      .update({ recording_url: mp3Url, recording_duration_seconds: isNaN(recDur) ? null : recDur })
-      .eq('call_sid', config.callSid);
-    console.log('[RECORDING] Saved Montgomery recording for', config.callSid);
+    // Only updates a row that ALREADY exists (a retry landing on a row an
+    // earlier attempt created). Zero rows is the normal case, not an error —
+    // the insert paths below carry the duration themselves.
+    var mgUpd = await supabase.from('call_history')
+      .update({ recording_url: mp3Url, recording_duration_seconds: recordingDurationSeconds })
+      .eq('call_sid', config.callSid)
+      .select('id');
+    if (mgUpd.error) {
+      console.error('[RECORDING] Montgomery update FAILED for', config.callSid, ':', mgUpd.error.message);
+    } else {
+      // Report the count. The old line here read "Saved Montgomery
+      // recording" unconditionally and printed on every single call while
+      // affecting nothing — a log that lies is worse than no log.
+      console.log('[RECORDING] Montgomery recording', config.callSid, '— rows updated:', (mgUpd.data || []).length);
+    }
   }
   
   // Dual-channel, one per code per day. Email AND SMS deliberately: a
@@ -4219,6 +4244,7 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
               pin_used: config.pin,
               result: 'HOTLINE_DOWN',
               recording_url: recordingUrl + '.mp3',
+              recording_duration_seconds: recordingDurationSeconds,
               created_at: new Date().toISOString()
             };
             var downInsert = await supabase.from('call_history').insert(downRow);
@@ -4509,6 +4535,7 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
           // forever because this wasn't stored).
           transcript: transcript || null,
           recording_url: recordingUrl + '.mp3',
+          recording_duration_seconds: recordingDurationSeconds,
           created_at: new Date().toISOString()
         };
         if (shouldMarkBilled) row.billed_at = new Date().toISOString();
@@ -4546,6 +4573,7 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
           pin_used: config.pin || null,
           result: tCode,
           recording_url: recordingUrl ? recordingUrl + '.mp3' : null,
+          recording_duration_seconds: recordingUrl ? recordingDurationSeconds : null,
           created_at: new Date().toISOString()
         }).then(function() {}, function(e) {
           console.error('[TRANSCRIBE] could not record ' + tCode + ':', e.message);
