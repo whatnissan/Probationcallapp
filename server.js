@@ -4035,8 +4035,13 @@ app.post('/webhook/recording', validateTwilio, async function(req, res) {
       .select('id');
     if (ftUpd.error) {
       console.error('[RECORDING] Fort Bend daily update FAILED for', countyKey, today, ':', ftUpd.error.message);
+    } else if ((ftUpd.data || []).length) {
+      console.log('[RECORDING] Fort Bend ' + countyKey + ' ' + today + ' — recording attached');
     } else {
-      console.log('[RECORDING] Fort Bend daily recording', countyKey, today, '— rows updated:', (ftUpd.data || []).length);
+      // Unlike Montgomery, the daily row is created by detection BEFORE the
+      // recording webhook fires, so nothing to update means something is
+      // genuinely wrong and the audio is now unreachable from the UI.
+      console.warn('[RECORDING] Fort Bend ' + countyKey + ' ' + today + ' — NO daily_county_status row to attach the recording to');
     }
   } else if (config.callSid) {
     // Only updates a row that ALREADY exists (a retry landing on a row an
@@ -4048,11 +4053,14 @@ app.post('/webhook/recording', validateTwilio, async function(req, res) {
       .select('id');
     if (mgUpd.error) {
       console.error('[RECORDING] Montgomery update FAILED for', config.callSid, ':', mgUpd.error.message);
+    } else if ((mgUpd.data || []).length) {
+      console.log('[RECORDING] Montgomery ' + config.callSid + ' — attached duration ' + recordingDurationSeconds + 's to ' + mgUpd.data.length + ' existing row(s)');
     } else {
-      // Report the count. The old line here read "Saved Montgomery
-      // recording" unconditionally and printed on every single call while
-      // affecting nothing — a log that lies is worse than no log.
-      console.log('[RECORDING] Montgomery recording', config.callSid, '— rows updated:', (mgUpd.data || []).length);
+      // The ordinary path, and NOT a failure: this call's row has not been
+      // written yet — the insert further down carries the duration. Spelled
+      // out because "rows updated: 0" reads as breakage to whoever finds it
+      // next, which is the same trap as the "Saved" line this replaced.
+      console.log('[RECORDING] Montgomery ' + config.callSid + ' — no existing row yet; duration ' + recordingDurationSeconds + 's will be set on insert');
     }
   }
   
