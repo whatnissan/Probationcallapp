@@ -890,6 +890,11 @@ async function finalFailMorning(state, existingRow) {
     result: state.last_result,
     transcript: state.last_transcript || null,
     recording_url: state.last_recording_url,
+    // Completes migration 034 for the retry-exhausted path: these mornings
+    // are the ones worth listening back to, and they used to land with a
+    // recording and no duration.
+    recording_duration_seconds: typeof state.last_recording_duration_seconds === 'number'
+      ? state.last_recording_duration_seconds : null,
     created_at: new Date().toISOString()
   };
   var insertResult = await supabase.from('call_history').insert(row);
@@ -916,7 +921,7 @@ async function finalFailMorning(state, existingRow) {
 // Creates / updates the pending_retries row, OR triggers final-fail when
 // retries are exhausted or the cutoff is hit. Never writes call_history
 // directly (that's finalFailMorning's job or the success path's job).
-async function handleScheduledMorningNoResult(config, result, callSid, transcript, recordingUrl) {
+async function handleScheduledMorningNoResult(config, result, callSid, transcript, recordingUrl, recordingDurationSeconds) {
   if (!config.userId) return;
 
   var existing = await supabase.from('pending_retries').select('*').eq('user_id', config.userId).maybeSingle();
@@ -955,7 +960,8 @@ async function handleScheduledMorningNoResult(config, result, callSid, transcrip
       last_result: result,
       last_call_sid: callSid,
       last_transcript: transcript,
-      last_recording_url: recordingUrl
+      last_recording_url: recordingUrl,
+      last_recording_duration_seconds: recordingDurationSeconds
     }, row);
     return;
   }
@@ -967,6 +973,7 @@ async function handleScheduledMorningNoResult(config, result, callSid, transcrip
       last_call_sid: callSid,
       last_transcript: transcript,
       last_recording_url: recordingUrl,
+      last_recording_duration_seconds: recordingDurationSeconds,
       next_attempt_at: nextAt.toISOString(),
       updated_at: new Date().toISOString()
     }).eq('id', row.id);
@@ -989,6 +996,7 @@ async function handleScheduledMorningNoResult(config, result, callSid, transcrip
       last_call_sid: callSid,
       last_transcript: transcript,
       last_recording_url: recordingUrl,
+      last_recording_duration_seconds: recordingDurationSeconds,
       next_attempt_at: nextAt.toISOString()
     });
     if (ins.error) {
@@ -4236,7 +4244,7 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
             // Route into morning-aggregated retry flow — no notify, no
             // streak, no call_history row written here. Handler decides
             // whether to queue another retry or final-fail.
-            await handleScheduledMorningNoResult(config, 'HOTLINE_DOWN', config.callSid, null, recordingUrl + '.mp3');
+            await handleScheduledMorningNoResult(config, 'HOTLINE_DOWN', config.callSid, null, recordingUrl + '.mp3', recordingDurationSeconds);
           } else {
             // Non-scheduled (manual/admin) call — keep the d8bfe71 behavior:
             // notify-via-existing-admin-alert above, write a HOTLINE_DOWN row,
@@ -4475,7 +4483,7 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
         if (config.isScheduledMorning && config.userId) {
           // Scheduled-morning retry flow — no notify, no streak, no row.
           // Handler decides whether to queue another retry or final-fail.
-          await handleScheduledMorningNoResult(config, 'UNKNOWN', config.callSid, transcript, recordingUrl + '.mp3');
+          await handleScheduledMorningNoResult(config, 'UNKNOWN', config.callSid, transcript, recordingUrl + '.mp3', recordingDurationSeconds);
         } else {
           await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, 'We couldn\'t make out today\'s announcement — sorry about that.\n\nHeard: "' + transcript.substring(0, 100) + '"\n\nPlease call the hotline to check.\n\n- ProbationCall.com', callId);
           // If this user has now had several UNKNOWNs in a row, pause their
@@ -4714,7 +4722,7 @@ app.post('/webhook/status', validateTwilio, async function(req, res) {
     // Scheduled-morning retry flow — no notify (mid-retry silence), no
     // streak, no call_history row. Handler decides whether to queue
     // another retry or final-fail.
-    await handleScheduledMorningNoResult(config, 'CALL_FAILED', config.callSid, '(no audio — Twilio status: ' + callStatus + ')', null);
+    await handleScheduledMorningNoResult(config, 'CALL_FAILED', config.callSid, '(no audio — Twilio status: ' + callStatus + ')', null, null);
     return;
   }
 
@@ -8073,7 +8081,8 @@ cron.schedule('* * * * *', async function() {
         last_result: row.last_result,
         last_call_sid: row.last_call_sid,
         last_transcript: row.last_transcript,
-        last_recording_url: row.last_recording_url
+        last_recording_url: row.last_recording_url,
+        last_recording_duration_seconds: row.last_recording_duration_seconds
       }, row);
       continue;
     }
