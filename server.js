@@ -1225,6 +1225,13 @@ function authAllowDisabled(req, res, next) {
 app.get('/', function(req, res) { res.sendFile(path.join(__dirname, 'public', 'index.html')); });
 app.get('/login', function(req, res) { res.sendFile(path.join(__dirname, 'public', 'login.html')); });
 app.get('/dashboard', function(req, res) { res.sendFile(path.join(__dirname, 'public', 'dashboard.html')); });
+// Extension-less aliases. These are linked from emails, the app, and the
+// App Store listing, where a bare /privacy is what people write — and they
+// 404'd, which for a privacy policy is the worst page to lose.
+app.get('/privacy', function(req, res) { res.sendFile(path.join(__dirname, 'public', 'privacy.html')); });
+app.get('/terms', function(req, res) { res.sendFile(path.join(__dirname, 'public', 'terms.html')); });
+app.get('/sms-consent', function(req, res) { res.sendFile(path.join(__dirname, 'public', 'sms-consent.html')); });
+app.get('/sms-compliance', function(req, res) { res.sendFile(path.join(__dirname, 'public', 'sms-compliance.html')); });
 app.get('/health', function(req, res) { res.json({ status: 'ok', scheduledJobs: scheduledJobs.size, activeConnections: wsClients.size }); });
 
 // Referral landing page
@@ -2137,23 +2144,61 @@ app.get('/api/v1/calls/:callId/recording', authV1, async function(req, res) {
 app.post('/api/v1/checkout-link', authV1, rateLimit('checkout', 10, 5 * 60 * 1000), async function(req, res) {
   try {
     var intent = String((req.body && req.body.intent) || 'credits');
-    if (intent !== 'credits') {
+    if (intent !== 'credits' && intent !== 'subscription') {
       return v1Error(res, 400, 'validation_failed', 'That purchase type is not available in the app yet.');
     }
-    var credits = parseInt(req.body && req.body.creditCount, 10);
-    if (!Number.isFinite(credits) || credits < 1 || credits > MAX_EXACT_CREDITS) {
-      return v1Error(res, 400, 'validation_failed', 'Choose between 1 and ' + MAX_EXACT_CREDITS + ' credits.');
-    }
-    // Authoritative server-side price. A client-supplied price is never read.
-    var priceCents = computeTieredPriceCents(credits);
-    if (priceCents < 500) {
-      console.error('[V1-CHECKOUT] price below Stripe minimum for', credits, 'credits');
-      return v1Error(res, 500, 'internal', 'Could not price that purchase.', true);
+
+    var credits = null, priceCents = null, subPriceId = null, profile = null;
+
+    if (intent === 'subscription') {
+      subPriceId = process.env.STRIPE_SUBSCRIPTION_PRICE_ID;
+      if (!subPriceId) {
+        console.error('[V1-CHECKOUT] STRIPE_SUBSCRIPTION_PRICE_ID is not set');
+        return v1Error(res, 500, 'internal', 'Subscriptions are unavailable right now.', true);
+      }
+      // authV1 deliberately loads no profile, so fetch the two fields the
+      // subscription path needs: the already-subscribed guard and the Stripe
+      // customer to reuse (a second customer for the same person splits their
+      // billing history in two).
+      var pr = await supabase.from('profiles')
+        .select('subscription_status, stripe_customer_id').eq('id', req.user.id).maybeSingle();
+      profile = pr.data || {};
+      if (profile.subscription_status === 'active' && profile.stripe_customer_id) {
+        return v1Error(res, 400, 'validation_failed', 'You already have an active subscription. Use Manage subscription to make changes.');
+      }
+      // Stripe owns the recurring price, so ASK it rather than hardcoding
+      // 1499 — a hardcoded number starts lying the day the price changes,
+      // and this value is what the app shows the user before they tap.
+      try {
+        var subPrice = await stripe.prices.retrieve(subPriceId);
+        priceCents = subPrice && subPrice.unit_amount;
+      } catch (e) {
+        logStripeError('v1 checkout-link price lookup (user ' + req.user.id.slice(0, 8) + ')', e);
+        return v1Error(res, 502, 'internal', 'Could not start checkout — please try again.', true);
+      }
+      if (!Number.isFinite(priceCents)) {
+        console.error('[V1-CHECKOUT] subscription price', subPriceId, 'has no unit_amount');
+        return v1Error(res, 500, 'internal', 'Subscriptions are unavailable right now.', true);
+      }
+    } else {
+      credits = parseInt(req.body && req.body.creditCount, 10);
+      if (!Number.isFinite(credits) || credits < 1 || credits > MAX_EXACT_CREDITS) {
+        return v1Error(res, 400, 'validation_failed', 'Choose between 1 and ' + MAX_EXACT_CREDITS + ' credits.');
+      }
+      // Authoritative server-side price. A client-supplied price is never read.
+      priceCents = computeTieredPriceCents(credits);
+      if (priceCents < 500) {
+        console.error('[V1-CHECKOUT] price below Stripe minimum for', credits, 'credits');
+        return v1Error(res, 500, 'internal', 'Could not price that purchase.', true);
+      }
     }
 
     var attribution = await supabase.from('checkout_attributions').insert({
       user_id: req.user.id,
       source: 'ios_app',
+      // intent is the whole point of this log: a subscription tap and a
+      // 30-credit tap must be tellable apart when the fee lands. credit_count
+      // is null for a subscription — there is no one-off credit quantity.
       intent: intent,
       credit_count: credits,
       price_cents: priceCents
@@ -2163,10 +2208,35 @@ app.post('/api/v1/checkout-link', authV1, rateLimit('checkout', 10, 5 * 60 * 100
       return v1Error(res, 500, 'internal', 'Could not start checkout — please try again.', true);
     }
     var attributionId = attribution.data.id;
-    console.log('[V1-CHECKOUT] tap attribution=' + attributionId + ' user=' + req.user.id.slice(0, 8) + ' credits=' + credits + ' cents=' + priceCents);
+    console.log('[V1-CHECKOUT] tap attribution=' + attributionId + ' user=' + req.user.id.slice(0, 8) +
+      ' intent=' + intent + (intent === 'credits' ? ' credits=' + credits : '') + ' cents=' + priceCents);
 
     var session;
     try {
+      if (intent === 'subscription') {
+        // Same shape as POST /api/subscription/checkout. The webhook keys off
+        // s.mode === 'subscription', so this rides the identical grant path;
+        // attribution_id and source are additive and ignored there.
+        var subParams = {
+          mode: 'subscription',
+          line_items: [{ price: subPriceId, quantity: 1 }],
+          success_url: process.env.BASE_URL + '/dashboard?subscribed=true',
+          cancel_url: process.env.BASE_URL + '/dashboard?canceled=true',
+          // user_id on the SUBSCRIPTION metadata so renewal invoices resolve
+          // back to this user, and on the SESSION metadata for the completed
+          // event — both, exactly as the web path does.
+          subscription_data: { metadata: { user_id: req.user.id } },
+          metadata: {
+            user_id: req.user.id,
+            type: 'subscription',
+            attribution_id: attributionId,
+            source: 'ios_app'
+          }
+        };
+        if (profile && profile.stripe_customer_id) subParams.customer = profile.stripe_customer_id;
+        else subParams.customer_email = req.user.email;
+        session = await stripe.checkout.sessions.create(subParams);
+      } else {
       session = await stripe.checkout.sessions.create({
         payment_method_types: ['card'],
         line_items: [{
@@ -2191,6 +2261,7 @@ app.post('/api/v1/checkout-link', authV1, rateLimit('checkout', 10, 5 * 60 * 100
           source: 'ios_app'
         }
       });
+      }
     } catch (e) {
       logStripeError('v1 checkout-link (user ' + req.user.id.slice(0, 8) + ')', e);
       return v1Error(res, 502, 'internal', 'Could not start checkout — please try again.', true);
