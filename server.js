@@ -19,6 +19,7 @@ const {
 } = require('./lib/detection');
 const { formatLocalDay, todayMD, wouldExceedCutoff, wouldExceedFtbendCutoff, ftbendRetryDelayMs } = require('./lib/time');
 const { computeTieredPriceCents, MAX_EXACT_CREDITS } = require('./lib/pricing');
+const apns = require('./lib/apns');
 const { isValidPin, isValidTimezone, isValidEmail, normalizePhoneE164, isValidSupportSubject, isValidSupportBody } = require('./lib/validation');
 const { toSmsText, smsSegmentInfo, looksLikeEmailContent, renderBrandedEmail } = require('./lib/messaging');
 const { createBilling, logStripeError } = require('./lib/billing');
@@ -2135,6 +2136,293 @@ app.get('/api/v1/calls/:callId/recording', authV1, async function(req, res) {
     return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
   }
 });
+
+// ---------------------------------------------------------------------------
+// §4.12 push: registration, delivery, acknowledgement, SMS fallback.
+//
+// THE SAFETY PROPERTY, because this runs at 5 AM: push can only ever ADD a
+// delivery, never remove one. tryPushFirst() returns true only when Apple
+// accepted the notification; every other outcome — APNs down, no device,
+// dead token, bad key, an exception anywhere in here — returns false, and the
+// caller then notifies exactly as it did before push existed. There is no
+// path where a push failure suppresses the SMS.
+// ---------------------------------------------------------------------------
+
+function pushFallbackMinutes() {
+  var n = parseInt(process.env.PUSH_SMS_FALLBACK_MINUTES, 10);
+  return Number.isFinite(n) && n > 0 ? n : 10;
+}
+
+// Quiet mode means "only tell me when I must test", so a quiet user gets no
+// push at all for anything else — not a silent one. NOTE: quiet_mode is not
+// enforced on the SMS path (it never has been), so this deliberately only
+// gates push; changing SMS delivery is a separate, riskier change.
+function pushAllowed(schedule, result) {
+  if (!schedule) return true;
+  if (!schedule.quiet_mode) return true;
+  return result === 'MUST_TEST';
+}
+
+// The morning, in the USER's timezone — a 5 AM CST call in UTC lands on the
+// wrong calendar day, which would break the one-row-per-morning guarantee.
+function pushLocalDate(config) {
+  try {
+    return formatLocalDay(new Date(), (config && config.timezone) || 'America/Chicago');
+  } catch (e) {
+    return formatLocalDay(new Date(), 'America/Chicago');
+  }
+}
+
+// quiet_mode lives on the schedule and the transcription path doesn't carry
+// it, so fetch just that. Failure returns null, which pushAllowed treats as
+// "not quiet" — the same notification behaviour as today.
+async function pushSchedule(userId) {
+  if (!userId) return null;
+  try {
+    var r = await supabase.from('user_schedules').select('quiet_mode').eq('user_id', userId).maybeSingle();
+    return r.data || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function pruneDeviceToken(token, reason) {
+  try {
+    await supabase.from('device_tokens')
+      .update({ unregistered_at: new Date().toISOString() })
+      .eq('token', token).is('unregistered_at', null);
+    console.log('[PUSH] Pruned token …' + String(token).slice(-8) + ' (' + reason + ')');
+  } catch (e) {
+    console.error('[PUSH] Could not prune token:', e.message);
+  }
+}
+
+// Attempt push for one morning result. Returns TRUE only if Apple accepted it
+// and an SMS should therefore be held back pending the unread timer.
+async function tryPushFirst(opts) {
+  try {
+    if (!apns.apnsConfigured()) return false;
+    if (!opts.userId || !opts.localDate) return false;
+    if (!pushAllowed(opts.schedule, opts.result)) {
+      console.log('[PUSH] quiet mode — no push for ' + opts.result + ' (' + opts.userId.slice(0, 8) + ')');
+      return false;
+    }
+
+    var devices = await supabase.from('device_tokens')
+      .select('token, environment')
+      .eq('user_id', opts.userId)
+      .is('unregistered_at', null);
+    var live = (devices.data || []);
+
+    // One delivery row per user per morning (unique index). If a row already
+    // exists this morning was already handled — never push or text twice.
+    var due = new Date(Date.now() + pushFallbackMinutes() * 60000).toISOString();
+    var row = {
+      user_id: opts.userId,
+      local_date: opts.localDate,
+      result: opts.result,
+      call_id: opts.callId || null
+    };
+    if (!live.length) {
+      // No device: fall back immediately, per the ruling — don't make someone
+      // wait out a timer for a notification that was never going to arrive.
+      row.fallback_due_at = new Date().toISOString();
+      row.fallback_reason = 'no_device';
+    } else {
+      row.fallback_due_at = due;
+    }
+    var created = await supabase.from('push_deliveries').insert(row).select('id').single();
+    if (created.error) {
+      // Most likely the unique (user_id, local_date) index: this morning
+      // already has a delivery record, so someone else owns it.
+      console.log('[PUSH] delivery row not created for ' + opts.userId.slice(0, 8) + ' (' + created.error.message.slice(0, 60) + ') — leaving SMS to the caller');
+      return false;
+    }
+    var deliveryId = created.data.id;
+    if (!live.length) {
+      console.log('[PUSH] no live device for ' + opts.userId.slice(0, 8) + ' — SMS now');
+      return false;
+    }
+
+    var payload = apns.buildPayload({
+      title: opts.title,
+      body: opts.body,
+      mustTest: opts.result === 'MUST_TEST',
+      deliveryId: deliveryId,
+      result: opts.result,
+      date: opts.localDate
+    });
+
+    var accepted = null, lastReason = null;
+    for (var i = 0; i < live.length; i++) {
+      var d = live[i];
+      var r = await apns.sendPush({
+        token: d.token,
+        environment: d.environment,
+        payload: payload,
+        collapseId: opts.localDate + ':' + opts.userId,
+        // Pointless to deliver this evening: it is a statement about today.
+        expirationEpochSeconds: Math.floor(Date.now() / 1000) + 6 * 3600
+      });
+      if (r.unregistered) await pruneDeviceToken(d.token, r.reason || 'unregistered');
+      if (r.ok) { accepted = { token: d.token, apnsId: r.apnsId }; break; }
+      lastReason = r.reason || ('status ' + r.status);
+    }
+
+    if (accepted) {
+      await supabase.from('push_deliveries').update({
+        token: accepted.token,
+        apns_id: accepted.apnsId,
+        sent_at: new Date().toISOString()
+      }).eq('id', deliveryId);
+      console.log('[PUSH] sent to ' + opts.userId.slice(0, 8) + ' (' + opts.result + '); SMS held for ' + pushFallbackMinutes() + ' min unless acked');
+      return true;
+    }
+
+    // Every device rejected. We already know push failed, so don't wait.
+    await supabase.from('push_deliveries').update({
+      send_failed_at: new Date().toISOString(),
+      send_error: String(lastReason || 'unknown').slice(0, 200),
+      fallback_due_at: new Date().toISOString(),
+      fallback_reason: 'send_failed'
+    }).eq('id', deliveryId);
+    console.log('[PUSH] all devices failed for ' + opts.userId.slice(0, 8) + ' (' + lastReason + ') — SMS now');
+    return false;
+  } catch (e) {
+    // Belt and braces: ANY unexpected error means the caller notifies as it
+    // always did. A push bug must never cost someone their MUST_TEST.
+    console.error('[PUSH] tryPushFirst error (falling back to SMS):', e.message);
+    return false;
+  }
+}
+
+// §4.12 POST /devices — register or re-register a device.
+app.post('/api/v1/devices', authV1, async function(req, res) {
+  try {
+    var b = req.body || {};
+    var token = String(b.token || '').trim();
+    if (!/^[a-fA-F0-9]{64,200}$/.test(token)) {
+      return v1Error(res, 400, 'validation_failed', 'That device token is not valid.');
+    }
+    var platform = b.platform === 'android' ? 'android' : 'ios';
+    var environment = b.environment === 'sandbox' ? 'sandbox' : 'production';
+    var now = new Date().toISOString();
+    // Upsert on TOKEN, not user_id: a device may move between accounts, and
+    // the token is what Apple addresses. Re-registering also clears a previous
+    // prune, which is how a reinstalled app comes back to life.
+    var up = await supabase.from('device_tokens').upsert({
+      user_id: req.user.id,
+      token: token,
+      platform: platform,
+      environment: environment,
+      app_version: b.appVersion ? String(b.appVersion).slice(0, 32) : null,
+      os_version: b.osVersion ? String(b.osVersion).slice(0, 32) : null,
+      last_seen_at: now,
+      unregistered_at: null
+    }, { onConflict: 'token' }).select('id').single();
+    if (up.error) {
+      console.error('[PUSH] device register failed:', up.error.message);
+      return v1Error(res, 500, 'internal', 'Could not register this device.', true);
+    }
+    console.log('[PUSH] registered device …' + token.slice(-8) + ' (' + environment + ') for ' + req.user.id.slice(0, 8));
+    res.json({ registered: true, environment: environment });
+  } catch (e) {
+    console.error('[PUSH] device register error:', e.message);
+    return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+  }
+});
+
+// §4.12 DELETE /devices/{token} — sign-out / notifications-off.
+// Soft delete, scoped to the caller: you can only retire your own device.
+app.delete('/api/v1/devices/:token', authV1, async function(req, res) {
+  try {
+    var token = String(req.params.token || '').trim();
+    var del = await supabase.from('device_tokens')
+      .update({ unregistered_at: new Date().toISOString() })
+      .eq('token', token).eq('user_id', req.user.id).select('id');
+    if (del.error) {
+      console.error('[PUSH] device delete failed:', del.error.message);
+      return v1Error(res, 500, 'internal', 'Could not remove this device.', true);
+    }
+    // Idempotent: removing an already-removed device is a success, not a 404.
+    res.json({ removed: (del.data || []).length });
+  } catch (e) {
+    console.error('[PUSH] device delete error:', e.message);
+    return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+  }
+});
+
+// §4.12a POST /push/{deliveryId}/ack — the app reports the notification was
+// opened. This is what cancels the SMS fallback, so it is the difference
+// between one notification and two.
+app.post('/api/v1/push/:deliveryId/ack', authV1, async function(req, res) {
+  try {
+    var id = String(req.params.deliveryId || '');
+    if (!/^[0-9a-f-]{36}$/i.test(id)) {
+      return v1Error(res, 404, 'not_found', 'That notification could not be found.');
+    }
+    var upd = await supabase.from('push_deliveries')
+      .update({ acked_at: new Date().toISOString() })
+      .eq('id', id).eq('user_id', req.user.id).is('acked_at', null)
+      .select('id, fallback_sent_at');
+    if (upd.error) {
+      console.error('[PUSH] ack failed:', upd.error.message);
+      return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+    }
+    var rows = upd.data || [];
+    // Report whether the ack actually beat the timer, rather than claiming a
+    // cancellation that already went out as a text.
+    var cancelled = rows.length > 0 && !rows[0].fallback_sent_at;
+    res.json({ acked: true, fallbackCancelled: cancelled });
+  } catch (e) {
+    console.error('[PUSH] ack error:', e.message);
+    return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+  }
+});
+
+// The fallback sweep: anything due, unacknowledged and not yet sent gets the
+// SMS/email it would have got if push had never existed.
+async function runPushFallbackSweep() {
+  try {
+    var due = await supabase.from('push_deliveries')
+      .select('id, user_id, result, local_date, fallback_reason')
+      .lte('fallback_due_at', new Date().toISOString())
+      .is('fallback_sent_at', null)
+      .is('acked_at', null)
+      .limit(50);
+    if (due.error || !due.data || !due.data.length) return;
+
+    for (var i = 0; i < due.data.length; i++) {
+      var d = due.data[i];
+      try {
+        var sched = await supabase.from('user_schedules')
+          .select('notify_number, notify_email, notify_method')
+          .eq('user_id', d.user_id).maybeSingle();
+        if (!sched.data) {
+          await supabase.from('push_deliveries').update({
+            fallback_sent_at: new Date().toISOString(),
+            fallback_reason: d.fallback_reason || 'unread'
+          }).eq('id', d.id);
+          continue;
+        }
+        var msg = d.result === 'MUST_TEST'
+          ? '🚨 TEST REQUIRED today.\n\nYour PIN was called. Report for testing today.\n\n- ProbationCall.com'
+          : '✅ No test today.\n\n- ProbationCall.com';
+        await notify(sched.data.notify_number, sched.data.notify_email, sched.data.notify_method, msg, 'push_fallback');
+        await supabase.from('push_deliveries').update({
+          fallback_sent_at: new Date().toISOString(),
+          fallback_reason: d.fallback_reason || 'unread'
+        }).eq('id', d.id);
+        console.log('[PUSH-FALLBACK] SMS sent for ' + d.user_id.slice(0, 8) + ' (' + (d.fallback_reason || 'unread') + ', ' + d.result + ')');
+      } catch (inner) {
+        // One user's failure must not stop the sweep for everyone else.
+        console.error('[PUSH-FALLBACK] failed for ' + d.user_id.slice(0, 8) + ':', inner.message);
+      }
+    }
+  } catch (e) {
+    console.error('[PUSH-FALLBACK] sweep error:', e.message);
+  }
+}
 
 // §4.13 POST /checkout-link — returns the Stripe URL and logs the attribution.
 // The logging is the point: external link-outs are 0% commission today, but a
@@ -4541,14 +4829,27 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
         var mustMsg = isFtbend
           ? '🚨 TEST REQUIRED! 🚨\n\nYour color was called. Report for testing today.\n\n- ProbationCall.com'
           : '🚨 TEST REQUIRED! 🚨\n\nYour PIN was called. You MUST test today.\n\nPIN: ' + config.pin + '\n\n- ProbationCall.com';
-        await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, mustMsg, callId);
+        // Push first, SMS as the backstop. tryPushFirst returns true ONLY if
+        // Apple accepted it; anything else (APNs down, no device, dead token,
+        // any thrown error) returns false and we notify exactly as before.
+        var mustPushed = await tryPushFirst({
+          userId: config.userId, result: 'MUST_TEST', localDate: pushLocalDate(config),
+          callId: null, schedule: await pushSchedule(config.userId),
+          title: 'Test required today', body: 'Your PIN was called. Report for testing today.'
+        });
+        if (!mustPushed) await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, mustMsg, callId);
       } else if (KEYWORDS.NO_TEST.some(function(k) { return lower.includes(k); })) {
         result = 'NO_TEST';
         console.log('[TRANSCRIBE] ✅ No test detected for', callId);
         var noTestMsg = isFtbend
           ? '✅ No test today!\n\nYour color was NOT called. Enjoy your day!\n\n- ProbationCall.com'
           : '✅ No test today!\n\nYour PIN was NOT called. Enjoy your day!\n\nPIN: ' + config.pin + '\n\n- ProbationCall.com';
-        await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, noTestMsg, callId);
+        var noTestPushed = await tryPushFirst({
+          userId: config.userId, result: 'NO_TEST', localDate: pushLocalDate(config),
+          callId: null, schedule: await pushSchedule(config.userId),
+          title: 'No test today', body: 'Your PIN was not called today.'
+        });
+        if (!noTestPushed) await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, noTestMsg, callId);
       } else {
         console.log('[TRANSCRIBE] ⚠️ Unknown result for', callId, ':', transcript);
         if (config.isScheduledMorning && config.userId) {
@@ -8088,6 +8389,9 @@ cron.schedule('45 * * * *', async function() {
 // pending_retries rows survive a container restart, and this poller
 // resumes work on the next minute boundary after boot.
 cron.schedule('* * * * *', async function() {
+  // Push fallbacks are time-critical and cheap to check; run them first and
+  // never let a failure here stop the retry poller below.
+  await runPushFallbackSweep();
   // === MONTGOMERY pending_retries scan ===
   // (Wrapped in else-if instead of early-return so the FORT BEND BRANCH
   // at the bottom of this callback executes every tick regardless of
