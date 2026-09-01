@@ -131,6 +131,26 @@ Auto-resume is scoped `.eq('paused_reason','no_credits')` server-side. Do not wi
 `push`, `sms`, `email`. Multiple allowed — see §4.7. (`whatsapp` removed
 2026-08-24 — unreliable in production; zero users had it at removal.)
 
+**`push` COMPOSES with the others; it does not replace them.** Push is the
+fast path and SMS is the backstop: push fires first, and if it is not
+acknowledged within `PUSH_SMS_FALLBACK_MINUTES` (10) the SMS goes out anyway.
+That preserves the delivery guarantee while cutting Twilio spend, which is the
+actual return — a push-only guarantee would be no guarantee at all, because a
+phone can be off.
+
+**A dead token does NOT wait out the timer.** If APNs rejects the send
+(`Unregistered`, `BadDeviceToken`), or the user has no live device, or the
+send fails for any other reason, the SMS goes immediately. We already know
+push failed at that point, and `MUST_TEST` is not a result to gamble ten
+minutes on.
+
+**Quiet mode suppresses push entirely for non-`MUST_TEST` results** — no push,
+not a silent one. (Note: quiet mode is not currently enforced on the SMS path;
+it never has been.)
+
+**Billing is unaffected.** A push-only morning still bills a credit: the credit
+pays for the call to the hotline, not for the delivery of the answer.
+
 ### `ftbend_office`
 `missouri` (Probation, 3668) · `rosenberg` (Pretrial, 3669) · `rosenberg2`
 (Drug Court, 3671). Values match `user_schedules.ftbend_office`.
@@ -691,8 +711,34 @@ Push registration.
   "appVersion": "1.0.0", "osVersion": "26.5" }
 ```
 
-Unique on `token`, not `user_id` — one user, several devices. Server prunes on
-APNs `Unregistered` receipts.
+Unique on `token`, not `user_id` — one user, several devices. Registration
+UPSERTS on the token and reassigns `user_id`, because a device can change
+hands, and it clears any previous prune so a reinstalled app comes back to
+life.
+
+`environment` (`production` | `sandbox`) travels WITH the token and is
+required: APNs sandbox and production are separate address spaces, and a token
+minted against one is invalid on the other — get it wrong and TestFlight
+builds silently receive nothing.
+
+Server prunes on APNs `Unregistered` and `BadDeviceToken` receipts. Pruning is
+a SOFT delete (`unregistered_at`), so "we stopped being able to reach this
+person" stays auditable rather than vanishing.
+
+`DELETE /devices/{token}` is scoped to the caller and idempotent: removing an
+already-removed device returns `{"removed": 0}`, not a 404.
+
+### 4.12a `POST /push/{deliveryId}/ack`
+
+→ `{ "acked": true, "fallbackCancelled": true }`
+
+The app calls this when the user opens the notification. **This is what
+cancels the SMS fallback**, so it is the difference between one notification
+and two. `deliveryId` arrives in the push payload's custom data.
+
+`fallbackCancelled` is `false` when the ack lost the race and the SMS has
+already gone out — the server reports what happened rather than claiming a
+cancellation that did not occur.
 
 ### 4.13 `POST /checkout-link`
 
