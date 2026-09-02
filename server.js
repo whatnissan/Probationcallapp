@@ -19,6 +19,8 @@ const {
 } = require('./lib/detection');
 const { formatLocalDay, todayMD, wouldExceedCutoff, wouldExceedFtbendCutoff, ftbendRetryDelayMs } = require('./lib/time');
 const { computeTieredPriceCents, creditPricing, MAX_EXACT_CREDITS } = require('./lib/pricing');
+const { resolveBearerUser, emailTombstoneHash } = require('./lib/auth');
+const demoAccount = require('./lib/demo');
 const apns = require('./lib/apns');
 const { fallbackFieldsFor } = require('./lib/push');
 const { isValidPin, isValidTimezone, isValidEmail, normalizePhoneE164, isValidSupportSubject, isValidSupportBody } = require('./lib/validation');
@@ -1013,6 +1015,27 @@ function isDev(email) {
   return DEV_EMAILS.includes(email.toLowerCase());
 }
 
+// Starter credits for a brand-new profile. Zero if this email has been
+// deleted before (migration 042 tombstone): DELETE /account frees the
+// address, and without this a delete/re-register loop would farm the
+// signup bonus. A tombstone lookup failure grants normally — a DB hiccup
+// must not turn every real signup into a zero-credit account.
+async function starterCreditsFor(email) {
+  if (isDev(email || '')) return 9999;
+  try {
+    var h = emailTombstoneHash(email);
+    if (!h) return 5;
+    var t = await supabase.from('deleted_account_tombstones').select('email_hash').eq('email_hash', h).maybeSingle();
+    if (t.data) {
+      console.log('[AUTH] Re-signup of a deleted account — no starter credits');
+      return 0;
+    }
+  } catch (e) {
+    console.error('[AUTH] tombstone lookup failed (granting normally):', e.message);
+  }
+  return 5;
+}
+
 function generateReferralCode() {
   var chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   var code = '';
@@ -1132,7 +1155,7 @@ async function auth(req, res, next) {
     
     if (!profile) {
       var referralCode = generateReferralCode();
-      var startCredits = isDev(user.email) ? 9999 : 5;
+      var startCredits = await starterCreditsFor(user.email);
       // Insert with 0 credits, then grant via the ledger RPC so the signup
       // bonus shows up in the audit trail. The insert is the race gate: the
       // profiles PK on id means only one of two concurrent first-requests
@@ -1387,7 +1410,12 @@ async function computeSystemStats() {
   var result = await supabase.from('call_history').select('user_id, created_at, result, county')
     .eq('result', 'MUST_TEST').order('created_at', { ascending: true });
   if (result.error) throw new Error(result.error.message);
+    // Demo accounts (migration 043) hold fabricated history — never pooled.
+    var demoIds = {};
+    var demoRes = await supabase.from('profiles').select('id').eq('is_demo', true);
+    (demoRes.data || []).forEach(function(d) { demoIds[d.id] = true; });
     var tests = (result.data || []).filter(function(t) {
+      if (demoIds[t.user_id]) return false;
       var c = t.county || 'montgomery';
       return c === 'montgomery' || c.indexOf('montgomery') === 0;
     });
@@ -1459,13 +1487,13 @@ function v1Error(res, status, code, message, retryable) {
 // contract shape and no profile bootstrap side effects — v1 clients are
 // existing signed-in users, and a stats read must never create rows.
 async function authV1(req, res, next) {
-  var authHeader = req.headers.authorization;
-  var token = authHeader ? authHeader.replace('Bearer ', '') : null;
-  if (!token) return v1Error(res, 401, 'unauthenticated', 'Sign in required.');
   try {
-    var result = await supabase.auth.getUser(token);
-    if (result.error || !result.data.user) return v1Error(res, 401, 'unauthenticated', 'Session expired — sign in again.');
-    req.user = result.data.user;
+    // Server-validated, never a local decode — see lib/auth.js for why
+    // DELETE /account depends on this. test/auth.test.js pins it.
+    var r = await resolveBearerUser(supabase, req.headers.authorization);
+    if (r.reason === 'missing') return v1Error(res, 401, 'unauthenticated', 'Sign in required.');
+    if (!r.user) return v1Error(res, 401, 'unauthenticated', 'Session expired — sign in again.');
+    req.user = r.user;
     next();
   } catch (e) {
     console.error('[V1-AUTH] error:', e.message);
@@ -1523,7 +1551,7 @@ app.get('/api/v1/me', authV1, async function(req, res) {
     var pr = await supabase.from('profiles').select('*').eq('id', req.user.id).single();
     var profile = pr.data;
     if (!profile) {
-      var startCredits = isDev(req.user.email) ? 9999 : 5;
+      var startCredits = await starterCreditsFor(req.user.email);
       var ins = await supabase.from('profiles').insert({
         id: req.user.id, email: req.user.email, credits: 0,
         referral_code: generateReferralCode(),
@@ -2317,6 +2345,195 @@ async function tryPushFirst(opts) {
     return false;
   }
 }
+
+// §4.15 DELETE /account — App Store 5.1.1(v).
+//
+// BILLING FIRST, ROWS SECOND. A half-deleted account with a live Stripe
+// subscription is worse than no endpoint: the renewal would fire, the
+// webhook would find no profile, and the person would keep being charged
+// with no portal to stop it. So Stripe is cancelled and the customer
+// removed BEFORE any row is touched, and if Stripe fails nothing at all is
+// deleted — the caller can retry, and every step below is idempotent.
+//
+// What is KEPT, by ruling (2026-09-02):
+//   sms_opt_outs       — untouched, keyed by phone: a re-registered number
+//                        must never be texted after STOP.
+//   sms_consents       — user_id nulled; phone + timestamp stay (TCPA).
+//   purchases          — user_id nulled; Stripe ids + amounts stay.
+//   affiliate_earnings / referrals where they were the REFERRED party —
+//                        reference nulled; it is someone else's money.
+// Unpaid earnings where they are the AFFILIATE block deletion: request a
+// payout or contact support first.
+var ACCOUNT_DELETE_PAID_STATUSES = ['paid'];
+
+async function alertAdminAccountDeletionBlocked(userId, reason) {
+  try {
+    var admins = await supabase.from('profiles').select('id, email').eq('is_admin', true);
+    var text = '🚨 ProbationCall ADMIN: account deletion BLOCKED for user ' + String(userId).slice(0, 8) +
+      ' — billing is already closed; the profile row could not be deleted (' + String(reason || 'unknown').slice(0, 120) + '). Finish it from the admin panel.';
+    for (var i = 0; i < ((admins.data) || []).length; i++) {
+      var as = await supabase.from('user_schedules').select('notify_number').eq('user_id', admins.data[i].id).maybeSingle();
+      if (as && as.data && as.data.notify_number) await sendSMS(as.data.notify_number, text, 'account_delete_admin');
+      if (admins.data[i].email) await sendEmail(admins.data[i].email, text, 'account_delete_admin');
+    }
+  } catch (e) {
+    console.error('[ACCOUNT-DELETE] admin alert failed:', e.message);
+  }
+}
+
+app.delete('/api/v1/account', authV1, rateLimit('account_delete', 5, 60 * 60 * 1000), async function(req, res) {
+  var userId = req.user.id;
+  var tag = '[ACCOUNT-DELETE] ' + userId.slice(0, 8);
+  try {
+    if (!req.body || req.body.confirm !== 'DELETE') {
+      return v1Error(res, 400, 'validation_failed', 'To delete your account, send {"confirm":"DELETE"}.');
+    }
+    var pr = await supabase.from('profiles').select('*').eq('id', userId).maybeSingle();
+    if (pr.error) {
+      console.error(tag + ' profile read failed:', pr.error.message);
+      return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+    }
+    var profile = pr.data || null;
+
+    // Affiliate guard: money we owe them cannot be deleted away.
+    var owed = await supabase.from('affiliate_earnings').select('id, amount_cents, status').eq('affiliate_id', userId);
+    if (owed.error) {
+      console.error(tag + ' earnings read failed:', owed.error.message);
+      return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+    }
+    var unpaid = (owed.data || []).filter(function(e) { return ACCOUNT_DELETE_PAID_STATUSES.indexOf(e.status) < 0; });
+    var pendingPayout = await supabase.from('payout_requests').select('id').eq('user_id', userId).eq('status', 'pending').limit(1);
+    if (unpaid.length || (pendingPayout.data && pendingPayout.data.length)) {
+      var cents = unpaid.reduce(function(n, e) { return n + (e.amount_cents || 0); }, 0);
+      console.log(tag + ' refused: unpaid affiliate earnings (' + unpaid.length + ' rows, ' + cents + ' cents)');
+      return v1Error(res, 409, 'unpaid_affiliate_earnings',
+        'You have unpaid affiliate earnings' + (cents ? ' ($' + (cents / 100).toFixed(2) + ')' : '') + '. Request a payout or contact support before deleting your account.');
+    }
+
+    // 1. STRIPE. Cancel now (no proration — the person asked to be gone), then
+    //    remove the customer so the card and contact details leave Stripe too;
+    //    Stripe keeps charges and invoices under its own retention.
+    if (profile && profile.stripe_subscription_id && profile.subscription_status !== 'canceled') {
+      try {
+        var c = await stripe.subscriptions.cancel(profile.stripe_subscription_id);
+        console.log(tag + ' subscription ' + profile.stripe_subscription_id + ' cancelled (status ' + c.status + ')');
+      } catch (e) {
+        if (e && e.code === 'resource_missing') {
+          console.log(tag + ' subscription already gone at Stripe');
+        } else {
+          logStripeError('account delete: cancel sub ' + profile.stripe_subscription_id + ' (user ' + userId.slice(0, 8) + ')', e);
+          return v1Error(res, 502, 'billing_cancel_failed', 'We could not cancel your subscription, so nothing was deleted. Please try again or contact support.', true);
+        }
+      }
+    }
+    if (profile && profile.stripe_customer_id) {
+      try {
+        await stripe.customers.del(profile.stripe_customer_id);
+        console.log(tag + ' Stripe customer removed');
+      } catch (e) {
+        if (e && e.code === 'resource_missing') {
+          console.log(tag + ' Stripe customer already gone');
+        } else {
+          logStripeError('account delete: remove customer (user ' + userId.slice(0, 8) + ')', e);
+          return v1Error(res, 502, 'billing_cancel_failed', 'We could not close your billing record, so nothing was deleted. Please try again or contact support.', true);
+        }
+      }
+    }
+
+    // From here on, failures are collected, not fatal: billing is settled
+    // and the account WILL end, but an operator needs to know what is left.
+    var failures = [];
+    async function step(label, promise) {
+      try {
+        var r = await promise;
+        if (r && r.error) { failures.push(label + ': ' + r.error.message); console.error(tag + ' step failed ' + label + ':', r.error.message); }
+      } catch (e) { failures.push(label + ': ' + e.message); console.error(tag + ' step threw ' + label + ':', e.message); }
+    }
+
+    // 2. STOP THE MORNING. The cron, the in-flight call config (or a call
+    //    dialling right now would still text the number in its config),
+    //    and every queue that could act for this user later.
+    if (scheduledJobs.has(userId)) { scheduledJobs.get(userId).stop(); scheduledJobs.delete(userId); }
+    pendingCalls.forEach(function(cfg, callId) {
+      if (cfg && cfg.userId === userId) { pendingCalls.delete(callId); deletePendingCallDb(callId); }
+    });
+    await step('pending_calls', supabase.from('pending_calls').delete().eq('user_id', userId));
+    await step('pending_retries', supabase.from('pending_retries').delete().eq('user_id', userId));
+    await step('pending_notifications', supabase.from('pending_notifications').delete().eq('user_id', userId));
+    await step('push_deliveries', supabase.from('push_deliveries').delete().eq('user_id', userId));
+    await step('device_tokens', supabase.from('device_tokens').delete().eq('user_id', userId));
+
+    // 3. RECORDINGS at Twilio, before the rows that hold their ids go.
+    var recs = await supabase.from('call_history').select('id, recording_url').eq('user_id', userId).not('recording_url', 'is', null);
+    var removed = 0;
+    for (var i = 0; i < ((recs.data) || []).length; i++) {
+      var m = String(recs.data[i].recording_url || '').match(/RE[a-f0-9]{32}/);
+      if (!m) continue;
+      try { await twilioClient.recordings(m[0]).remove(); removed++; }
+      catch (e) {
+        if (!(e && (e.status === 404 || e.code === 20404))) failures.push('recording ' + m[0] + ': ' + e.message);
+      }
+    }
+    if (removed) console.log(tag + ' removed ' + removed + ' Twilio recording(s)');
+
+    // 4. TOMBSTONE first, so even a failure below leaves the re-signup guard.
+    var h = emailTombstoneHash(req.user.email);
+    if (h) await step('tombstone', supabase.from('deleted_account_tombstones').upsert({ email_hash: h }, { onConflict: 'email_hash' }));
+
+    // 5. KEEP, ANONYMISED (the rulings above).
+    await step('sms_consents(anonymise)', supabase.from('sms_consents').update({ user_id: null }).eq('user_id', userId));
+    await step('purchases(anonymise)', supabase.from('purchases').update({ user_id: null }).eq('user_id', userId));
+    await step('affiliate_earnings(referred, null)', supabase.from('affiliate_earnings').update({ referred_id: null }).eq('referred_id', userId));
+    await step('referrals(referred, null)', supabase.from('referrals').update({ referred_id: null }).eq('referred_id', userId));
+
+    // 6. DELETE personal data.
+    await step('user_schedules', supabase.from('user_schedules').delete().eq('user_id', userId));
+    await step('call_history', supabase.from('call_history').delete().eq('user_id', userId));
+    await step('call_attempts', supabase.from('call_attempts').delete().eq('user_id', userId));
+    await step('missed_call_events', supabase.from('missed_call_events').delete().eq('user_id', userId));
+    await step('credit_transactions', supabase.from('credit_transactions').delete().eq('user_id', userId));
+    await step('checkout_attributions', supabase.from('checkout_attributions').delete().eq('user_id', userId));
+    await step('notification_log', supabase.from('notification_log').delete().eq('user_id', userId));
+    await step('support_messages', supabase.from('support_messages').delete().eq('user_id', userId));
+    await step('promo_redemptions', supabase.from('promo_redemptions').delete().eq('user_id', userId));
+    await step('mass_send_recipients', supabase.from('mass_send_recipients').delete().eq('user_id', userId));
+    await step('referrals(referrer)', supabase.from('referrals').delete().eq('referrer_id', userId));
+    await step('affiliate_earnings(affiliate)', supabase.from('affiliate_earnings').delete().eq('affiliate_id', userId));
+    await step('payout_requests', supabase.from('payout_requests').delete().eq('user_id', userId));
+
+    // The profile row is the hinge: referrals / affiliate_earnings /
+    // payout_requests reference it NO ACTION, so anything missed above
+    // blocks THIS delete. A blocked profile delete must not be followed by
+    // an auth delete — that would leave an orphan profile holding the email
+    // with no owner — so it is its own clear refusal, and admins hear.
+    var profDel = await supabase.from('profiles').delete().eq('id', userId);
+    if (profDel.error) {
+      console.error(tag + ' PROFILE DELETE BLOCKED: ' + profDel.error.message + ' | earlier failures: ' + JSON.stringify(failures));
+      alertAdminAccountDeletionBlocked(userId, profDel.error.message).catch(function() {});
+      return v1Error(res, 409, 'account_deletion_blocked',
+        'Your billing has been closed, but linked records are stopping the account from being removed. Support has been alerted and will finish the deletion.', false);
+    }
+
+    // 7. AUTH last. Once this succeeds the next request is rejected by the
+    //    auth server (authV1 never decodes locally), so no /me can bootstrap
+    //    a new profile on the old token.
+    var authResult = await supabase.auth.admin.deleteUser(userId);
+    if (authResult.error) {
+      failures.push('auth: ' + authResult.error.message);
+      console.error(tag + ' auth delete FAILED; data steps: ' + failures.length + ' failure(s):', failures);
+      return v1Error(res, 500, 'internal', 'Your data was removed but the sign-in could not be deleted. Please try again.', true);
+    }
+    if (failures.length) {
+      console.error(tag + ' DELETED WITH ' + failures.length + ' LEFTOVER(S) — operator cleanup needed:', failures);
+    } else {
+      console.log(tag + ' deleted cleanly');
+    }
+    res.json({ deleted: true });
+  } catch (e) {
+    console.error(tag + ' error:', e.message);
+    return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+  }
+});
 
 // §4.12 POST /devices — register or re-register a device.
 app.post('/api/v1/devices', authV1, async function(req, res) {
@@ -3187,13 +3404,13 @@ async function countyIntervalPool(county) {
   var c = _countyPoolCache[county];
   if (c && (now - c.at) < COUNTY_POOL_CACHE_MS) return c.byUser;
 
-  var profiles = await supabase.from('profiles').select('id, email, is_admin');
+  var profiles = await supabase.from('profiles').select('id, email, is_admin, is_demo');
   if (profiles.error) throw new Error('profiles: ' + profiles.error.message);
   var internal = internalAccountEmails();
   var excluded = {};
   (profiles.data || []).forEach(function(p) {
     var email = String(p.email || '').toLowerCase();
-    if (p.is_admin === true || (email && isDev(email)) || internal.indexOf(email) >= 0) excluded[p.id] = true;
+    if (p.is_admin === true || p.is_demo === true || (email && isDev(email)) || internal.indexOf(email) >= 0) excluded[p.id] = true;
   });
 
   // Supabase caps a select at 1000 rows; page through, oldest first.
@@ -3924,6 +4141,30 @@ app.delete('/api/schedule', auth, async function(req, res) {
   res.json({ success: true });
 });
 
+// The demo account's morning (lib/demo.js). Idempotent per calendar day:
+// a second run the same morning does nothing, so the :45 recovery cron
+// and the scheduled cron cannot double-write.
+async function writeDemoMorningRow(userId, sched) {
+  try {
+    var now = new Date();
+    var todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
+    var hist = await supabase.from('call_history').select('result, created_at').eq('user_id', userId).order('created_at', { ascending: true }).limit(500);
+    if (hist.error) { console.error('[DEMO] history read failed:', hist.error.message); return; }
+    var rows = hist.data || [];
+    if (rows.some(function(r) { return r.created_at >= todayStart; })) {
+      console.log('[DEMO] ' + userId.slice(0, 8) + ' already has this morning\'s row');
+      return;
+    }
+    var outcome = demoAccount.demoMorningResult(rows, now);
+    var row = demoAccount.demoRow(userId, (sched && sched.target_number) || COUNTIES.montgomery.number, now, outcome);
+    var ins = await supabase.from('call_history').insert(row);
+    if (ins.error) console.error('[DEMO] row insert failed:', ins.error.message);
+    else console.log('[DEMO] ' + userId.slice(0, 8) + ' morning written: ' + outcome.result + ' (no dial, no notify)');
+  } catch (e) {
+    console.error('[DEMO] writeDemoMorningRow threw:', e.message);
+  }
+}
+
 function rescheduleUser(userId, sched) {
   if (scheduledJobs.has(userId)) {
     scheduledJobs.get(userId).stop();
@@ -3950,12 +4191,18 @@ function rescheduleUser(userId, sched) {
     setTimeout(async function() {
       console.log('[SCHED] Running for ' + userId.slice(0,8) + '... (after ' + staggerMinutes + 'm stagger)');
       try {
-        var profileResult = await supabase.from('profiles').select('credits, email, is_disabled').eq('id', userId).single();
+        var profileResult = await supabase.from('profiles').select('credits, email, is_disabled, is_demo').eq('id', userId).single();
         var profile = profileResult.data;
 
         if (!profile) return;
         if (profile.is_disabled) {
           console.log('[SCHED] User ' + userId.slice(0,8) + '... is disabled — skipping scheduled call');
+          return;
+        }
+        if (profile.is_demo) {
+          // App Review demo account (migration 043): the morning is written,
+          // never dialled. No notify, no push, no credit movement.
+          await writeDemoMorningRow(userId, sched);
           return;
         }
 
@@ -4890,6 +5137,8 @@ app.post('/webhook/stripe', async function(req, res) {
 });
 
 app.post('/api/call', auth, async function(req, res) {
+  // Demo account never dials — the morning row is written by the scheduler.
+  if (req.profile && req.profile.is_demo) return res.json({ success: true, demo: true, message: 'Demo account: calls are simulated each morning.' });
   if (!req.profile.isDev && req.profile.credits < 1) {
     return res.status(402).json({ error: 'No credits' });
   }
@@ -4946,7 +5195,39 @@ function recordCallAttempt(fields) {
   });
 }
 
+// The demo tripwire. profiles.is_demo is the guard that keeps the App Review
+// account from dialling; this is what catches the case where that guard is
+// wrong — the flag lost, the row recreated, a manual edit. It keys on the
+// PIN VALUE, an in-memory constant shared with the seed script, so no query
+// can fail it and no flag can be false for it. A hit means misconfiguration:
+// it refuses, logs, and alerts admins (throttled to one per day).
+var _demoTripwireDate = null;
+async function alertAdminDemoTripwire(userId, targetNumber) {
+  try {
+    var today = formatLocalDay(new Date(), 'America/Chicago');
+    if (_demoTripwireDate === today) return;
+    _demoTripwireDate = today;
+    var admins = await supabase.from('profiles').select('id, email').eq('is_admin', true);
+    var text = '🚨 ProbationCall ADMIN: the DEMO PIN tripwire fired — a dial to ' + String(targetNumber || '?') +
+      ' for user ' + String(userId || '?').slice(0, 8) + ' was REFUSED. The demo account is not flagged is_demo any more, or its PIN is on a real schedule. Nothing was dialled. 1 alert/day.';
+    for (var i = 0; i < ((admins.data) || []).length; i++) {
+      var as = await supabase.from('user_schedules').select('notify_number').eq('user_id', admins.data[i].id).maybeSingle();
+      if (as && as.data && as.data.notify_number) await sendSMS(as.data.notify_number, text, 'demo_tripwire_admin');
+      if (admins.data[i].email) await sendEmail(admins.data[i].email, text, 'demo_tripwire_admin');
+    }
+  } catch (e) {
+    console.error('[DEMO] tripwire alert failed:', e.message);
+  }
+}
+
 async function initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notifyMethod, userId, retryCount, county, isScheduledMorning) {
+  if (String(pin) === demoAccount.DEMO_PIN) {
+    console.error('[DEMO] TRIPWIRE: refused to dial ' + targetNumber + ' with the demo PIN (user ' + String(userId || '?').slice(0, 8) + '). Nothing was dialled.');
+    alertAdminDemoTripwire(userId, targetNumber).catch(function() {});
+    // Shape callers already tolerate: the retry path checks .callId, the
+    // scheduler ignores the return, /api/call echoes it as JSON.
+    return { success: false, refused: 'demo_pin', message: 'Demo PIN — the hotline was not dialled.' };
+  }
   var callId = 'call_' + Date.now();
   log(callId, 'Starting call to ' + targetNumber + (retryCount > 0 ? ' (retry #' + retryCount + ')' : ''), 'info');
 
@@ -6130,11 +6411,13 @@ async function sendLowCreditAlert(userId, remainingCredits, notifyNumber, notify
 }
 
 app.post('/api/test-email', auth, rateLimit('test-email', 3, 5 * 60 * 1000), async function(req, res) {
+  if (req.profile && req.profile.is_demo) return res.json({ success: true, demo: true });
   var result = await sendEmail(req.body.email, '✅ Test email from ProbationCall!\n\nIf you see this, email notifications are working.', 'test');
   res.json(result);
 });
 
 app.post('/api/test-sms', auth, rateLimit('test-sms', 3, 5 * 60 * 1000), async function(req, res) {
+  if (req.profile && req.profile.is_demo) return res.json({ success: true, demo: true });
   var result = await sendSMS(req.body.notifyNumber, 'Test SMS from ProbationCall!', 'test');
   res.json(result);
 });
@@ -9058,11 +9341,17 @@ cron.schedule('45 * * * *', async function() {
     console.log('[RECOVERY] MISSED CALL detected for user ' + sched.user_id.slice(0,8) + '... (scheduled ' + schedHour + ':' + String(schedMin).padStart(2,'0') + ')');
     
     // Get user profile and credits
-    var profileResult = await supabase.from('profiles').select('credits, email, is_disabled').eq('id', sched.user_id).single();
+    var profileResult = await supabase.from('profiles').select('credits, email, is_disabled, is_demo').eq('id', sched.user_id).single();
     var profile = profileResult.data;
     if (!profile) continue;
     if (profile.is_disabled) {
       console.log('[RECOVERY] User ' + sched.user_id.slice(0,8) + '... is disabled — skipping');
+      continue;
+    }
+    if (profile.is_demo) {
+      // Demo account: if its morning row is somehow missing, write it —
+      // never dial the hotline with the demo PIN.
+      await writeDemoMorningRow(sched.user_id, sched);
       continue;
     }
 

@@ -66,7 +66,8 @@ already learned this the hard way with the Fort Bend `pin` not-null constraint.
 
 Standard codes: `unauthenticated`, `forbidden`, `not_found`, `validation_failed`,
 `insufficient_credits`, `rate_limited`, `outside_call_window`, `schedule_missing`,
-`internal`.
+`internal`, `billing_cancel_failed`, `unpaid_affiliate_earnings`,
+`account_deletion_blocked` (all three §4.15).
 
 ### Rate limiting
 
@@ -998,12 +999,74 @@ that is a fact the app reads rather than assumes.
 
 ### 4.15 `DELETE /account`
 
-App Store guideline 5.1.1(v) — hard requirement, not optional. Must cascade
-across every table, mirroring the existing deletion path (`user_schedules`,
-`call_attempts`, `credit_transactions`, recordings, device tokens).
-Requires `{"confirm": "DELETE"}` in the body.
+App Store guideline 5.1.1(v) — hard requirement, not optional. Shipped
+2026-09-02. Body must be `{"confirm": "DELETE"}` → `{ "deleted": true }`.
+Rate-limited (5 per hour). The client signs out on success; the next request
+on the old token is rejected by the auth server regardless (v1 auth validates
+every token server-side, never by local decode — `test/auth.test.js` pins it).
+
+**Billing first, rows second.** An active Stripe subscription is cancelled
+immediately (no proration) and the Stripe customer is removed BEFORE any row
+is touched. If Stripe refuses, **nothing is deleted** and the response is
+`502 billing_cancel_failed` (retryable): a half-deleted account with live
+billing is worse than no endpoint. Stripe retains charges and invoices under
+its own policy.
+
+**Refused with `409 unpaid_affiliate_earnings`** when the caller is an
+affiliate with earnings not yet paid or a payout request pending. The message
+says to request a payout or contact support first. Money we owe cannot be
+deleted away.
+
+**What is deleted:** schedule, call history, call attempts, missed-call
+events, credit ledger, checkout attributions, notification log, support
+messages, promo redemptions, mass-send membership, referral records they
+created, their affiliate earnings and payout requests, device tokens, push
+deliveries, every pending queue row, the profile, the auth user, and their
+Twilio call recordings.
+
+**What is kept, by ruling (2026-09-02):**
+- `sms_opt_outs` — untouched, keyed by phone. A number that replied STOP
+  stays stopped even if it registers again.
+- `sms_consents` — `user_id` nulled; phone and timestamp stay as TCPA
+  evidence.
+- `purchases` — `user_id` nulled; Stripe ids and amounts stay for chargeback
+  defence.
+- `affiliate_earnings` / `referrals` where the deleted person was the
+  REFERRED party — reference nulled; it is someone else's money.
+
+**Re-signup does not restart the free credits.** A SHA-256 of the normalised
+email is stored on deletion (`deleted_account_tombstones`, migration 042).
+A later signup with the same address gets a profile with zero starter
+credits. The address itself is not retained.
+
+**Partial failure:** billing is settled before anything else, so a failure
+after that point never leaves live billing behind. Row-level failures are
+logged for operator cleanup and the profile delete cascades most of them
+anyway. If the **profile row itself** cannot be deleted (a NO ACTION
+reference the endpoint missed), the auth user is NOT deleted — that would
+orphan a profile holding the email — and the response is
+`409 account_deletion_blocked` (not retryable): billing is closed, admins
+are alerted, support finishes it. If the auth delete fails after the profile
+is gone, `500 internal` (retryable) — every step is idempotent.
 
 ---
+
+### 4.16 App Review demo account (server behaviour, not an endpoint)
+
+App Store review needs working credentials and a populated dashboard, and it
+cannot be a real subscriber's data. `profiles.is_demo` (migration 043) marks
+one Montgomery account (PIN `000000` — outside every observed PIN shape, and
+`initiateCall` refuses to dial that value at all) whose
+morning cron **writes a synthetic result instead of dialling** — required
+tests on a fixed 12–15 day cycle, two UNKNOWN mornings a month, no recording,
+no SMS/email/push, no credit movement — so the history stays current however
+long review takes and Predict shows `two_number`. The account is excluded
+from every pooled statistic (county range, county stats, funnel). Test-send
+and manual-call endpoints return `{ success: true, demo: true }` for it
+without sending. Seeded by `scripts/seed-demo-account.js` (env
+`DEMO_ACCOUNT_EMAIL`, password supplied at run time); credentials go in App
+Store Connect review notes, never in either repo. Clients need no special
+handling: the demo account looks like any other user.
 
 ## 5. Build order
 
