@@ -87,7 +87,12 @@
       if (used[t] >= b[0] && used[t] <= b[1]) hits++;
     }
     var stable = scored >= STABILITY_MIN_ORIGINS && (hits / scored) >= STABILITY_MIN_COVERAGE;
-    var base = { intervalsUsed: used.length, outerDays: outer, scoredOrigins: scored, innerCoverage: scored ? Math.round((hits / scored) * 100) / 100 : null };
+    // `needed` is the MIN_PRIORS gate and it is meaningful in EVERY state —
+    // "9 intervals against a gate of 5" is as useful as "2 of 5". It used to
+    // appear only on `insufficient`, which left clients decoding undefined on
+    // the other two and unable to tell "gate not applicable" from "gate
+    // unknown". Always present now.
+    var base = { intervalsUsed: used.length, needed: MIN_PRIORS, outerDays: outer, scoredOrigins: scored, innerCoverage: scored ? Math.round((hits / scored) * 100) / 100 : null };
     if (!stable) return Object.assign({ state: 'irregular', innerDays: null }, base);
     return Object.assign({ state: 'two_number', innerDays: innerBandOf(used) }, base);
   }

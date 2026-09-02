@@ -2424,6 +2424,363 @@ async function runPushFallbackSweep() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// §4.11 colour catalogue (migration 040). The SERVER owns the hex values, so a
+// new county colour is a row insert rather than an app release. Cached for an
+// hour: it changes when Dave adds a row, not per request.
+// ---------------------------------------------------------------------------
+var _colorCache = null, _colorCacheAt = 0;
+var COLOR_CACHE_MS = 60 * 60 * 1000;
+
+async function loadColorCatalog() {
+  var now = Date.now();
+  if (_colorCache && (now - _colorCacheAt) < COLOR_CACHE_MS) return _colorCache;
+  var colors = await supabase.from('ftbend_colors').select('name, display_name, hex, is_program');
+  if (colors.error) throw new Error(colors.error.message);
+  var aliases = await supabase.from('ftbend_color_aliases').select('alias, color_name');
+  var byName = {};
+  (colors.data || []).forEach(function(c) { byName[c.name] = c; });
+  var aliasMap = {};
+  (aliases.data || []).forEach(function(a) { aliasMap[a.alias] = a.color_name; });
+  _colorCache = { byName: byName, aliasMap: aliasMap };
+  _colorCacheAt = now;
+  return _colorCache;
+}
+
+// Normalise on lookup: lowercase + trim handles "GRAY"/" Gray" without needing
+// alias rows; the alias table carries genuine artefacts ("can" -> cyan).
+// Returns null for anything not in the catalogue, which is how PHASES,
+// UNKNOWN and compound announcements ("Phase 1, Phase 2") fall out of the
+// rotation stats without a hand-maintained filter list.
+function resolveColor(catalog, raw) {
+  if (!raw) return null;
+  var key = String(raw).trim().toLowerCase();
+  if (catalog.aliasMap[key]) key = catalog.aliasMap[key];
+  return catalog.byName[key] || null;
+}
+
+// §4.11 GET /county-stats — discriminated on `type` so Swift decodes cleanly.
+app.get('/api/v1/county-stats', authV1, async function(req, res) {
+  try {
+    var sched = await supabase.from('user_schedules').select('county').eq('user_id', req.user.id).maybeSingle();
+    var county = (sched.data && sched.data.county) || 'montgomery';
+
+    if (county !== 'ftbend') {
+      var st = await computeSystemStats();
+      return res.json({
+        type: 'montgomery',
+        montgomery: {
+          systemAvgIntervalDays: st.scheduledAvg,
+          medianIntervalDays: st.scheduledMedian,
+          usersWithTests: st.totalUsersWithTests,
+          // Share of intervals that were rapid re-calls, as a percentage.
+          backToBackRate: st.scheduledIntervalCount
+            ? parseFloat(((st.retestCount / (st.scheduledIntervalCount + st.retestCount)) * 100).toFixed(1))
+            : 0,
+          totalMustTest: st.totalMustTestEvents,
+          testsPerMonth: st.scheduledAvg ? parseFloat((30.44 / st.scheduledAvg).toFixed(1)) : 0,
+          // Pooled day-of-week counts, Sun..Sat. §4.11a: single-hue intensity.
+          dayOfWeek: st.dayOfWeekCounts || [],
+          weekOfMonth: []
+        },
+        fortBend: null
+      });
+    }
+
+    // ---- Fort Bend rotation model ----
+    var catalog = await loadColorCatalog();
+    var hist = await supabase.from('daily_county_status')
+      .select('color, date, county').order('date', { ascending: false }).limit(1000);
+    var rows = hist.data || [];
+
+    var seen = {};   // name -> { color, dates: [] }
+    var dowTop = {}; // 0..6 -> name -> count
+    rows.forEach(function(r) {
+      var c = resolveColor(catalog, r.color);
+      if (!c) return;                       // PHASES / UNKNOWN / compounds
+      if (!seen[c.name]) seen[c.name] = { color: c, dates: [] };
+      seen[c.name].dates.push(r.date);
+      var dow = new Date(r.date + 'T12:00:00').getDay();
+      if (!dowTop[dow]) dowTop[dow] = {};
+      dowTop[dow][c.name] = (dowTop[dow][c.name] || 0) + 1;
+    });
+
+    var names = Object.keys(seen);
+    var totalMatched = names.reduce(function(a, n) { return a + seen[n].dates.length; }, 0);
+
+    function avgIntervalDays(dates) {
+      if (!dates || dates.length < 2) return null;
+      var sorted = dates.slice().sort();
+      var gaps = [];
+      for (var i = 1; i < sorted.length; i++) {
+        gaps.push(Math.round((new Date(sorted[i]) - new Date(sorted[i - 1])) / 86400000));
+      }
+      if (!gaps.length) return null;
+      return Math.round(gaps.reduce(function(a, b) { return a + b; }, 0) / gaps.length);
+    }
+    function daysSince(dates) {
+      if (!dates || !dates.length) return null;
+      var latest = dates.slice().sort().pop();
+      var t = new Date(); t.setHours(0, 0, 0, 0);
+      return Math.max(0, Math.round((t - new Date(latest + 'T00:00:00')) / 86400000));
+    }
+
+    var mostCalled = names.map(function(n) {
+      var e = seen[n];
+      return {
+        name: e.color.display_name,
+        hex: e.color.hex || null,
+        percent: totalMatched ? parseFloat(((e.dates.length / totalMatched) * 100).toFixed(1)) : 0,
+        count: e.dates.length,
+        isProgram: !!e.color.is_program
+      };
+    }).sort(function(a, b) { return b.count - a.count; });
+
+    // dueSoon is a ranking, and ranking on one or two observations is noise —
+    // a colour seen twice can show a wild "average interval". Gate at 5.
+    var DUE_SOON_MIN_APPEARANCES = 5;
+    var dueSoon = names.filter(function(n) { return seen[n].dates.length >= DUE_SOON_MIN_APPEARANCES; })
+      .map(function(n) {
+        var e = seen[n];
+        var avg = avgIntervalDays(e.dates);
+        var since = daysSince(e.dates);
+        if (avg === null || since === null || avg === 0) return null;
+        return {
+          name: e.color.display_name,
+          hex: e.color.hex || null,
+          daysSince: since,
+          averageIntervalDays: avg,
+          // Server-computed so both clients sort identically.
+          overdueRatio: parseFloat((since / avg).toFixed(2)),
+          isProgram: !!e.color.is_program
+        };
+      }).filter(Boolean)
+      .sort(function(a, b) { return b.overdueRatio - a.overdueRatio; });
+
+    var dayNames = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+    var byDayOfWeek = [];
+    for (var d = 0; d < 7; d++) {
+      var m = dowTop[d];
+      if (!m) continue;
+      var top = Object.keys(m).sort(function(a, b) { return m[b] - m[a]; })[0];
+      if (!top) continue;
+      byDayOfWeek.push({ day: dayNames[d], name: seen[top].color.display_name, hex: seen[top].color.hex || null });
+    }
+
+    var prof = await supabase.from('profiles').select('user_color').eq('id', req.user.id).maybeSingle();
+    var yourColor = null;
+    var mine = resolveColor(catalog, prof.data && prof.data.user_color);
+    if (mine) {
+      var e = seen[mine.name];
+      var avg = e ? avgIntervalDays(e.dates) : null;
+      var since = e ? daysSince(e.dates) : null;
+      yourColor = {
+        name: mine.display_name,
+        hex: mine.hex || null,
+        daysSince: since,
+        averageIntervalDays: avg,
+        overdueRatio: (avg && since !== null && avg > 0) ? parseFloat((since / avg).toFixed(2)) : null
+      };
+    }
+
+    res.json({
+      type: 'ftbend',
+      montgomery: null,
+      fortBend: {
+        totalCallsLogged: totalMatched,
+        mostCalled: mostCalled,
+        dueSoon: dueSoon,
+        byDayOfWeek: byDayOfWeek,
+        yourColor: yourColor
+      }
+    });
+  } catch (e) {
+    console.error('[V1-COUNTY-STATS] failed:', e.message);
+    return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+  }
+});
+
+// §4.7 PUT /schedule — full replace, mirroring POST /api/schedule exactly.
+// Every server-side rule the web path enforces is preserved here, including
+// SMS consent: the app must not become a way around A2P.
+app.put('/api/v1/schedule', authV1, async function(req, res) {
+  try {
+    var b = req.body || {};
+    var county = b.county === 'ftbend' ? 'ftbend' : 'montgomery';
+    var hour = parseInt(b.hour, 10);
+    var minute = parseInt(b.minute, 10) || 0;
+    if (!Number.isFinite(hour)) hour = 6;
+
+    if (county !== 'ftbend' && (hour < MIN_HOUR || hour > MAX_HOUR || (hour === MAX_HOUR && minute > 59))) {
+      return v1Error(res, 400, 'validation_failed', 'Choose a call time between 6:00 AM and 2:59 PM.');
+    }
+    // PIN is Montgomery-only — Fort Bend announcements have no per-user PIN.
+    if (county !== 'ftbend' && !isValidPin(b.pin)) {
+      return v1Error(res, 400, 'validation_failed', 'Enter the 6-digit PIN from your probation paperwork.');
+    }
+    var tz = b.timezone || 'America/Chicago';
+    if (!isValidTimezone(tz)) {
+      return v1Error(res, 400, 'validation_failed', 'That timezone is not supported.');
+    }
+    var notifyEmail = b.notifyEmail ? String(b.notifyEmail).trim() : null;
+    if (notifyEmail && !isValidEmail(notifyEmail)) {
+      return v1Error(res, 400, 'validation_failed', 'That email address is not valid.');
+    }
+    var notifyNumber = null;
+    if (b.notifyNumber) {
+      notifyNumber = normalizePhoneE164(b.notifyNumber);
+      if (!notifyNumber) {
+        return v1Error(res, 400, 'validation_failed', 'Use a 10-digit US phone number.');
+      }
+    }
+    // A delivery method with no destination means the user silently gets
+    // nothing — the exact failure this service cannot have.
+    var notifyMethod = b.notifyMethod || 'email';
+    if ((notifyMethod === 'sms' || notifyMethod === 'both') && !notifyNumber) {
+      return v1Error(res, 400, 'validation_failed', 'A phone number is required for text notifications.');
+    }
+    if ((notifyMethod === 'email' || notifyMethod === 'both') && !notifyEmail) {
+      return v1Error(res, 400, 'validation_failed', 'An email address is required for email notifications.');
+    }
+
+    // A2P consent, same rule as the web path: an explicit tick records fresh
+    // consent, an existing record satisfies, neither is a rejection.
+    if (notifyMethod === 'sms' || notifyMethod === 'both') {
+      if (b.smsConsent === true) {
+        await recordSmsConsent(req.user.id, notifyNumber, req, b.consentSource === 'onboarding' ? 'onboarding' : 'schedule_save');
+      } else if (!(await hasSmsConsent(req.user.id))) {
+        return v1Error(res, 400, 'validation_failed', 'Please confirm SMS consent to receive text notifications.');
+      }
+    }
+
+    var data = {
+      user_id: req.user.id,
+      county: county,
+      target_number: getCountyConfig(county).number,
+      pin: county === 'ftbend' ? null : b.pin,
+      notify_number: notifyNumber,
+      notify_email: notifyEmail,
+      notify_method: notifyMethod,
+      hour: hour,
+      minute: minute,
+      timezone: tz,
+      quiet_mode: b.quietMode || false,
+      ftbend_office: county === 'ftbend' ? (b.ftbendOffice || b.ftbend_office || 'missouri') : 'missouri',
+      // Re-saving re-enables, so any pause reason is spent, and a fresh PIN
+      // means the expiry streak starts over. Same three rules as the web path.
+      enabled: true,
+      paused_reason: null,
+      consecutive_pin_expired: 0
+    };
+
+    var existing = await supabase.from('user_schedules').select('id').eq('user_id', req.user.id).maybeSingle();
+    var result = existing.data
+      ? await supabase.from('user_schedules').update(data).eq('user_id', req.user.id)
+      : await supabase.from('user_schedules').insert(data);
+    if (result.error) {
+      // Never return the Postgres text — it leaks schema and means nothing
+      // to the person reading it.
+      console.error('[V1-SCHEDULE] save failed for ' + req.user.id.slice(0, 8) + ':', result.error.message);
+      return v1Error(res, 500, 'internal', 'Could not save your schedule.', true);
+    }
+    if (county === 'ftbend') {
+      await supabase.from('profiles').update({ ftbend_access: true }).eq('id', req.user.id)
+        .then(function() {}, function(e) { console.error('[V1-SCHEDULE] ftbend_access failed:', e.message); });
+    }
+    rescheduleUser(req.user.id, data);
+
+    var saved = await supabase.from('user_schedules').select('*').eq('user_id', req.user.id).maybeSingle();
+    var profile = await supabase.from('profiles').select('user_color').eq('id', req.user.id).maybeSingle();
+    res.json(saved.data ? v1Schedule(saved.data, profile.data) : { saved: true });
+  } catch (e) {
+    console.error('[V1-SCHEDULE] error:', e.message);
+    return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+  }
+});
+
+// §4.8 POST /schedule/pause — the FIRST user-initiated pause path in this
+// system. The website never had one, so paused_reason='user' has never been
+// written before; §2 already documents it and the app's pause UI reads it.
+app.post('/api/v1/schedule/pause', authV1, async function(req, res) {
+  try {
+    var upd = await supabase.from('user_schedules')
+      .update({ enabled: false, paused_reason: 'user' })
+      .eq('user_id', req.user.id).select('id');
+    if (upd.error) {
+      console.error('[V1-PAUSE] failed:', upd.error.message);
+      return v1Error(res, 500, 'internal', 'Could not pause your schedule.', true);
+    }
+    if (!(upd.data || []).length) {
+      return v1Error(res, 404, 'schedule_missing', 'Set up your daily call first.');
+    }
+    // The free-text reason is the user's note to themselves; the column only
+    // stores 'user' (a §2 enum value), so log it rather than inventing a field.
+    var note = req.body && req.body.reason ? String(req.body.reason).slice(0, 120) : null;
+    console.log('[V1-PAUSE] ' + req.user.id.slice(0, 8) + ' paused' + (note ? ' — "' + note + '"' : ''));
+    res.json({ enabled: false, pauseReason: 'user' });
+  } catch (e) {
+    console.error('[V1-PAUSE] error:', e.message);
+    return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+  }
+});
+
+// §4.8 POST /schedule/resume — refuses on a zero balance rather than enabling
+// a schedule the morning run would immediately re-pause for no credits.
+app.post('/api/v1/schedule/resume', authV1, async function(req, res) {
+  try {
+    var prof = await supabase.from('profiles').select('credits').eq('id', req.user.id).maybeSingle();
+    var credits = (prof.data && prof.data.credits) || 0;
+    if (credits <= 0) {
+      return v1Error(res, 400, 'insufficient_credits', 'Add credits before resuming — a schedule with no credits pauses again straight away.');
+    }
+    var upd = await supabase.from('user_schedules')
+      .update({ enabled: true, paused_reason: null })
+      .eq('user_id', req.user.id).select('*');
+    if (upd.error) {
+      console.error('[V1-RESUME] failed:', upd.error.message);
+      return v1Error(res, 500, 'internal', 'Could not resume your schedule.', true);
+    }
+    if (!(upd.data || []).length) {
+      return v1Error(res, 404, 'schedule_missing', 'Set up your daily call first.');
+    }
+    rescheduleUser(req.user.id, upd.data[0]);
+    console.log('[V1-RESUME] ' + req.user.id.slice(0, 8) + ' resumed (' + credits + ' credits)');
+    res.json({ enabled: true, pauseReason: null });
+  } catch (e) {
+    console.error('[V1-RESUME] error:', e.message);
+    return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+  }
+});
+
+// §4.14 GET /referral
+app.get('/api/v1/referral', authV1, async function(req, res) {
+  try {
+    var prof = await supabase.from('profiles')
+      .select('referral_code, affiliate_balance_cents, affiliate_total_earned_cents')
+      .eq('id', req.user.id).maybeSingle();
+    if (!prof.data) return v1Error(res, 404, 'not_found', 'No referral account found.');
+    var code = prof.data.referral_code || null;
+    var signups = 0;
+    if (code) {
+      var refs = await supabase.from('profiles').select('id', { count: 'exact', head: true })
+        .eq('referred_by', code.toUpperCase());
+      signups = refs.count || 0;
+    }
+    res.json({
+      code: code,
+      signups: signups,
+      // A fraction, not a percent — §4.14's example is 0.30.
+      commissionRate: AFFILIATE_COMMISSION_PERCENT / 100,
+      lifetimeEarnedCents: prof.data.affiliate_total_earned_cents || 0,
+      availableCents: prof.data.affiliate_balance_cents || 0,
+      shareUrl: code ? (process.env.BASE_URL + '/?ref=' + code) : null
+    });
+  } catch (e) {
+    console.error('[V1-REFERRAL] failed:', e.message);
+    return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+  }
+});
+
 // §4.13 POST /checkout-link — returns the Stripe URL and logs the attribution.
 // The logging is the point: external link-outs are 0% commission today, but a
 // fee is coming on remand, and "which purchases started in the app" cannot be
