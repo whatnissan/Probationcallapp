@@ -610,6 +610,38 @@ claim yet" — clients render the absence honestly, never a zeroed chart.
   coverage; P20–P80: 41%), and the extra misses landed on escalation
   days — the highest-stakes forecasts. Whoever next proposes narrowing
   must beat those numbers on the same walk-forward method first.
+
+  **Second backtest (2026-09-02) — the bar is now this.** Same 17 origins,
+  same method, four new families tested: per-user parametric fits
+  (lognormal, Weibull), a county-pooled hierarchical model, day-of-week ×
+  week-of-month conditioning, and a post-escalation regime. Full method
+  table, per-origin chart and copy drafts:
+  https://claude.ai/code/artifact/2060e3f6-beec-4a0a-a589-40f1337fc079
+
+  | method (17 origins) | cover | miss | mean width | worst miss | paired vs min–max |
+  |---|---|---|---|---|---|
+  | min–max envelope (shipped outer) | 65% | 6 | 27.4 | 37 | — |
+  | recency P10–P90 (shipped inner) | 65% | 6 | 25.9 | 37 | +0 / −0 |
+  | best at EQUAL width (lognormal, HDR-placed) | 76% | 4 | 27.4 | 35 | +2 / −0 |
+  | hierarchical lognormal 80% | 82% | 3 | 36.4 | 15 | +3 / −0 |
+  | calendar-conditioned / regime | 71% | 5 | 26.7 | 31 | +1 / −0 |
+
+  **Verdict: the window stays.** At equal width nothing gains more than two
+  hits, worst-case miss distance does not improve, and the noise floor is a
+  12-point standard error — a paired method needs six net wins for
+  p<0.05, and ~50 origins exist only a year from now. Calendar
+  conditioning carries zero signal (72 county tests over 35 cells).
+  Post-miss clustering is not modellable (5 such intervals in all history).
+  The hazard framing forecasts identically at the origin; its real product
+  is the past-range state below.
+
+  **Where pooling DOES work: the gated-out users.** On a SEPARATE
+  17-origin set of users with 2–4 intervals (not comparable to the table
+  above), their own envelope covered 41%; a county-pooled-only 80% band
+  covered 88% with worst miss 10 days. A `window.countyRange` for the
+  `insufficient` state is DRAFTED (copy and classification on the page
+  above), not built — it ships only as a county fact, never as the user's
+  pattern, and only after the copy is approved.
   **MIN_PRIORS = 5** because below 5 completed intervals each observation
   carries ≥20% of the distribution's mass — a "percentile" of fewer
   points is a single data point in costume. Sample sizes count COMPLETED
@@ -662,6 +694,21 @@ claim yet" — clients render the absence honestly, never a zeroed chart.
   phrase weekends as "rare, not never".
 - **`notes`** `[string]` — user-presentable caveats. Clients show them
   verbatim; the server owns the epistemics.
+
+**Past-range state — MANDATORY client rule (filed 2026-09-02).** When
+`daysSinceLastTest` exceeds the upper edge of whatever band the client is
+showing (`window.outerDays[1]` in `irregular`/`two_number`; the county range
+in `insufficient` once it exists), the client MUST say so rather than go
+quiet. In the 2026-09-02 backtest the app had nothing to say for 8, 1, 37 and
+4 days on four of the six envelope misses — the moment of most anxiety. No
+new field is needed; the sentence is true from fields already returned:
+
+> 37 days since your last test. That's past your usual range — your gaps have
+> run 9 to 26 days. Testing is possible any day. That hasn't changed.
+
+Never "overdue", "missed" or "late": the server does not know whether anyone
+attended (§4.5 attendance is on-device only), and silence must never read as a
+missed test.
 
 Zero-history shape: `testsCounted: 0`, all nullable fields `null`,
 `recentTests: []`, one note explaining prediction unlocks after the first
