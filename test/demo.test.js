@@ -15,8 +15,13 @@ test('seeded demo history: 84 mornings, required tests on the fixed cycle, a few
     assert.strictEqual(gap, CYCLE[i % CYCLE.length]);
   }
   assert.ok(rows.some(function(r) { return r.result === 'UNKNOWN'; }));
+  var withRec = rows.filter(function(r) { return r.recording_url; });
+  assert.strictEqual(withRec.length, 1, 'exactly one synthetic recording');
+  assert.strictEqual(withRec[0].recording_url, 'demo:hotline-sample');
+  assert.strictEqual(withRec[0].result, 'MUST_TEST');
+  assert.strictEqual(withRec[0], musts[musts.length - 1], 'on the most recent required test');
   rows.forEach(function(r) {
-    assert.strictEqual(r.recording_url, null);
+    assert.ok(!r.recording_url || r.recording_url.indexOf('demo:') === 0, 'never a Twilio URL');
     assert.strictEqual(r.county, 'montgomery');
     assert.strictEqual(r.pin_used, DEMO_PIN);
     assert.strictEqual(!!r.billed_at, r.result === 'MUST_TEST' || r.result === 'NO_TEST');

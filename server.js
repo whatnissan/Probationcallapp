@@ -2151,6 +2151,17 @@ app.get('/api/v1/calls/:callId/recording', authV1, async function(req, res) {
       console.error('[V1-RECORDING] RECORDING_TOKEN_SECRET is not set — cannot mint links');
       return v1Error(res, 500, 'internal', 'Recording playback is unavailable right now.', true);
     }
+    // The App Review demo account's one synthetic recording (lib/demo.js):
+    // a static file we made, served as-is. audio/mp4, not audio/mpeg — this
+    // machine has no MP3 encoder and the client honours contentType.
+    if (String(row.data.recording_url).indexOf('demo:') === 0) {
+      return res.json({
+        url: process.env.BASE_URL + demoAccount.DEMO_RECORDING_FILE,
+        expiresAt: new Date(Date.now() + V1_RECORDING_TTL_MS).toISOString(),
+        contentType: 'audio/mp4',
+        durationSeconds: typeof row.data.recording_duration_seconds === 'number' ? row.data.recording_duration_seconds : demoAccount.DEMO_RECORDING_SECONDS
+      });
+    }
     var sid = (String(row.data.recording_url).match(/RE[a-f0-9]{32}/) || [])[0];
     if (!sid) return v1Error(res, 404, 'not_found', 'The recording for this call is no longer available.');
     var link = recordingLinkFor(sid);
@@ -5978,6 +5989,8 @@ cron.schedule('0 3 * * *', async function() {
   for (var i = 0; i < old.data.length; i++) {
     var row = old.data[i];
     var url = row.recording_url;
+    // The demo account's synthetic recording is ours and never expires.
+    if (url && String(url).indexOf('demo:') === 0) continue;
     var match = url ? url.match(/RE[a-f0-9]{32}/) : null;
     if (!match) {
       // Malformed/foreign URL — null it so it stops being retried.

@@ -460,6 +460,11 @@ returns `404 not_found`. That is the honest answer, not an error to retry.
 `durationSeconds` is `int | null` — null for calls recorded before 2026-08-25,
 when duration capture began (§4.1).
 
+**Honour `contentType`.** The App Review demo account (§4.16) carries one
+synthetic recording — speech-synthesised audio we made, never a hotline
+capture — served as a static `audio/mp4` file rather than a proxied Twilio
+MP3. Nothing else about the response differs.
+
 ### 4.5 `POST /calls/{callId}/tested`
 
 User check-in — `{"tested": true}`. Real ground truth for the prediction model,
