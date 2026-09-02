@@ -2154,9 +2154,11 @@ function pushFallbackMinutes() {
 }
 
 // Quiet mode means "only tell me when I must test", so a quiet user gets no
-// push at all for anything else — not a silent one. NOTE: quiet_mode is not
-// enforced on the SMS path (it never has been), so this deliberately only
-// gates push; changing SMS delivery is a separate, riskier change.
+// push at all for anything else — not a silent one. Since 2026-09-02 the same
+// rule is applied to SMS/email at the two NO_TEST call sites (Montgomery and
+// Fort Bend), so this gate is the push half of one policy, not a push-only
+// exception. UNKNOWN is never suppressed anywhere: "call the hotline yourself"
+// is an action item, and silence must never read as no test.
 function pushAllowed(schedule, result) {
   if (!schedule) return true;
   if (!schedule.quiet_mode) return true;
@@ -2221,7 +2223,10 @@ async function tryPushFirst(opts) {
       user_id: opts.userId,
       local_date: opts.localDate,
       result: opts.result,
-      call_id: opts.callId || null
+      call_id: opts.callId || null,
+      // The exact text the caller would have sent directly, so the sweep
+      // never has to guess county wording (migration 041).
+      fallback_message: opts.fallbackMessage ? String(opts.fallbackMessage) : null
     };
     if (!live.length) {
       // No device: fall back immediately, per the ruling — don't make someone
@@ -2233,8 +2238,20 @@ async function tryPushFirst(opts) {
     }
     var created = await supabase.from('push_deliveries').insert(row).select('id').single();
     if (created.error) {
-      // Most likely the unique (user_id, local_date) index: this morning
-      // already has a delivery record, so someone else owns it.
+      // Unique (user_id, local_date) violation: this morning ALREADY has a
+      // delivery record, and every existing row leads to a notification —
+      // the push went out and the timer will text if unread, or the
+      // fallback is already due, or the text has already been sent. So the
+      // caller must NOT send again. Returning false here was a live bug:
+      // push accepted → a later step threw → the poller retried → this
+      // conflict → an SMS on top of the push, then the sweep texted again.
+      // Fort Bend hits that path by design, because retry is its normal
+      // path. Any OTHER insert failure (DB unreachable) is unknown territory,
+      // so it stays conservative: false, and the caller notifies directly.
+      if (created.error.code === '23505' || /duplicate key|unique/i.test(created.error.message || '')) {
+        console.log('[PUSH] ' + opts.userId.slice(0, 8) + ' already has a delivery for ' + opts.localDate + ' — that row owns the notification, not sending again');
+        return true;
+      }
       console.log('[PUSH] delivery row not created for ' + opts.userId.slice(0, 8) + ' (' + created.error.message.slice(0, 60) + ') — leaving SMS to the caller');
       return false;
     }
@@ -2250,7 +2267,10 @@ async function tryPushFirst(opts) {
       mustTest: opts.result === 'MUST_TEST',
       deliveryId: deliveryId,
       result: opts.result,
-      date: opts.localDate
+      date: opts.localDate,
+      // A result push always carries a result the app can fetch now, so the
+      // widget can redraw immediately instead of waiting on its own budget.
+      resultAvailable: true
     });
 
     var accepted = null, lastReason = null;
@@ -2455,7 +2475,7 @@ app.post('/api/v1/push/:deliveryId/ack', authV1, async function(req, res) {
 async function runPushFallbackSweep() {
   try {
     var due = await supabase.from('push_deliveries')
-      .select('id, user_id, result, local_date, fallback_reason')
+      .select('id, user_id, result, local_date, fallback_reason, fallback_message')
       .lte('fallback_due_at', new Date().toISOString())
       .is('fallback_sent_at', null)
       .is('acked_at', null)
@@ -2475,9 +2495,13 @@ async function runPushFallbackSweep() {
           }).eq('id', d.id);
           continue;
         }
-        var msg = d.result === 'MUST_TEST'
-          ? '🚨 TEST REQUIRED today.\n\nYour PIN was called. Report for testing today.\n\n- ProbationCall.com'
-          : '✅ No test today.\n\n- ProbationCall.com';
+        // Send exactly what the caller would have sent had push not existed
+        // (migration 041). The generic text is only for rows that predate
+        // the column — and it is deliberately county-neutral, because the
+        // sweep cannot tell a Fort Bend row from a Montgomery one.
+        var msg = d.fallback_message || (d.result === 'MUST_TEST'
+          ? '🚨 TEST REQUIRED today.\n\nReport for testing today.\n\n- ProbationCall.com'
+          : '✅ No test today.\n\n- ProbationCall.com');
         await notify(sched.data.notify_number, sched.data.notify_email, sched.data.notify_method, msg, 'push_fallback');
         await supabase.from('push_deliveries').update({
           fallback_sent_at: new Date().toISOString(),
@@ -5336,7 +5360,8 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
         var mustPushed = await tryPushFirst({
           userId: config.userId, result: 'MUST_TEST', localDate: pushLocalDate(config),
           callId: null, schedule: await pushSchedule(config.userId),
-          title: 'Test required today', body: 'Your PIN was called. Report for testing today.'
+          title: 'Test required today', body: 'Your PIN was called. Report for testing today.',
+          fallbackMessage: mustMsg
         });
         if (!mustPushed) await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, mustMsg, callId);
       } else if (KEYWORDS.NO_TEST.some(function(k) { return lower.includes(k); })) {
@@ -5345,12 +5370,23 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
         var noTestMsg = isFtbend
           ? '✅ No test today!\n\nYour color was NOT called. Enjoy your day!\n\n- ProbationCall.com'
           : '✅ No test today!\n\nYour PIN was NOT called. Enjoy your day!\n\nPIN: ' + config.pin + '\n\n- ProbationCall.com';
-        var noTestPushed = await tryPushFirst({
-          userId: config.userId, result: 'NO_TEST', localDate: pushLocalDate(config),
-          callId: null, schedule: await pushSchedule(config.userId),
-          title: 'No test today', body: 'Your PIN was not called today.'
-        });
-        if (!noTestPushed) await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, noTestMsg, callId);
+        // Quiet mode: "only notify when you MUST test". A NO_TEST is not
+        // delivered on ANY channel, but the result is still recorded and
+        // still billed below — the credit pays for the call, not the text.
+        // A failed schedule fetch reads as not-quiet, so a DB hiccup can
+        // only ever add a message, never drop one.
+        var noTestSched = await pushSchedule(config.userId);
+        if (noTestSched && noTestSched.quiet_mode) {
+          console.log('[TRANSCRIBE] quiet mode — NO_TEST not delivered for ' + config.userId.slice(0, 8) + ' (recorded and billed as usual)');
+        } else {
+          var noTestPushed = await tryPushFirst({
+            userId: config.userId, result: 'NO_TEST', localDate: pushLocalDate(config),
+            callId: null, schedule: noTestSched,
+            title: 'No test today', body: 'Your PIN was not called today.',
+            fallbackMessage: noTestMsg
+          });
+          if (!noTestPushed) await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, noTestMsg, callId);
+        }
       } else {
         console.log('[TRANSCRIBE] ⚠️ Unknown result for', callId, ':', transcript);
         if (config.isScheduledMorning && config.userId) {
@@ -8337,7 +8373,35 @@ async function deliverFtbendNotification(row) {
   }
 
   console.log('[FTBEND] Sending ' + oid + ' notification to ' + userId.slice(0, 8) + ' (user color: ' + (userColor || 'none') + ', today: ' + todayDisplay + (row.verified_via_finishprobation ? ', verified=true' : '') + ')');
-  await notify(s.notify_number, s.notify_email, s.notify_method, personalMsg, 'ftbend_daily');
+  if (ftVerdict === 'NO_TEST' && s.quiet_mode) {
+    // Quiet mode: "only notify when you MUST test". Nothing is delivered on
+    // any channel, but the verdict is still written and still billed below
+    // — the credit pays for the call to the hotline, not for the text.
+    console.log('[FTBEND] quiet mode — NO_TEST not delivered for ' + userId.slice(0, 8) + ' (recorded and billed as usual)');
+  } else {
+    // Push first, SMS as the backstop — the same shape as Montgomery. This
+    // runs INSIDE the per-user queue drain, so each user's push goes at
+    // their preferred time with its own push_deliveries row, its own ack
+    // and its own fallback timer; there is no fan-out loop here to fail
+    // halfway. UNKNOWN (couldn't detect, or no colour on file) never
+    // pushes: it is an action item and goes out as SMS/email exactly as
+    // before. tryPushFirst returns true ONLY when this morning's delivery
+    // is owned by a push_deliveries row; anything else notifies as before.
+    var ftPushed = false;
+    if (ftVerdict === 'MUST_TEST' || ftVerdict === 'NO_TEST') {
+      var colourLabel = userColor ? userColor.charAt(0).toUpperCase() + userColor.slice(1) : '';
+      ftPushed = await tryPushFirst({
+        userId: userId, result: ftVerdict, localDate: todayDate,
+        callId: null, schedule: s,
+        title: ftVerdict === 'MUST_TEST' ? 'Test required today' : 'No test today',
+        body: ftVerdict === 'MUST_TEST'
+          ? 'Today\'s color is ' + todayDisplay + '. Your color (' + colourLabel + ') was called. Report for testing today.'
+          : 'Today\'s color is ' + todayDisplay + '. Your color (' + colourLabel + ') was not called.',
+        fallbackMessage: personalMsg
+      });
+    }
+    if (!ftPushed) await notify(s.notify_number, s.notify_email, s.notify_method, personalMsg, 'ftbend_daily');
+  }
 
   var shouldMarkFtBilled = false;
   if (!isUnknown) {

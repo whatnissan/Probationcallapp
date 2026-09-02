@@ -144,9 +144,23 @@ send fails for any other reason, the SMS goes immediately. We already know
 push failed at that point, and `MUST_TEST` is not a result to gamble ten
 minutes on.
 
-**Quiet mode suppresses push entirely for non-`MUST_TEST` results** — no push,
-not a silent one. (Note: quiet mode is not currently enforced on the SMS path;
-it never has been.)
+**Push covers both counties.** Montgomery pushes from the per-user call
+result. Fort Bend pushes from the per-user notification queue, at the user's
+preferred send time, one delivery row per user per morning — one office
+announcement fans out to N independent deliveries, each with its own ack and
+its own fallback timer. `UNKNOWN` never pushes in either county: "call the
+hotline yourself" is an action item and goes out as SMS/email as it always has.
+
+**One delivery row owns the morning.** If a retry reaches the push step and a
+`push_deliveries` row already exists for that user and date, the server sends
+NOTHING more: that row has either pushed (the timer will text if unread), is
+already due for fallback, or has already texted. Every existing row leads to
+exactly one notification.
+
+**Quiet mode is enforced on every channel (since 2026-09-02).** A `NO_TEST`
+for a quiet-mode user is not delivered at all — no push, no SMS, no email — but
+it is still recorded in history and still billed. `MUST_TEST` and `UNKNOWN` are
+always delivered.
 
 **Billing is unaffected.** A push-only morning still bills a credit: the credit
 pays for the call to the hotline, not for the delivery of the answer.
@@ -799,7 +813,20 @@ registration becomes visible to the person who owns it.
 
 The app calls this when the user opens the notification. **This is what
 cancels the SMS fallback**, so it is the difference between one notification
-and two. `deliveryId` arrives in the push payload's custom data.
+and two. `deliveryId` arrives in the push payload's custom data:
+
+```json
+{ "aps": { "alert": { "title": "Test required today", "body": "..." },
+           "sound": "default", "interruption-level": "time-sensitive" },
+  "deliveryId": "uuid", "result": "MUST_TEST", "date": "2026-09-02",
+  "resultAvailable": true }
+```
+
+`resultAvailable: true` means `GET /today` will return this result right now.
+The app should rewrite the widget snapshot on receipt rather than waiting on
+the widget's own timeline budget. The alert body is county-specific (PIN
+wording for Montgomery, "Today's color is Grey. Your color (Blue) was called."
+for Fort Bend); the client may restyle it but should not need to.
 
 `fallbackCancelled` is `false` when the ack lost the race and the SMS has
 already gone out — the server reports what happened rather than claiming a
