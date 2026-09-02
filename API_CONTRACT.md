@@ -244,10 +244,25 @@ the profile, not the schedule row. The serializer joins it in; clients should
 not care, but whoever touches the backend should know where it comes from.
 
 **`GET /me` is the one deliberate exception to `authV1`'s no-side-effects
-rule:** when no profile row exists it bootstraps one, granting starter credits
-through the ledger exactly like the web `auth()` does. For an iOS-first signup,
-`/me` IS first touch — refusing to create the profile would strand the account.
-Every other v1 endpoint stays side-effect-free on read.
+rule:** when no profile row exists it bootstraps a ZERO-credit one. For an
+iOS-first signup, `/me` IS first touch — refusing to create the profile would
+strand the account. Every other v1 endpoint stays side-effect-free on read.
+
+**Starter credits come from the database, not the app (2026-09-02, migration
+044).** A trigger on auth user creation creates the profile and grants
+`starter_credits` (an `app_settings` row, 5 today, editable for a promotion
+without a deploy) through the ledger, and withholds it — with a zero-amount
+audit row — when the email matches a deleted-account tombstone. So a fresh
+account normally arrives at `/me` already holding its starter credits, and a
+re-signup after §4.15 deletion arrives with **0**. Clients render the balance
+they are given; there is no client-side notion of a signup bonus.
+
+**Hand grants are over (2026-09-02).** Sixteen admin grants taught people to
+wait for a top-up rather than buy. The answer a user gets is the answer the
+product gives. An EARNED extension exists (`apply_earned_extension`, settings
+`earned_grant_*`: low balance AND real billed results AND a MUST_TEST, capped
+per account, withheld while a review flag is open) but is **held** behind
+`earned_grant_enabled=false` until the September paywall cohort resolves.
 
 **`pin` is returned in full, not masked.** It's the user's own PIN, on their own
 authenticated device, and they need to read it aloud while dialing the hotline
@@ -511,6 +526,13 @@ catalogue (§4.11), so an unrecognised colour is a `400` naming `ftbendColor`
 rather than a value that silently never matches an announcement. It is stored
 on `profiles.user_color`, and sending it with a Montgomery schedule is a `400`
 — colour has no meaning there.
+
+**Shared phone numbers are flagged, never refused (2026-09-02).** A notify
+number already on another account's schedule opens a review flag for the
+daily admin digest. The schedule saves normally and the client sees nothing
+different: one person managing a family member's account is legitimate, and
+being unable to sign up is worse than someone farming. An open flag withholds
+only the earned extension.
 
 ### 4.8 `POST /schedule/pause` · `POST /schedule/resume`
 

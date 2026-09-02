@@ -21,6 +21,7 @@ const { formatLocalDay, todayMD, wouldExceedCutoff, wouldExceedFtbendCutoff, ftb
 const { computeTieredPriceCents, creditPricing, MAX_EXACT_CREDITS } = require('./lib/pricing');
 const { resolveBearerUser, emailTombstoneHash } = require('./lib/auth');
 const demoAccount = require('./lib/demo');
+const integrity = require('./lib/integrity');
 const apns = require('./lib/apns');
 const { fallbackFieldsFor } = require('./lib/push');
 const { isValidPin, isValidTimezone, isValidEmail, normalizePhoneE164, isValidSupportSubject, isValidSupportBody } = require('./lib/validation');
@@ -653,10 +654,31 @@ async function deductCreditOnce(userId, idempotencyKey, options) {
       // A successful billable result resets both skip counters: the user is
       // back in good standing on credits AND the hotline accepted their PIN.
       await supabase.from('user_schedules').update({ no_credit_skip_count: 0, consecutive_pin_expired: 0 }).eq('user_id', userId);
+      // Earned extension (migration 044) — BUILT AND HELD: earned_grant_enabled
+      // is false until the September 2026 paywall cohort resolves. When on,
+      // the database decides (real billed results, a MUST_TEST, low balance,
+      // cap, no open review flag) and grants through the ledger; the app only
+      // tells the person. A grant this morning replaces the low-credit alert.
+      var extended = 0;
+      if (await getAppSetting('earned_grant_enabled', false)) {
+        try {
+          var ext = await supabase.rpc('apply_earned_extension', { p_user_id: userId });
+          if (ext.error) console.error('[CREDITS] earned extension RPC failed for ' + userId.slice(0, 8) + ':', ext.error.message);
+          else extended = Number(ext.data) || 0;
+        } catch (e) { console.error('[CREDITS] earned extension threw:', e.message); }
+        if (extended > 0) {
+          console.log('[CREDITS] earned extension +' + extended + ' for ' + userId.slice(0, 8));
+          if (options.notifyNumber !== undefined) {
+            notify(options.notifyNumber, options.notifyEmail, options.notifyMethod,
+              'You\'ve checked in every morning and were about to run out, so we added ' + extended + ' credits to keep your daily checks going.\n\nBuy credits before those run out and nothing pauses:\nprobationcall.com\n\n- ProbationCall.com', 'earned_extension')
+              .catch(function(e) { console.error('[CREDITS] earned extension notify failed:', e.message); });
+          }
+        }
+      }
       // Threshold 3, not 2: with pause-on-first-zero the warning is the only
       // thing standing between a user and a paused morning, and 3 gives a
       // weekend's margin to top up.
-      if (newCredits <= 3 && options.notifyNumber !== undefined) {
+      if (extended === 0 && newCredits <= 3 && options.notifyNumber !== undefined) {
         sendLowCreditAlert(userId, newCredits, options.notifyNumber, options.notifyEmail, options.notifyMethod);
       }
     } else {
@@ -1015,25 +1037,54 @@ function isDev(email) {
   return DEV_EMAILS.includes(email.toLowerCase());
 }
 
-// Starter credits for a brand-new profile. Zero if this email has been
-// deleted before (migration 042 tombstone): DELETE /account frees the
-// address, and without this a delete/re-register loop would farm the
-// signup bonus. A tombstone lookup failure grants normally — a DB hiccup
-// must not turn every real signup into a zero-credit account.
-async function starterCreditsFor(email) {
-  if (isDev(email || '')) return 9999;
+// app_settings (migration 044): values the DATABASE and the app both read,
+// so a promotion is a row edit. Cached five minutes. A read failure returns
+// the fallback — settings tune behaviour, they never gate a morning.
+var APP_SETTINGS_CACHE_MS = 5 * 60 * 1000;
+var _appSettings = null, _appSettingsAt = 0;
+async function getAppSetting(key, fallback) {
   try {
-    var h = emailTombstoneHash(email);
-    if (!h) return 5;
-    var t = await supabase.from('deleted_account_tombstones').select('email_hash').eq('email_hash', h).maybeSingle();
-    if (t.data) {
-      console.log('[AUTH] Re-signup of a deleted account — no starter credits');
-      return 0;
+    var now = Date.now();
+    if (!_appSettings || (now - _appSettingsAt) > APP_SETTINGS_CACHE_MS) {
+      var r = await supabase.from('app_settings').select('key, value');
+      if (r.error) throw new Error(r.error.message);
+      _appSettings = {};
+      (r.data || []).forEach(function(row) { _appSettings[row.key] = row.value; });
+      _appSettingsAt = now;
     }
+    return integrity.parseSettingValue(_appSettings[key], fallback);
   } catch (e) {
-    console.error('[AUTH] tombstone lookup failed (granting normally):', e.message);
+    console.error('[SETTINGS] read failed for ' + key + ' (using fallback):', e.message);
+    return fallback;
   }
-  return 5;
+}
+
+// Starter credits are granted by the DATABASE — handle_new_user() on
+// auth.users, migration 044 — through the ledger, with the tombstone check
+// there. The app's bootstrap paths below create a zero-credit profile only
+// if the trigger somehow did not, and never grant: a race can lose a bonus
+// but can no longer double it, which is the safe direction.
+
+// Shared-phone review flag (migration 044). A notify number already on
+// another account's schedule is a signal, not a refusal: one person managing
+// a family member's account is legitimate, and being unable to sign up is
+// worse than someone farming. Recorded for the daily digest; an open flag
+// withholds only the earned extension. List query, never single-row.
+async function flagSharedPhone(userId, phone) {
+  try {
+    if (!phone) return;
+    var others = await supabase.from('user_schedules').select('user_id').eq('notify_number', phone).neq('user_id', userId);
+    if (others.error) throw new Error(others.error.message);
+    var flag = integrity.sharedPhoneFlag(userId, phone, others.data || []);
+    if (!flag) return;
+    var open = await supabase.from('account_review_flags').select('id').eq('user_id', userId).eq('reason', 'shared_phone').is('resolved_at', null).limit(1);
+    if (open.data && open.data.length) return;
+    var ins = await supabase.from('account_review_flags').insert(flag);
+    if (ins.error) throw new Error(ins.error.message);
+    console.log('[REVIEW-FLAG] shared_phone for ' + userId.slice(0, 8) + ' (' + flag.details.otherAccounts + ' other account(s))');
+  } catch (e) {
+    console.error('[REVIEW-FLAG] could not record shared_phone for ' + String(userId).slice(0, 8) + ':', e.message);
+  }
 }
 
 function generateReferralCode() {
@@ -1155,13 +1206,9 @@ async function auth(req, res, next) {
     
     if (!profile) {
       var referralCode = generateReferralCode();
-      var startCredits = await starterCreditsFor(user.email);
-      // Insert with 0 credits, then grant via the ledger RPC so the signup
-      // bonus shows up in the audit trail. The insert is the race gate: the
-      // profiles PK on id means only one of two concurrent first-requests
-      // wins it. If it conflicts, another request already created the
-      // profile (and granted the bonus) — re-fetch and skip the grant so a
-      // racing double-request can't double the starter credits.
+      // Zero credits and NO grant: the starter bonus is the trigger's
+      // (migration 044) and goes through the ledger there. This path only
+      // runs if the trigger did not create the profile.
       var ins = await supabase.from('profiles').insert({
         id: user.id,
         email: user.email,
@@ -1179,27 +1226,10 @@ async function auth(req, res, next) {
           return res.status(500).json({ error: 'Account setup failed, please retry' });
         }
       } else {
-        // The grant result MUST be checked. Discarding it meant that on an
-        // RPC failure the profile stayed at 0 credits while the object below
-        // reported startCredits — the API told the user they had credits the
-        // database did not have. Fall back to the real row instead of
-        // fabricating one.
-        var granted = await recordCreditAdd({
-          userId: user.id,
-          amount: startCredits,
-          source: 'signup_bonus',
-          note: isDev(user.email) ? 'Dev account starting credits' : 'New user starter credits'
-        });
-        if (granted === null) {
-          console.error('[AUTH] Signup bonus grant FAILED for ' + user.id.slice(0, 8) + ' — profile exists with 0 credits');
-          var rf2 = await supabase.from('profiles').select('*').eq('id', user.id).single();
-          if (!rf2.data) return res.status(500).json({ error: 'Account setup failed, please retry' });
-          profile = rf2.data; // truthful balance (0), not the assumed one
-        } else {
-          profile = { id: user.id, email: user.email, credits: granted, referral_code: referralCode };
-          // Welcome email only when the bonus actually landed.
-          sendWelcomeEmail(user.email, startCredits, 'welcome').catch(function(e) { console.log('[WELCOME] Email failed:', e.message); });
-        }
+        console.log('[AUTH] profile created by the app for ' + user.id.slice(0, 8) + ' (trigger did not) — no starter grant here');
+        var rf2 = await supabase.from('profiles').select('*').eq('id', user.id).single();
+        if (!rf2.data) return res.status(500).json({ error: 'Account setup failed, please retry' });
+        profile = rf2.data;
       }
     }
     
@@ -1551,7 +1581,7 @@ app.get('/api/v1/me', authV1, async function(req, res) {
     var pr = await supabase.from('profiles').select('*').eq('id', req.user.id).single();
     var profile = pr.data;
     if (!profile) {
-      var startCredits = await starterCreditsFor(req.user.email);
+      // Zero credits, no grant — see the web bootstrap: the trigger owns it.
       var ins = await supabase.from('profiles').insert({
         id: req.user.id, email: req.user.email, credits: 0,
         referral_code: generateReferralCode(),
@@ -1562,10 +1592,7 @@ app.get('/api/v1/me', authV1, async function(req, res) {
         if (!rf.data) return v1Error(res, 500, 'internal', 'Account setup failed — please try again.', true);
         profile = rf.data;
       } else {
-        var granted = await recordCreditAdd({
-          userId: req.user.id, amount: startCredits, source: 'signup_bonus',
-          note: isDev(req.user.email) ? 'Dev account starting credits' : 'New user starter credits'
-        });
+        console.log('[V1-ME] profile created by the app for ' + req.user.id.slice(0, 8) + ' (trigger did not) — no starter grant here');
         var rf2 = await supabase.from('profiles').select('*').eq('id', req.user.id).single();
         if (!rf2.data) return v1Error(res, 500, 'internal', 'Account setup failed — please try again.', true);
         profile = rf2.data;
@@ -3079,6 +3106,7 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
       console.error('[V1-SCHEDULE] save failed for ' + req.user.id.slice(0, 8) + ':', result.error.message);
       return v1Error(res, 500, 'internal', 'Could not save your schedule.', true);
     }
+    flagSharedPhone(req.user.id, data.notify_number).catch(function() {});
     if (county === 'ftbend') {
       var profUpdate = { ftbend_access: true };
       if (ftbendColorName) profUpdate.user_color = ftbendColorName;
@@ -4108,6 +4136,7 @@ app.post('/api/schedule', auth, async function(req, res) {
     result = await supabase.from('user_schedules').update(data).eq('user_id', req.user.id);
   } else {
     result = await supabase.from('user_schedules').insert(data);
+    flagSharedPhone(req.user.id, data.notify_number).catch(function() {});
     // Send welcome SMS on first schedule setup
     if (data.notify_number) {
       sendSMS(data.notify_number, '🎉 Welcome to ProbationCall!\n\nYour daily check-in is now active. We\'ll call the hotline for you every day and text you the results.\n\nManage your account anytime at:\nprobationcall.com\n\n- ProbationCall.com', 'welcome').catch(function(e) { console.log('[WELCOME] SMS failed:', e.message); });
@@ -5965,6 +5994,54 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
 // Cron job to delete old recordings (runs daily at 3am).
 // Only nulls recording_url for rows whose Twilio delete actually succeeded
 // — otherwise the DB and Twilio drift apart and stale URLs are unrecoverable.
+// ========== DAILY INTEGRITY DIGEST (migration 044) ==========
+// 07:30 Central, after the morning run. Two things, one email, sent only
+// when there is something to say: profiles whose balance no longer equals
+// their ledger sum (a silent balance write — the bug class that hid the
+// trigger-granted starter credits for nine months), and review flags opened
+// in the last day. Digest, not per-event: nobody needs a text at 5 AM about
+// a shared phone number.
+async function runDailyIntegrityDigest() {
+  try {
+    var profiles = await supabase.from('profiles').select('id, credits, email, is_admin');
+    if (profiles.error) throw new Error('profiles: ' + profiles.error.message);
+    var ledger = [], from = 0;
+    while (true) {
+      var l = await supabase.from('credit_transactions').select('user_id, amount').range(from, from + 999);
+      if (l.error) throw new Error('ledger: ' + l.error.message);
+      ledger = ledger.concat(l.data || []);
+      if ((l.data || []).length < 1000) break;
+      from += 1000;
+    }
+    var mismatches = integrity.ledgerMismatches(profiles.data || [], ledger);
+    var since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    var flags = await supabase.from('account_review_flags').select('user_id, reason, details, created_at').is('resolved_at', null).order('created_at', { ascending: false });
+    var openFlags = flags.data || [];
+    var newFlags = openFlags.filter(function(f) { return f.created_at >= since; });
+    console.log('[INTEGRITY] ledger mismatches=' + mismatches.length + ' open flags=' + openFlags.length + ' new=' + newFlags.length);
+    if (!mismatches.length && !newFlags.length) return;
+
+    var lines = ['ProbationCall daily integrity digest'];
+    if (mismatches.length) {
+      lines.push('', 'LEDGER MISMATCHES (' + mismatches.length + ') — balance != sum of ledger rows; something wrote credits without a ledger row:');
+      mismatches.slice(0, 25).forEach(function(m) { lines.push('  ' + m.userId.slice(0, 8) + '  credits=' + m.credits + '  ledger=' + m.ledgerSum + '  gap=' + (m.gap > 0 ? '+' : '') + m.gap); });
+    }
+    if (newFlags.length) {
+      lines.push('', 'NEW REVIEW FLAGS (' + newFlags.length + ' in 24h, ' + openFlags.length + ' open) — signals, not refusals; resolve in account_review_flags:');
+      newFlags.slice(0, 25).forEach(function(f) { lines.push('  ' + f.user_id.slice(0, 8) + '  ' + f.reason + '  ' + JSON.stringify(f.details || {})); });
+    }
+    lines.push('', '- ProbationCall');
+    var text = lines.join('\n');
+    var admins = (profiles.data || []).filter(function(p) { return p.is_admin === true && p.email; });
+    for (var i = 0; i < admins.length; i++) {
+      await sendEmail(admins[i].email, text, 'integrity_digest').catch(function(e) { console.error('[INTEGRITY] digest email failed:', e.message); });
+    }
+  } catch (e) {
+    console.error('[INTEGRITY] digest failed:', e.message);
+  }
+}
+cron.schedule('30 7 * * *', runDailyIntegrityDigest, { timezone: 'America/Chicago' });
+
 cron.schedule('0 3 * * *', async function() {
   console.log('[CLEANUP] Deleting recordings older than 30 days...');
   var cutoff = new Date();
