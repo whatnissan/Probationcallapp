@@ -535,8 +535,12 @@ claim yet" — clients render the absence honestly, never a zeroed chart.
   probabilistic model behind it. Headline
   copy labels any band **"recent historical range"** — never "most likely"
   or any probabilistic wording — and always pairs it with "possible any day".
-- **`window`** `{state, innerDays, outerDays, intervalsUsed, needed?,
+- **`window`** `{state, innerDays, outerDays, intervalsUsed, needed,
   scoredOrigins, innerCoverage}` — the window classification, three states.
+  **`needed` is ALWAYS present** (the MIN_PRIORS gate, 5) as of 2026-09-02.
+  It used to appear only on `insufficient`, which left clients decoding
+  `undefined` elsewhere and unable to tell "gate not applicable" from "gate
+  unknown". "9 intervals against a gate of 5" is as useful as "2 of 5".
   **Units: `innerDays` and `outerDays` are INTERVAL LENGTHS (days between
   tests); `nextWindow` is days FROM NOW.** Clients must never place the two
   frames side by side unlabeled — display both bands in the interval frame
@@ -643,6 +647,20 @@ Montgomery — interval model:
   "fortBend": null
 }
 ```
+
+**`weekOfMonth` is NOT CURRENTLY COMPUTED and always returns `[]`.** There is
+no week-of-month aggregate behind it, and an empty array here means "not
+available", not "no tests fell in any week". Clients should render nothing
+rather than an empty chart. `dayOfWeek` is real: pooled Sun..Sat MUST_TEST
+counts, rendered per §4.11a.
+
+**`dueSoon` ratios need `averageIntervalDays` shown beside them.** A colour
+announced 77 times genuinely has short gaps, so it produces a high
+`overdueRatio` that is arithmetically true but reads more dramatic than it is.
+The fix is presentational, not a hidden threshold: show "4.33× · normally
+every 3 days". A second server-side gate would silently drop real colours;
+`dueSoon` is gated only on 5+ appearances, which removes single-observation
+noise and nothing else.
 
 Fort Bend — rotation model:
 
