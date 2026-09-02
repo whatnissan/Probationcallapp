@@ -465,6 +465,33 @@ Server-side rules that already exist and must be preserved: re-saving forces
 `enabled: true`, clears `consecutive_pin_expired`, and clears `paused_reason`.
 Montgomery writes `pin` and null office/color; Fort Bend writes null `pin`.
 
+**`callTime` and `notifyMethods` are REQUIRED, and a missing one is a `400`
+naming the field — never a default.** PUT is a full replace, and this endpoint
+briefly did the opposite: it read `hour`/`minute`/`notifyMethod` while this
+section documented `callTime`/`notifyMethods`, so a correct payload fell
+through to 06:00 email-only and silently moved a live call time. For this
+product, saving something other than what the caller sent is the worst
+available outcome — a partial payload must not be able to reset when we call
+or how someone is reached. The legacy `hour`/`minute`/`notifyMethod` shape is
+still accepted so older builds keep working, but one of the two shapes must be
+present.
+
+`callTime` is `"HH:MM"` and is validated: a malformed string or an impossible
+time is a `400` naming `callTime`, not a silent fallback.
+
+**`push` in `notifyMethods` is accepted but NOT stored in `notify_method`.**
+Push is driven by registered devices (§4.12), so the column only records the
+`sms`/`email` part and the response echoes what was actually saved — a caller
+who sends `["push","sms"]` gets `["sms"]` back and can see the difference.
+`["push"]` alone is rejected: §2 makes SMS the backstop, and push with no
+fallback is no delivery guarantee at all.
+
+**`ftbendColor` is writable here.** It resolves through the server-owned colour
+catalogue (§4.11), so an unrecognised colour is a `400` naming `ftbendColor`
+rather than a value that silently never matches an announcement. It is stored
+on `profiles.user_color`, and sending it with a Montgomery schedule is a `400`
+— colour has no meaning there.
+
 ### 4.8 `POST /schedule/pause` · `POST /schedule/resume`
 
 **This endpoint does not exist yet and the app's pause UI depends on it.**
