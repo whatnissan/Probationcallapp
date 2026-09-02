@@ -20,6 +20,7 @@ const {
 const { formatLocalDay, todayMD, wouldExceedCutoff, wouldExceedFtbendCutoff, ftbendRetryDelayMs } = require('./lib/time');
 const { computeTieredPriceCents, creditPricing, MAX_EXACT_CREDITS } = require('./lib/pricing');
 const apns = require('./lib/apns');
+const { fallbackFieldsFor } = require('./lib/push');
 const { isValidPin, isValidTimezone, isValidEmail, normalizePhoneE164, isValidSupportSubject, isValidSupportBody } = require('./lib/validation');
 const { toSmsText, smsSegmentInfo, looksLikeEmailContent, renderBrandedEmail } = require('./lib/messaging');
 const { createBilling, logStripeError } = require('./lib/billing');
@@ -2218,7 +2219,6 @@ async function tryPushFirst(opts) {
 
     // One delivery row per user per morning (unique index). If a row already
     // exists this morning was already handled — never push or text twice.
-    var due = new Date(Date.now() + pushFallbackMinutes() * 60000).toISOString();
     var row = {
       user_id: opts.userId,
       local_date: opts.localDate,
@@ -2229,12 +2229,14 @@ async function tryPushFirst(opts) {
       fallback_message: opts.fallbackMessage ? String(opts.fallbackMessage) : null
     };
     if (!live.length) {
-      // No device: fall back immediately, per the ruling — don't make someone
-      // wait out a timer for a notification that was never going to arrive.
-      row.fallback_due_at = new Date().toISOString();
-      row.fallback_reason = 'no_device';
+      // No device: the CALLER delivers now, per the ruling — don't make
+      // someone wait out a timer for a notification that was never going to
+      // arrive. The row is marked fallback_sent_at in the same insert so the
+      // sweep can never deliver a second copy (2026-09-02: it did, to every
+      // Montgomery user, one minute after the direct SMS).
+      Object.assign(row, fallbackFieldsFor('no_device', Date.now(), pushFallbackMinutes()));
     } else {
-      row.fallback_due_at = due;
+      Object.assign(row, fallbackFieldsFor('sent', Date.now(), pushFallbackMinutes()));
     }
     var created = await supabase.from('push_deliveries').insert(row).select('id').single();
     if (created.error) {
@@ -2299,13 +2301,13 @@ async function tryPushFirst(opts) {
       return true;
     }
 
-    // Every device rejected. We already know push failed, so don't wait.
-    await supabase.from('push_deliveries').update({
+    // Every device rejected. We already know push failed, so don't wait:
+    // the caller delivers now, and the row is marked sent so the sweep
+    // stays out (same double-send as the no-device case otherwise).
+    await supabase.from('push_deliveries').update(Object.assign({
       send_failed_at: new Date().toISOString(),
-      send_error: String(lastReason || 'unknown').slice(0, 200),
-      fallback_due_at: new Date().toISOString(),
-      fallback_reason: 'send_failed'
-    }).eq('id', deliveryId);
+      send_error: String(lastReason || 'unknown').slice(0, 200)
+    }, fallbackFieldsFor('send_failed', Date.now(), pushFallbackMinutes()))).eq('id', deliveryId);
     console.log('[PUSH] all devices failed for ' + opts.userId.slice(0, 8) + ' (' + lastReason + ') — SMS now');
     return false;
   } catch (e) {
