@@ -2607,9 +2607,35 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
   try {
     var b = req.body || {};
     var county = b.county === 'ftbend' ? 'ftbend' : 'montgomery';
-    var hour = parseInt(b.hour, 10);
-    var minute = parseInt(b.minute, 10) || 0;
-    if (!Number.isFinite(hour)) hour = 6;
+
+    // PUT is a FULL REPLACE, so the fields that decide when we call and how we
+    // reach someone must be PRESENT — never defaulted. This endpoint used to
+    // read hour/minute/notifyMethod while §3 documents callTime/notifyMethods,
+    // so a correct client's payload fell through to 06:00 email-only and
+    // silently moved a live call time. A missing field is now a 400 that names
+    // the field; for this product, saving something other than what the caller
+    // sent is the worst possible outcome.
+    var hour, minute;
+    if (b.callTime !== undefined && b.callTime !== null) {
+      var m = /^([0-9]{1,2}):([0-9]{2})$/.exec(String(b.callTime).trim());
+      if (!m) {
+        return v1Error(res, 400, 'validation_failed', 'callTime must look like "06:05".');
+      }
+      hour = parseInt(m[1], 10);
+      minute = parseInt(m[2], 10);
+      if (!(hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59)) {
+        return v1Error(res, 400, 'validation_failed', 'callTime must be a real time of day, like "06:05".');
+      }
+    } else if (b.hour !== undefined) {
+      // Legacy shape, still accepted so an older build does not break.
+      hour = parseInt(b.hour, 10);
+      minute = parseInt(b.minute, 10) || 0;
+      if (!Number.isFinite(hour)) {
+        return v1Error(res, 400, 'validation_failed', 'callTime must look like "06:05".');
+      }
+    } else {
+      return v1Error(res, 400, 'validation_failed', 'callTime is required — send the time you want us to call, e.g. "06:05".');
+    }
 
     if (county !== 'ftbend' && (hour < MIN_HOUR || hour > MAX_HOUR || (hour === MAX_HOUR && minute > 59))) {
       return v1Error(res, 400, 'validation_failed', 'Choose a call time between 6:00 AM and 2:59 PM.');
@@ -2635,7 +2661,30 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
     }
     // A delivery method with no destination means the user silently gets
     // nothing — the exact failure this service cannot have.
-    var notifyMethod = b.notifyMethod || 'email';
+    // notifyMethods is the documented shape (§3): an ARRAY. The column stores
+    // a single email|sms|both, so the array is mapped onto it — and `push` is
+    // deliberately NOT stored there: push is driven by registered devices
+    // (§4.12), not by this field. The response echoes what was actually saved,
+    // so a caller who sends push can see it did not persist here.
+    var notifyMethod;
+    if (Array.isArray(b.notifyMethods)) {
+      var wanted = b.notifyMethods.map(function(x) { return String(x).trim().toLowerCase(); });
+      var unknown = wanted.filter(function(x) { return ['push', 'sms', 'email'].indexOf(x) === -1; });
+      if (unknown.length) {
+        return v1Error(res, 400, 'validation_failed', 'notifyMethods contains an unsupported value: "' + unknown[0] + '". Use push, sms or email.');
+      }
+      var wantsSms = wanted.indexOf('sms') >= 0;
+      var wantsEmail = wanted.indexOf('email') >= 0;
+      if (!wantsSms && !wantsEmail) {
+        // Push alone has no backstop, and §2 makes SMS the backstop by design.
+        return v1Error(res, 400, 'validation_failed', 'notifyMethods needs sms or email as well as push — push alone has no fallback if the phone is off.');
+      }
+      notifyMethod = (wantsSms && wantsEmail) ? 'both' : (wantsSms ? 'sms' : 'email');
+    } else if (b.notifyMethod !== undefined) {
+      notifyMethod = b.notifyMethod;   // legacy shape
+    } else {
+      return v1Error(res, 400, 'validation_failed', 'notifyMethods is required — send how you want to be told, e.g. ["sms"].');
+    }
     if ((notifyMethod === 'sms' || notifyMethod === 'both') && !notifyNumber) {
       return v1Error(res, 400, 'validation_failed', 'A phone number is required for text notifications.');
     }
@@ -2673,6 +2722,23 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
       consecutive_pin_expired: 0
     };
 
+    // ftbendColor was previously ignored outright — the colour was only
+    // writable through the website. Accept it here, resolved through the
+    // catalogue (migration 040) so a typo is a named error rather than an
+    // unmatchable colour that quietly never matches an announcement.
+    var ftbendColorName = null;
+    if (b.ftbendColor !== undefined && b.ftbendColor !== null && String(b.ftbendColor).trim() !== '') {
+      if (county !== 'ftbend') {
+        return v1Error(res, 400, 'validation_failed', 'ftbendColor does not apply to a Montgomery schedule.');
+      }
+      var catalog = await loadColorCatalog();
+      var resolved = resolveColor(catalog, b.ftbendColor);
+      if (!resolved) {
+        return v1Error(res, 400, 'validation_failed', 'ftbendColor "' + String(b.ftbendColor).slice(0, 30) + '" is not a Fort Bend colour we recognise.');
+      }
+      ftbendColorName = resolved.name;
+    }
+
     var existing = await supabase.from('user_schedules').select('id').eq('user_id', req.user.id).maybeSingle();
     var result = existing.data
       ? await supabase.from('user_schedules').update(data).eq('user_id', req.user.id)
@@ -2684,8 +2750,10 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
       return v1Error(res, 500, 'internal', 'Could not save your schedule.', true);
     }
     if (county === 'ftbend') {
-      await supabase.from('profiles').update({ ftbend_access: true }).eq('id', req.user.id)
-        .then(function() {}, function(e) { console.error('[V1-SCHEDULE] ftbend_access failed:', e.message); });
+      var profUpdate = { ftbend_access: true };
+      if (ftbendColorName) profUpdate.user_color = ftbendColorName;
+      await supabase.from('profiles').update(profUpdate).eq('id', req.user.id)
+        .then(function() {}, function(e) { console.error('[V1-SCHEDULE] profile update failed:', e.message); });
     }
     rescheduleUser(req.user.id, data);
 
