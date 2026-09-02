@@ -2324,6 +2324,40 @@ app.post('/api/v1/devices', authV1, async function(req, res) {
       console.error('[PUSH] device register failed:', up.error.message);
       return v1Error(res, 500, 'internal', 'Could not register this device.', true);
     }
+    // Retire this user's OTHER registrations on the same platform and
+    // environment that have gone stale. A person has a phone and maybe an
+    // iPad; ten live tokens on one account is a signal that something is
+    // generating throwaway registrations, not a legitimate state.
+    //
+    // Deliberately narrow, because a real second device must survive: same
+    // user AND same platform AND same environment AND untouched for
+    // DEVICE_STALE_DAYS. A genuinely used iPad refreshes last_seen_at every
+    // time the app registers, so it never qualifies. Different environment
+    // (a TestFlight build alongside a debug one) is left alone too — those
+    // are separate address spaces and both can be legitimately live.
+    var stalePruned = 0;
+    try {
+      var cutoff = new Date(Date.now() - DEVICE_STALE_DAYS * 86400000).toISOString();
+      var stale = await supabase.from('device_tokens')
+        .update({ unregistered_at: now })
+        .eq('user_id', req.user.id)
+        .eq('platform', platform)
+        .eq('environment', environment)
+        .neq('token', token)
+        .is('unregistered_at', null)
+        .lt('last_seen_at', cutoff)
+        .select('id');
+      stalePruned = (stale.data || []).length;
+      if (stalePruned) {
+        console.log('[PUSH] retired ' + stalePruned + ' stale ' + platform + '/' + environment +
+          ' token(s) for ' + req.user.id.slice(0, 8) + ' (unseen for ' + DEVICE_STALE_DAYS + '+ days)');
+      }
+    } catch (e) {
+      // Housekeeping must never fail a registration — a device that cannot
+      // register is a device that gets no morning notification.
+      console.error('[PUSH] stale-token sweep failed (registration still succeeded):', e.message);
+    }
+
     console.log('[PUSH] registered device …' + token.slice(-8) + ' (' + environment + ') for ' + req.user.id.slice(0, 8));
     res.json({ registered: true, environment: environment });
   } catch (e) {
@@ -2431,6 +2465,12 @@ async function runPushFallbackSweep() {
 // ---------------------------------------------------------------------------
 var _colorCache = null, _colorCacheAt = 0;
 var COLOR_CACHE_MS = 60 * 60 * 1000;
+
+// How long a device registration may go untouched before a NEW registration
+// on the same platform+environment retires it. Long enough that a real second
+// device used occasionally survives; short enough that throwaway simulator
+// registrations do not pile up.
+var DEVICE_STALE_DAYS = 30;
 
 async function loadColorCatalog() {
   var now = Date.now();
