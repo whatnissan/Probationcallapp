@@ -46,6 +46,17 @@
   var MIN_PRIORS = 5;
   var STABILITY_MIN_ORIGINS = 3;
   var STABILITY_MIN_COVERAGE = 0.7;
+  // County range for the `insufficient` state (2026-09-02 backtest, second
+  // set: users with 2-4 intervals). Their own envelope covered 41% of a
+  // separate 17-origin set; a county-POOLED-ONLY 80% band covered 88% with a
+  // 10-day worst miss — and pooled-only beat a hierarchical blend (82%,
+  // wider) while being literally what the copy claims: the county's range,
+  // not the user's. The gate is on the POOL, not the person: below this the
+  // county fact isn't measurable either, and the honest output is nothing.
+  var COUNTY_RANGE_MASS = 0.8;
+  var COUNTY_POOL_MIN_INTERVALS = 20;
+  var COUNTY_POOL_MIN_USERS = 3;
+  var COUNTY_RANGE_MAX_DAYS = 240;
 
   // Weighted quantile: value-sorted pairs, c_j = (S_j - w_j/2)/W, linear
   // interpolation between the c's.
@@ -97,13 +108,16 @@
     return Object.assign({ state: 'two_number', innerDays: innerBandOf(used) }, base);
   }
 
-  function computePrediction(history, sysStats, nowMs) {
-    var now = nowMs || Date.now();
+  // Completed intervals from one user's call_history rows, under the rules
+  // in the header. ONE implementation: the personal model and the county
+  // pool must count intervals identically, or the county range would be
+  // built from a different definition of "interval" than the one it is
+  // shown beside.
+  function intervalsOf(history) {
     var rows = (history || []).slice().sort(function(a, b) {
       return new Date(a.created_at) - new Date(b.created_at);
     });
     var tests = rows.filter(function(h) { return h.result === 'MUST_TEST'; });
-    if (!tests.length) return null;
 
     // Days on which ANY call ran — coverage evidence for long gaps.
     var observedDays = {};
@@ -125,6 +139,64 @@
       }
       used.push(days);
     }
+    return { tests: tests, used: used, sub7Count: sub7Count, longIncluded: longIncluded, longDropped: longDropped };
+  }
+
+  // The county range: central COUNTY_RANGE_MASS of a Gaussian kernel density
+  // over the LOG of every completed interval in the pool, evaluated on whole
+  // days. Log space because intervals are right-skewed (a 63-day gap and a
+  // 4-day gap are both real); Scott's bandwidth (sd · n^(-1/5)), which is
+  // what the backtest scored. Quantiles are the first whole day at which
+  // the cumulative mass reaches 10% / 90%, exactly as scored — do not
+  // "improve" the rounding without re-running the backtest.
+  //
+  // `intervalsByUser` is an array of arrays: one entry per pooled user,
+  // holding that user's completed intervals. The CALLER decides who is in
+  // the pool (same county, not the user themself, not internal accounts).
+  // Returns null when the pool is below the gate.
+  function countyRangeOf(intervalsByUser) {
+    var users = (intervalsByUser || []).filter(function(iv) { return iv && iv.length; });
+    var pool = [];
+    users.forEach(function(iv) { iv.forEach(function(d) { if (d > 0) pool.push(d); }); });
+    if (pool.length < COUNTY_POOL_MIN_INTERVALS || users.length < COUNTY_POOL_MIN_USERS) return null;
+    var logs = pool.map(function(d) { return Math.log(d); });
+    var n = logs.length;
+    var mean = logs.reduce(function(a, b) { return a + b; }, 0) / n;
+    var sd = Math.sqrt(logs.reduce(function(a, b) { return a + (b - mean) * (b - mean); }, 0) / (n - 1));
+    var h = Math.max(1e-6, sd * Math.pow(n, -0.2));
+    var pdf = [], total = 0;
+    for (var d = 1; d <= COUNTY_RANGE_MAX_DAYS; d++) {
+      var ld = Math.log(d), f = 0;
+      for (var i = 0; i < n; i++) {
+        var z = (ld - logs[i]) / h;
+        f += Math.exp(-0.5 * z * z);
+      }
+      f = f / d; // Jacobian: density in day units, not log-day units
+      pdf.push(f); total += f;
+    }
+    var lo = (1 - COUNTY_RANGE_MASS) / 2, hi = 1 - lo;
+    var cum = 0, lowDays = null, highDays = null;
+    for (var k = 0; k < pdf.length; k++) {
+      cum += pdf[k] / total;
+      if (lowDays === null && cum >= lo) lowDays = k + 1;
+      if (highDays === null && cum >= hi) { highDays = k + 1; break; }
+    }
+    if (lowDays === null || highDays === null) return null;
+    return {
+      lowDays: lowDays,
+      highDays: highDays,
+      mass: COUNTY_RANGE_MASS,
+      basedOnIntervals: pool.length,
+      basedOnUsers: users.length
+    };
+  }
+
+  function computePrediction(history, sysStats, nowMs) {
+    var now = nowMs || Date.now();
+    var iv = intervalsOf(history);
+    var tests = iv.tests;
+    if (!tests.length) return null;
+    var used = iv.used, sub7Count = iv.sub7Count, longIncluded = iv.longIncluded, longDropped = iv.longDropped;
 
     // Recency-weighted mean and standard deviation (newest interval last).
     var avgDays = null, stdDays = null;
@@ -262,6 +334,10 @@
   global.PredictionCore = {
     computePrediction: computePrediction,
     countyDayPattern: countyDayPattern,
-    DAY_GRID_MIN_TESTS: DAY_GRID_MIN_TESTS
+    intervalsOf: intervalsOf,
+    countyRangeOf: countyRangeOf,
+    DAY_GRID_MIN_TESTS: DAY_GRID_MIN_TESTS,
+    COUNTY_POOL_MIN_INTERVALS: COUNTY_POOL_MIN_INTERVALS,
+    COUNTY_POOL_MIN_USERS: COUNTY_POOL_MIN_USERS
   };
 })(typeof window !== 'undefined' ? window : this);

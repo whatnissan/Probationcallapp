@@ -135,3 +135,51 @@ test('window classification: below MIN_PRIORS (5) is insufficient — no bands a
   assert.strictEqual(w.innerDays, null);
   assert.strictEqual(w.outerDays, null);
 });
+
+// ---- County range for the insufficient state (2026-09-02) ----------------
+// Numbers below are the Python/scipy reference the backtest was scored with
+// (gaussian_kde on log intervals, Scott bandwidth, integer-day quantiles).
+// If this implementation drifts from the scored one, the 88%/10-day claim in
+// the contract no longer describes what ships.
+var SYNTH_POOL = [5, 8, 11, 13, 13, 14, 16, 17, 18, 19, 21, 21, 22, 24, 25, 26, 28, 29, 31, 35, 42, 49, 57, 63];
+
+test('countyRangeOf reproduces the scipy reference band on a fixed pool', function() {
+  var byUser = [SYNTH_POOL.slice(0, 8), SYNTH_POOL.slice(8, 16), SYNTH_POOL.slice(16)];
+  var r = PredictionCore.countyRangeOf(byUser);
+  assert.deepStrictEqual(r, { lowDays: 9, highDays: 51, mass: 0.8, basedOnIntervals: 24, basedOnUsers: 3 });
+});
+
+test('countyRangeOf gates on the POOL: under 20 intervals or under 3 users is null', function() {
+  assert.strictEqual(PredictionCore.countyRangeOf([SYNTH_POOL.slice(0, 7), SYNTH_POOL.slice(7, 13), SYNTH_POOL.slice(13, 19)]), null); // 19 intervals
+  assert.strictEqual(PredictionCore.countyRangeOf([SYNTH_POOL.slice(0, 12), SYNTH_POOL.slice(12)]), null);                             // 2 users
+  assert.strictEqual(PredictionCore.countyRangeOf([]), null);
+  assert.strictEqual(PredictionCore.countyRangeOf(null), null);
+  assert.strictEqual(PredictionCore.COUNTY_POOL_MIN_INTERVALS, 20);
+  assert.strictEqual(PredictionCore.COUNTY_POOL_MIN_USERS, 3);
+});
+
+test('countyRangeOf ignores empty users and non-positive gaps when counting the gate', function() {
+  var r = PredictionCore.countyRangeOf([SYNTH_POOL.slice(0, 8), [], SYNTH_POOL.slice(8, 16), SYNTH_POOL.slice(16), [0, -3]]);
+  assert.strictEqual(r.basedOnUsers, 4);          // the [0,-3] user is present but contributes nothing
+  assert.strictEqual(r.basedOnIntervals, 24);
+});
+
+test('intervalsOf is the same interval construction computePrediction uses', function() {
+  var rows = [];
+  var start = Date.UTC(2026, 0, 1);
+  var gaps = [12, 3, 20, 65, 9];
+  var t = start;
+  rows.push({ result: 'MUST_TEST', created_at: new Date(t).toISOString() });
+  gaps.forEach(function(g) {
+    for (var d = 1; d < g; d++) rows.push({ result: 'NO_TEST', created_at: new Date(t + d * 86400000).toISOString() });
+    t += g * 86400000;
+    rows.push({ result: 'MUST_TEST', created_at: new Date(t).toISOString() });
+  });
+  var iv = PredictionCore.intervalsOf(rows);
+  var p = PredictionCore.computePrediction(rows, null, t + 86400000);
+  assert.deepStrictEqual(iv.used, gaps);          // 65-day gap kept: fully observed
+  assert.strictEqual(iv.sub7Count, 1);
+  assert.strictEqual(p.usedIntervals, iv.used.length);
+  assert.strictEqual(p.rapidRetestsIncluded === undefined ? p.sub7Count : p.rapidRetestsIncluded, iv.sub7Count);
+  assert.strictEqual(p.longDropped, iv.longDropped);
+});

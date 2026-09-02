@@ -2569,6 +2569,15 @@ function calculateTestStats() {
         predictEl.textContent = "Your history is too irregular to narrow — possible any day, stay ready";
         predictEl.style.color = "#f59e0b";
         confEl.textContent = "Tests have ranged " + win.outerDays[0] + "\u2013" + win.outerDays[1] + " days apart (" + win.intervalsUsed + " completed intervals) — a fact about the past, not a forecast";
+      } else if (win.countyRange) {
+        // County range (§4.10, 2026-09-02). Two things kept distinct: what
+        // the county does, and what this person does — the second is
+        // unknown until 5 intervals exist. Banned words for this band:
+        // "your", "usual", "likely", "expected", "most".
+        var countyName = p.county === 'ftbend' ? 'Fort Bend County' : 'Montgomery County';
+        predictEl.textContent = "Not enough of your own history yet (" + (win.intervalsUsed || 0) + " of " + (win.needed || 5) + " intervals)";
+        predictEl.style.color = "#f59e0b";
+        confEl.textContent = "People in " + countyName + " typically go " + win.countyRange.lowDays + "\u2013" + win.countyRange.highDays + " days between tests. That's the county, not you. You don't have enough of your own history yet to say whether you differ. Testing is possible any day.";
       } else {
         predictEl.textContent = "Not enough history yet to estimate timing — stay ready any day";
         predictEl.style.color = "#f59e0b";

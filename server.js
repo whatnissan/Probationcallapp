@@ -3164,6 +3164,76 @@ app.get('/api/v1/pricing', rateLimit('pricing', 60, 60 * 1000), async function(r
 // dayOfWeek is null until the personal grid statistically earns display
 // (35+ tests AND chi-square p<0.05); countyDayPattern carries the pooled
 // county-level fact instead. Extra fields beyond the draft are additive.
+// County pool for window.countyRange (§4.10, 2026-09-02). Everyone in the
+// county EXCEPT the requesting user and internal accounts: the copy says
+// "people in Montgomery County", and a test account is not a person on
+// probation. Dave's ruling: if excluding us drops the pool under the gate,
+// the county range is simply unavailable — better than a county fact partly
+// made of us. Internal = is_admin, DEV_EMAILS, or INTERNAL_ACCOUNT_EMAILS
+// (comma-separated, Railway). The per-user interval map is cached an hour
+// per county; the requester is removed per request, so the cache is shared.
+var COUNTY_POOL_CACHE_MS = 60 * 60 * 1000;
+var _countyPoolCache = {};
+
+function internalAccountEmails() {
+  return String(process.env.INTERNAL_ACCOUNT_EMAILS || '').split(',')
+    .map(function(e) { return e.trim().toLowerCase(); }).filter(Boolean);
+}
+
+async function countyIntervalPool(county) {
+  var now = Date.now();
+  var c = _countyPoolCache[county];
+  if (c && (now - c.at) < COUNTY_POOL_CACHE_MS) return c.byUser;
+
+  var profiles = await supabase.from('profiles').select('id, email, is_admin');
+  if (profiles.error) throw new Error('profiles: ' + profiles.error.message);
+  var internal = internalAccountEmails();
+  var excluded = {};
+  (profiles.data || []).forEach(function(p) {
+    var email = String(p.email || '').toLowerCase();
+    if (p.is_admin === true || (email && isDev(email)) || internal.indexOf(email) >= 0) excluded[p.id] = true;
+  });
+
+  // Supabase caps a select at 1000 rows; page through, oldest first.
+  var rows = [], from = 0, page = 1000;
+  while (true) {
+    var r = await supabase.from('call_history').select('user_id, result, created_at')
+      .eq('county', county).order('created_at', { ascending: true }).range(from, from + page - 1);
+    if (r.error) throw new Error('call_history: ' + r.error.message);
+    rows = rows.concat(r.data || []);
+    if ((r.data || []).length < page) break;
+    from += page;
+  }
+  var byUserRows = {};
+  rows.forEach(function(row) {
+    if (excluded[row.user_id]) return;
+    (byUserRows[row.user_id] = byUserRows[row.user_id] || []).push(row);
+  });
+  var byUser = {};
+  Object.keys(byUserRows).forEach(function(uid) {
+    var used = PredictionCoreV1.intervalsOf(byUserRows[uid]).used;
+    if (used.length) byUser[uid] = used;
+  });
+  _countyPoolCache[county] = { at: now, byUser: byUser };
+  console.log('[V1-PREDICTION] county pool ' + county + ': ' + Object.keys(byUser).length + ' users, ' +
+    Object.keys(byUser).reduce(function(n, k) { return n + byUser[k].length; }, 0) + ' intervals (' +
+    Object.keys(excluded).length + ' internal accounts excluded)');
+  return byUser;
+}
+
+// Never throws: a pool failure means "no county range", not a failed request.
+async function countyRangeFor(county, excludeUserId) {
+  try {
+    var byUser = await countyIntervalPool(county);
+    var arrays = Object.keys(byUser).filter(function(uid) { return uid !== excludeUserId; })
+      .map(function(uid) { return byUser[uid]; });
+    return PredictionCoreV1.countyRangeOf(arrays);
+  } catch (e) {
+    console.error('[V1-PREDICTION] county range unavailable (' + county + '):', e.message);
+    return null;
+  }
+}
+
 app.get('/api/v1/prediction', authV1, async function(req, res) {
   try {
     var sched = await supabase.from('user_schedules')
@@ -3186,10 +3256,15 @@ app.get('/api/v1/prediction', authV1, async function(req, res) {
     var countyPattern = PredictionCoreV1.countyDayPattern(sysStats);
 
     if (!p) {
+      // Zero history: the county range is still a county fact, so it is
+      // offered here too — with the same "not you" sentence.
+      var zeroRange = await countyRangeFor(county, req.user.id);
+      var zeroNotes = ['No MUST_TEST results recorded yet — prediction unlocks after your first required test.'];
+      if (zeroRange) zeroNotes.push("That's the county, not you. Testing is possible any day.");
       return res.json({
         county: county,
         nextWindow: null,
-        window: { state: 'insufficient', intervalsUsed: 0, needed: 5, innerDays: null, outerDays: null, scoredOrigins: 0, innerCoverage: null },
+        window: { state: 'insufficient', intervalsUsed: 0, needed: 5, innerDays: null, outerDays: null, scoredOrigins: 0, innerCoverage: null, countyRange: zeroRange },
         yourIntervalDays: null,
         countyAverageIntervalDays: sysStats ? sysStats.scheduledAvg : null,
         daysSinceLastTest: null,
@@ -3203,7 +3278,7 @@ app.get('/api/v1/prediction', authV1, async function(req, res) {
         countyDayPattern: countyPattern,
         countyDayCounts: sysStats && sysStats.dayOfWeekCounts ? sysStats.dayOfWeekCounts : null,
         basedOn: null,
-        notes: ['No MUST_TEST results recorded yet — prediction unlocks after your first required test.']
+        notes: zeroNotes
       });
     }
 
@@ -3216,10 +3291,20 @@ app.get('/api/v1/prediction', authV1, async function(req, res) {
     if (p.window && p.window.state === 'irregular') notes.push('Intervals too irregular to narrow: no defensible window exists; the has-ranged bound is a fact about the past, not a forecast.');
     if (p.window && p.window.state === 'insufficient') notes.push('Fewer than ' + p.window.needed + ' completed intervals: window estimation not attempted.');
 
+    // window.countyRange: ONLY in `insufficient`, where the user's own history
+    // cannot speak. In the other two states it is null — their own bands are
+    // the answer there, and a county band beside them would invite exactly
+    // the comparison the copy forbids. The "not you" sentence ships as a
+    // note so the framing travels with the number.
+    var win = p.window || null;
+    if (win) {
+      win.countyRange = win.state === 'insufficient' ? await countyRangeFor(county, req.user.id) : null;
+      if (win.countyRange) notes.push("That's the county, not you. You don't have enough of your own history yet to say whether you differ. Testing is possible any day.");
+    }
+
     // nextWindow is populated ONLY when the user's own walk-forward self-test
     // certifies an inner band (window.state === 'two_number') — the 2026-08-25
     // backtest measured the old always-on envelope at 35% prospective misses.
-    var win = p.window || null;
     var nextWindow = null;
     if (win && win.state === 'two_number' && win.innerDays) {
       nextWindow = {

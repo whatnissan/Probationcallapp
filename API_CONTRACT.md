@@ -599,7 +599,46 @@ claim yet" — clients render the absence honestly, never a zeroed chart.
     states (14 of 15 users at introduction) — design them as the main
     experience, not a fallback.
   - `insufficient`: fewer than `needed` (= 5) completed intervals — no
-    bands of any kind; show "not enough history yet (n of 5)".
+    personal bands of any kind. Since 2026-09-02 this state MAY carry
+    `countyRange` (below); without it, show "not enough history yet (n of 5)".
+- **`window.countyRange`** `{lowDays:int, highDays:int, mass:0.8,
+  basedOnIntervals:int, basedOnUsers:int} | null` — **present ONLY when
+  `window.state === 'insufficient'`; always `null` in the other two states.**
+  The central 80% of a kernel density over every completed interval of
+  OTHER people in the same county — the requesting user's own intervals are
+  excluded, so the band cannot drift toward their pattern, and so are internal
+  accounts (admins, dev emails, `INTERNAL_ACCOUNT_EMAILS`): "people in
+  Montgomery County" means people on probation, not us. `null` when the pool
+  is under **20 intervals from 3 users** (Fort Bend today) — then the county
+  fact is not measurable either, and nothing is shown. Built by the same
+  interval rules as the personal model (`intervalsOf`), cached an hour.
+
+  **Why it exists (2026-09-02 backtest, second set).** For users with 2–4
+  intervals — 11 of 15 at the time — their own envelope covered 41% of a
+  separate 17-origin walk-forward set; this county-pooled-only band covered
+  **88% with a 10-day worst miss**, and beat a hierarchical blend (82%,
+  wider) while being literally what the copy claims.
+
+  **Copy — APPROVED 2026-09-02, render as written.** Own heading, county
+  named in it, never in the slot the personal band occupies, never coloured
+  as a forecast:
+
+  > **Not enough of your own history yet (3 of 5 intervals)**
+  > People in Montgomery County typically go 9 to 42 days between tests.
+  > That's the county, not you. You don't have enough of your own history
+  > yet to say whether you differ. Testing is possible any day.
+
+  Zero intervals: headline "Prediction unlocks after your first required
+  test", then the county sentence, then "That's the county, not you. Testing
+  is possible any day." Pool too small (`countyRange` null): "Your county's
+  pattern isn't measurable yet either. Testing is possible any day."
+
+  **BANNED WORDS for this band — load-bearing, not style:** `your`,
+  `usual`, `likely`, `expected`, `most`. Each one turns a county fact into a
+  personal prediction, and each is exactly what a well-meaning future edit
+  would reintroduce. Words that ALWAYS appear: the county's name, "not you",
+  "possible any day". The server ships the "not you" sentence in `notes`
+  whenever `countyRange` is present, so the framing travels with the number.
 
   **Methodology (2026-08-25 backtest — read before proposing to narrow the
   window).** Walk-forward, leakage-free, 17 forecast origins across all
