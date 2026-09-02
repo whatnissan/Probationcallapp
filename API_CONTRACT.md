@@ -773,6 +773,26 @@ person" stays auditable rather than vanishing.
 `DELETE /devices/{token}` is scoped to the caller and idempotent: removing an
 already-removed device returns `{"removed": 0}`, not a 404.
 
+`GET /devices` returns the caller's own LIVE registrations, newest-seen first:
+
+```json
+{ "devices": [
+  { "token": "apns-hex", "platform": "ios", "environment": "production",
+    "appVersion": "1.0", "osVersion": "26.5",
+    "createdAt": "2026-09-01T17:26:19Z", "lastSeenAt": "2026-09-02T08:04:11Z" }
+] }
+```
+
+It returns the token VALUE, because `DELETE /devices/{token}` is keyed on it —
+without it there is no way for someone to retire a phone they no longer have,
+which is the point of the Account screen showing this list at all. Scoped to
+the caller. An APNs token is only an address: sending to it still requires the
+signing key, which never leaves the server.
+
+Pruned devices are omitted. `lastSeenAt` is refreshed on every registration,
+so it is how the client tells "this device" from an old one — and how a stale
+registration becomes visible to the person who owns it.
+
 ### 4.12a `POST /push/{deliveryId}/ack`
 
 → `{ "acked": true, "fallbackCancelled": true }`
