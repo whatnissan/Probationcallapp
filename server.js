@@ -2366,6 +2366,42 @@ app.post('/api/v1/devices', authV1, async function(req, res) {
   }
 });
 
+// §4.12 GET /devices — the caller's own live registrations.
+//
+// Returns the token itself, because DELETE /devices/{token} is keyed on it:
+// without the value there is no way for someone to retire a phone they no
+// longer have. Scoped to the caller, and an APNs token is only an address —
+// sending to it still requires our signing key, which never leaves the server.
+app.get('/api/v1/devices', authV1, async function(req, res) {
+  try {
+    var r = await supabase.from('device_tokens')
+      .select('token, platform, environment, app_version, os_version, created_at, last_seen_at')
+      .eq('user_id', req.user.id)
+      .is('unregistered_at', null)
+      .order('last_seen_at', { ascending: false });
+    if (r.error) {
+      console.error('[PUSH] device list failed:', r.error.message);
+      return v1Error(res, 500, 'internal', 'Could not list your devices.', true);
+    }
+    res.json({
+      devices: (r.data || []).map(function(d) {
+        return {
+          token: d.token,
+          platform: d.platform,
+          environment: d.environment,
+          appVersion: d.app_version || null,
+          osVersion: d.os_version || null,
+          createdAt: d.created_at,
+          lastSeenAt: d.last_seen_at
+        };
+      })
+    });
+  } catch (e) {
+    console.error('[PUSH] device list error:', e.message);
+    return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+  }
+});
+
 // §4.12 DELETE /devices/{token} — sign-out / notifications-off.
 // Soft delete, scoped to the caller: you can only retire your own device.
 app.delete('/api/v1/devices/:token', authV1, async function(req, res) {
