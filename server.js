@@ -18,7 +18,7 @@ const {
   phoneticMatch, doCrossCheck
 } = require('./lib/detection');
 const { formatLocalDay, todayMD, wouldExceedCutoff, wouldExceedFtbendCutoff, ftbendRetryDelayMs } = require('./lib/time');
-const { computeTieredPriceCents, MAX_EXACT_CREDITS } = require('./lib/pricing');
+const { computeTieredPriceCents, creditPricing, MAX_EXACT_CREDITS } = require('./lib/pricing');
 const apns = require('./lib/apns');
 const { isValidPin, isValidTimezone, isValidEmail, normalizePhoneE164, isValidSupportSubject, isValidSupportBody } = require('./lib/validation');
 const { toSmsText, smsSegmentInfo, looksLikeEmailContent, renderBrandedEmail } = require('./lib/messaging');
@@ -3090,6 +3090,69 @@ app.post('/api/v1/checkout-link', authV1, rateLimit('checkout', 10, 5 * 60 * 100
     res.json({ url: session.url, attributionId: attributionId, priceCents: priceCents });
   } catch (e) {
     console.error('[V1-CHECKOUT] failed:', e.message);
+    return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+  }
+});
+
+// §4.16 GET /pricing — what the app shows BEFORE anyone taps Buy.
+//
+// The app used to hardcode 1499 and mirror the tier math client-side, so a
+// Stripe price change left it showing a stale number until the next release.
+// Now Stripe is asked for the recurring price and lib/pricing hands over the
+// same tier array the checkout charges from. checkout-link's priceCents stays
+// the authoritative charge; this is the display copy of the same truth.
+//
+// Public: prices are printed on the landing page, and the app needs them on
+// the paywall before sign-in. Stripe is cached for ten minutes so this costs
+// nothing per request; if Stripe is unreachable the last good price is served
+// (stale beats a lie, and a lie beats nothing only in the client's mind), and
+// `subscription` is null only when no price has EVER been fetched — the app
+// must render that as "unavailable", not fall back to a hardcoded number.
+var SUBSCRIPTION_PRICE_CACHE_MS = 10 * 60 * 1000;
+var _subPriceCache = null, _subPriceCacheAt = 0;
+
+async function subscriptionPricing() {
+  var now = Date.now();
+  if (_subPriceCache && (now - _subPriceCacheAt) < SUBSCRIPTION_PRICE_CACHE_MS) return _subPriceCache;
+  var priceId = process.env.STRIPE_SUBSCRIPTION_PRICE_ID;
+  if (!priceId) {
+    console.error('[V1-PRICING] STRIPE_SUBSCRIPTION_PRICE_ID is not set');
+    return _subPriceCache; // null until configured
+  }
+  try {
+    var price = await stripe.prices.retrieve(priceId);
+    if (!price || !Number.isFinite(price.unit_amount) || !price.recurring) {
+      console.error('[V1-PRICING] subscription price ' + priceId + ' is not a recurring price with a unit_amount');
+      return _subPriceCache;
+    }
+    _subPriceCache = {
+      priceCents: price.unit_amount,
+      currency: String(price.currency || 'usd').toLowerCase(),
+      interval: price.recurring.interval,
+      intervalCount: price.recurring.interval_count || 1,
+      creditsPerPeriod: SUBSCRIPTION_CREDITS_PER_PAYMENT,
+      asOf: new Date(now).toISOString()
+    };
+    _subPriceCacheAt = now;
+    return _subPriceCache;
+  } catch (e) {
+    logStripeError('v1 pricing lookup', e);
+    if (_subPriceCache) console.error('[V1-PRICING] serving cached subscription price from ' + _subPriceCache.asOf);
+    return _subPriceCache;
+  }
+}
+
+app.get('/api/v1/pricing', rateLimit('pricing', 60, 60 * 1000), async function(req, res) {
+  try {
+    var sub = await subscriptionPricing();
+    res.set('Cache-Control', 'public, max-age=300');
+    res.json({
+      currency: sub ? sub.currency : 'usd',
+      subscription: sub,
+      credits: creditPricing()
+    });
+  } catch (e) {
+    console.error('[V1-PRICING] failed:', e.message);
     return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
   }
 });

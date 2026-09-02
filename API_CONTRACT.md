@@ -853,6 +853,55 @@ cannot reconstruct that retroactively.
 The app opens the URL in `SFSafariViewController`, then re-fetches `/me` on
 return to refresh the balance.
 
+### 4.13a `GET /pricing`
+
+**Public — no auth.** Prices are printed on the landing page, and the paywall
+needs them before sign-in.
+
+```json
+{
+  "currency": "usd",
+  "subscription": {
+    "priceCents": 1499, "currency": "usd",
+    "interval": "month", "intervalCount": 1,
+    "creditsPerPeriod": 30,
+    "asOf": "2026-09-02T18:40:11Z"
+  },
+  "credits": {
+    "minimumCents": 500,
+    "maxCredits": 1825,
+    "tiers": [
+      { "fromCredit": 1,  "toCredit": 30,   "centsPerCredit": 50 },
+      { "fromCredit": 31, "toCredit": 90,   "centsPerCredit": 42 },
+      { "fromCredit": 91, "toCredit": null, "centsPerCredit": 33 }
+    ]
+  }
+}
+```
+
+**Never hardcode a price in the app again.** `subscription.priceCents` comes
+from Stripe (the live recurring Price), cached server-side for ten minutes, so
+a price change in the Stripe dashboard reaches the app without a release.
+`credits.tiers` is the very array the server charges from — the app renders it
+rather than mirroring the formula.
+
+**Tier math, for display.** Tiers are marginal: credits 1–30 cost 50¢ each,
+31–90 cost 42¢ each, 91+ cost 33¢ each, then apply `minimumCents` as a floor.
+`toCredit: null` means no upper bound. 95 credits is
+(30 × 50) + (60 × 42) + (5 × 33) = 4185. This is an estimate for the screen;
+the charge is whatever `POST /checkout-link` returns in `priceCents`, and the
+two are computed from the same tiers so they cannot disagree.
+
+**`subscription` may be `null`.** That means no price has ever been fetched
+(Stripe unreachable since boot, or the Price ID unset). Render the subscribe
+option as unavailable — do NOT fall back to 1499. If Stripe is unreachable
+after a successful fetch, the last good price is served and `asOf` says how old
+it is. The response carries `Cache-Control: public, max-age=300`; refetch when
+the paywall screen appears, not on every render.
+
+`currency` is ISO 4217 lowercase. Everything is USD today; the field exists so
+that is a fact the app reads rather than assumes.
+
 ### 4.14 `GET /referral`
 
 ```json
