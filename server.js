@@ -22,6 +22,7 @@ const { computeTieredPriceCents, creditPricing, MAX_EXACT_CREDITS } = require('.
 const { resolveBearerUser, emailTombstoneHash } = require('./lib/auth');
 const demoAccount = require('./lib/demo');
 const integrity = require('./lib/integrity');
+const phoneVerify = require('./lib/verify');
 const apns = require('./lib/apns');
 const { fallbackFieldsFor } = require('./lib/push');
 const { isValidPin, isValidTimezone, isValidEmail, normalizePhoneE164, isValidSupportSubject, isValidSupportBody } = require('./lib/validation');
@@ -1623,6 +1624,12 @@ app.get('/api/v1/me', authV1, async function(req, res) {
         isAdmin: profile.is_admin === true,
         createdAt: req.user.created_at || null
       },
+      // §4.17 — what the app gates onboarding on. The full number is the
+      // account's own; the app compares it to the number being entered.
+      phone: {
+        verifiedNumber: profile.verified_phone || null,
+        verifiedAt: profile.verified_phone_at || null
+      },
       credits: {
         balance: profile.credits || 0,
         probationEndDate: probEnd,
@@ -2384,6 +2391,161 @@ async function tryPushFirst(opts) {
   }
 }
 
+// §4.17 phone verification — the most abusable surface in the API, because
+// it sends SMS. Every limit lives in lib/verify.js and is counted from
+// phone_verifications rows (durable), with the in-memory limiter as a cheap
+// first gate. Codes are HMAC'd under PHONE_VERIFY_SECRET and never returned.
+// A missing secret FAILS LOUDLY: a verification system with a predictable
+// secret is worse than none.
+function phoneVerifySecret() {
+  var sec = process.env.PHONE_VERIFY_SECRET;
+  if (!sec || String(sec).length < 32) return null;
+  return String(sec);
+}
+if (!phoneVerifySecret()) console.error('[PHONE-VERIFY] ⚠️ PHONE_VERIFY_SECRET is not set (or under 32 chars) — phone verification will refuse every request until it is');
+
+var _verifyAlertDate = null;
+async function alertAdminVerifyVolume(countToday) {
+  try {
+    var today = formatLocalDay(new Date(), 'America/Chicago');
+    if (_verifyAlertDate === today) return;
+    _verifyAlertDate = today;
+    var admins = await supabase.from('profiles').select('id, email').eq('is_admin', true);
+    var text = '⚠️ ProbationCall ADMIN: ' + countToday + ' verification texts sent today (alert at ' + phoneVerify.LIMITS.globalAlertAt + ', hard cap ' + phoneVerify.LIMITS.globalPerDay + '). Check phone_verifications for pumping. 1 alert/day.';
+    for (var i = 0; i < ((admins.data) || []).length; i++) {
+      var as = await supabase.from('user_schedules').select('notify_number').eq('user_id', admins.data[i].id).maybeSingle();
+      if (as && as.data && as.data.notify_number) await sendSMS(as.data.notify_number, text, 'verify_volume_admin');
+      if (admins.data[i].email) await sendEmail(admins.data[i].email, text, 'verify_volume_admin');
+    }
+  } catch (e) { console.error('[PHONE-VERIFY] volume alert failed:', e.message); }
+}
+
+app.post('/api/v1/phone/verify/start', authV1, rateLimit('verify_start', 5, 10 * 60 * 1000), async function(req, res) {
+  var tag = '[PHONE-VERIFY] ' + req.user.id.slice(0, 8);
+  try {
+    var secret = phoneVerifySecret();
+    if (!secret) {
+      console.error(tag + ' refused: PHONE_VERIFY_SECRET missing');
+      return v1Error(res, 500, 'internal', 'Phone verification is unavailable right now.', true);
+    }
+    var b = req.body || {};
+    var phone = normalizePhoneE164(b.phone);
+    if (!phone) return v1Error(res, 400, 'validation_failed', 'Enter a valid US phone number.');
+    if (await isSmsOptedOut(phone)) {
+      return v1Error(res, 409, 'sms_opted_out', 'This number has opted out of texts. Reply START to our last message first, then try again.');
+    }
+    // Consent: the same rule that binds /schedule. This is a text to a
+    // number we are about to start texting daily.
+    if (b.smsConsent === true) {
+      await recordSmsConsent(req.user.id, phone, req, 'phone_verify');
+    } else if (!(await hasSmsConsent(req.user.id))) {
+      return v1Error(res, 400, 'validation_failed', 'Please confirm SMS consent before we text this number.');
+    }
+
+    var now = Date.now();
+    var daySince = new Date(now - 24 * 3600000).toISOString();
+    var acct = await supabase.from('phone_verifications').select('created_at, phone').eq('user_id', req.user.id).gte('created_at', daySince);
+    var byPhone = await supabase.from('phone_verifications').select('created_at').eq('phone', phone).gte('created_at', daySince);
+    var globalToday = await supabase.from('phone_verifications').select('id', { count: 'exact', head: true }).gte('created_at', daySince);
+    if (acct.error || byPhone.error || globalToday.error) {
+      console.error(tag + ' limit read failed:', (acct.error || byPhone.error || globalToday.error).message);
+      return v1Error(res, 500, 'internal', 'Phone verification is unavailable right now.', true);
+    }
+    var ts = function(rows) { return (rows || []).map(function(r) { return Date.parse(r.created_at); }); };
+    var same = (acct.data || []).filter(function(r) { return r.phone === phone; });
+    var globalList = []; for (var g = 0; g < (globalToday.count || 0); g++) globalList.push(now - 1);
+    var decision = phoneVerify.decideSend(now, {
+      account: ts(acct.data), phone: ts(byPhone.data), global: globalList,
+      lastSameMs: same.length ? Math.max.apply(null, ts(same)) : 0
+    });
+    if (!decision.ok) {
+      console.log(tag + ' refused: ' + decision.reason + ' (…' + phoneVerify.phoneLast4(phone) + ')');
+      res.set('Retry-After', String(decision.retryAfterSeconds));
+      return v1Error(res, 429, 'rate_limited', decision.reason === 'resend_too_soon'
+        ? 'Please wait ' + decision.retryAfterSeconds + ' seconds before requesting another code.'
+        : 'Too many verification texts. Try again later.', true);
+    }
+    if (decision.alert) alertAdminVerifyVolume((globalToday.count || 0) + 1).catch(function() {});
+
+    // One live code per user+phone: retire any open one, then insert.
+    await supabase.from('phone_verifications').update({ superseded_at: new Date(now).toISOString() })
+      .eq('user_id', req.user.id).eq('phone', phone).is('consumed_at', null).is('superseded_at', null);
+    var code = phoneVerify.generateCode();
+    var row = {
+      user_id: req.user.id, phone: phone,
+      code_hmac: phoneVerify.codeHmac(secret, req.user.id, phone, code),
+      expires_at: new Date(now + phoneVerify.LIMITS.expiryMinutes * 60000).toISOString(),
+      ip: clientIp(req)
+    };
+    var ins = await supabase.from('phone_verifications').insert(row).select('id').single();
+    if (ins.error) {
+      console.error(tag + ' insert failed:', ins.error.message);
+      return v1Error(res, 500, 'internal', 'Phone verification is unavailable right now.', true);
+    }
+    var sent = await sendSMS(phone, 'Your ProbationCall code is ' + code + '. It expires in ' + phoneVerify.LIMITS.expiryMinutes + ' minutes.', 'phone_verify');
+    code = null;
+    if (!sent || !sent.success) {
+      await supabase.from('phone_verifications').update({ superseded_at: new Date().toISOString() }).eq('id', ins.data.id);
+      console.error(tag + ' SMS send failed (…' + phoneVerify.phoneLast4(phone) + '): ' + ((sent && sent.error) || 'unknown'));
+      return v1Error(res, 502, 'sms_send_failed', 'We could not text that number. Check it and try again.', true);
+    }
+    console.log(tag + ' code sent to …' + phoneVerify.phoneLast4(phone));
+    res.json({
+      sent: true,
+      phoneLast4: phoneVerify.phoneLast4(phone),
+      expiresInSeconds: phoneVerify.LIMITS.expiryMinutes * 60,
+      resendAfterSeconds: phoneVerify.LIMITS.resendSeconds
+    });
+  } catch (e) {
+    console.error(tag + ' start error:', e.message);
+    return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+  }
+});
+
+app.post('/api/v1/phone/verify/check', authV1, rateLimit('verify_check', 20, 10 * 60 * 1000), async function(req, res) {
+  var tag = '[PHONE-VERIFY] ' + req.user.id.slice(0, 8);
+  try {
+    var secret = phoneVerifySecret();
+    if (!secret) {
+      console.error(tag + ' refused: PHONE_VERIFY_SECRET missing');
+      return v1Error(res, 500, 'internal', 'Phone verification is unavailable right now.', true);
+    }
+    var b = req.body || {};
+    var phone = normalizePhoneE164(b.phone);
+    var code = String(b.code || '').trim();
+    if (!phone) return v1Error(res, 400, 'validation_failed', 'Enter a valid US phone number.');
+    if (!/^[0-9]{6}$/.test(code)) return v1Error(res, 400, 'validation_failed', 'Enter the 6-digit code from the text.');
+
+    var open = await supabase.from('phone_verifications').select('id, code_hmac, expires_at, attempts, consumed_at, superseded_at')
+      .eq('user_id', req.user.id).eq('phone', phone).is('consumed_at', null).is('superseded_at', null)
+      .order('created_at', { ascending: false }).limit(1).maybeSingle();
+    if (open.error) {
+      console.error(tag + ' lookup failed:', open.error.message);
+      return v1Error(res, 500, 'internal', 'Phone verification is unavailable right now.', true);
+    }
+    var result = phoneVerify.checkCode(open.data, Date.now(), phoneVerify.codeHmac(secret, req.user.id, phone, code));
+    if (result.status === 'not_found') return v1Error(res, 400, 'verification_not_found', 'No code is waiting for this number. Request a new one.');
+    if (result.status === 'expired') return v1Error(res, 400, 'verification_expired', 'That code has expired. Request a new one.');
+    if (result.status === 'locked') return v1Error(res, 400, 'verification_locked', 'Too many wrong attempts. Request a new code.');
+    if (result.status === 'mismatch') {
+      await supabase.from('phone_verifications').update({ attempts: (open.data.attempts || 0) + 1 }).eq('id', open.data.id);
+      return v1Error(res, 400, 'verification_incorrect', 'That code is not right. ' + result.attemptsRemaining + ' attempt' + (result.attemptsRemaining === 1 ? '' : 's') + ' left.');
+    }
+    var nowIso = new Date().toISOString();
+    await supabase.from('phone_verifications').update({ consumed_at: nowIso }).eq('id', open.data.id);
+    var upd = await supabase.from('profiles').update({ verified_phone: phone, verified_phone_at: nowIso }).eq('id', req.user.id);
+    if (upd.error) {
+      console.error(tag + ' profile update failed:', upd.error.message);
+      return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+    }
+    console.log(tag + ' verified …' + phoneVerify.phoneLast4(phone));
+    res.json({ verified: true, phoneLast4: phoneVerify.phoneLast4(phone), verifiedAt: nowIso });
+  } catch (e) {
+    console.error(tag + ' check error:', e.message);
+    return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+  }
+});
+
 // §4.15 DELETE /account — App Store 5.1.1(v).
 //
 // BILLING FIRST, ROWS SECOND. A half-deleted account with a live Stripe
@@ -2994,8 +3156,16 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
       return v1Error(res, 400, 'validation_failed', 'callTime is required — send the time you want us to call, e.g. "06:05".');
     }
 
+    // The server must not accept a time it cannot honour. Montgomery before
+    // 6:00 would dial before the county records the day's announcement and
+    // report yesterday's answer as today's — the exact failure this product
+    // exists to prevent. Fort Bend's office call is fixed at 5:05; the
+    // user's time is only when they are told, so 5:10 is the floor there.
     if (county !== 'ftbend' && (hour < MIN_HOUR || hour > MAX_HOUR || (hour === MAX_HOUR && minute > 59))) {
-      return v1Error(res, 400, 'validation_failed', 'Choose a call time between 6:00 AM and 2:59 PM.');
+      return v1Error(res, 400, 'validation_failed', 'callTime must be between 06:00 and 14:59 for Montgomery County.');
+    }
+    if (county === 'ftbend' && (hour < 5 || (hour === 5 && minute < 10))) {
+      return v1Error(res, 400, 'validation_failed', 'callTime must be 05:10 or later for Fort Bend County.');
     }
     // PIN is Montgomery-only — Fort Bend announcements have no per-user PIN.
     if (county !== 'ftbend' && !isValidPin(b.pin)) {
@@ -3049,6 +3219,19 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
       return v1Error(res, 400, 'validation_failed', 'An email address is required for email notifications.');
     }
 
+    // Verified phone (§4.17, v1 only): if SMS is chosen, the notify number
+    // must be the number this account proved it holds. The website keeps its
+    // behaviour so live web schedules are not stranded.
+    if (notifyMethod === 'sms' || notifyMethod === 'both') {
+      var vp = await supabase.from('profiles').select('verified_phone').eq('id', req.user.id).maybeSingle();
+      if (vp.error) {
+        console.error('[V1-SCHEDULE] verified_phone read failed for ' + req.user.id.slice(0, 8) + ':', vp.error.message);
+        return v1Error(res, 500, 'internal', 'Could not save your schedule.', true);
+      }
+      if (!vp.data || vp.data.verified_phone !== notifyNumber) {
+        return v1Error(res, 400, 'phone_not_verified', 'Verify this phone number before choosing text notifications.');
+      }
+    }
     // A2P consent, same rule as the web path: an explicit tick records fresh
     // consent, an existing record satisfies, neither is a rejection.
     if (notifyMethod === 'sms' || notifyMethod === 'both') {

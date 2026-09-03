@@ -67,7 +67,10 @@ already learned this the hard way with the Fort Bend `pin` not-null constraint.
 Standard codes: `unauthenticated`, `forbidden`, `not_found`, `validation_failed`,
 `insufficient_credits`, `rate_limited`, `outside_call_window`, `schedule_missing`,
 `internal`, `billing_cancel_failed`, `unpaid_affiliate_earnings`,
-`account_deletion_blocked` (all three §4.15).
+`account_deletion_blocked` (all three §4.15), `phone_not_verified` (§4.7),
+`sms_opted_out`, `sms_send_failed`, `verification_not_found`,
+`verification_expired`, `verification_locked`, `verification_incorrect`
+(§4.17).
 
 ### Rate limiting
 
@@ -189,6 +192,7 @@ bad connection, one round trip beats five.**
     "isAdmin": false,
     "createdAt": "2026-05-02T14:22:10-05:00"
   },
+  "phone": { "verifiedNumber": "+12815550142", "verifiedAt": "2026-09-02T20:41:07Z" },
   "credits": {
     "balance": 47,
     "probationEndDate": "2027-01-02",
@@ -513,6 +517,20 @@ present.
 
 `callTime` is `"HH:MM"` and is validated: a malformed string or an impossible
 time is a `400` naming `callTime`, not a silent fallback.
+
+**Call-time floors (2026-09-02).** Montgomery accepts `06:00`–`14:59` only;
+Fort Bend accepts `05:10` or later. Outside that is a `400` naming
+`callTime`. Before 6:00 a Montgomery call would reach the hotline before the
+county records the day's announcement and report yesterday's answer as
+today's — the server must not accept a time it cannot honour. Fort Bend's
+office call is fixed at 5:05, so the user's time is only when they are told.
+Onboarding should offer a picker with 06:00 preselected, not a fixed default.
+
+**SMS requires a verified number (2026-09-02, v1 only).** If `notifyMethods`
+includes `sms`, `notifyNumber` must equal `/me`'s `phone.verifiedNumber`, or
+the write is refused with `400 phone_not_verified`. Verify first (§4.17).
+The website keeps its current behaviour so live web schedules are not
+stranded.
 
 **`push` in `notifyMethods` is accepted but NOT stored in `notify_method`.**
 Push is driven by registered devices (§4.12), so the column only records the
@@ -1088,6 +1106,51 @@ are alerted, support finishes it. If the auth delete fails after the profile
 is gone, `500 internal` (retryable) — every step is idempotent.
 
 ---
+
+### 4.17 `POST /phone/verify/start` · `POST /phone/verify/check`
+
+Server-side phone verification (2026-09-02). The app used to generate a code
+locally and show it only in a Debug chip, so on TestFlight no SMS was sent
+and nobody could sign up.
+
+```json
+POST /phone/verify/start   { "phone": "(281) 555-0142", "smsConsent": true }
+→ { "sent": true, "phoneLast4": "0142", "expiresInSeconds": 600, "resendAfterSeconds": 60 }
+
+POST /phone/verify/check   { "phone": "(281) 555-0142", "code": "483920" }
+→ { "verified": true, "phoneLast4": "0142", "verifiedAt": "2026-09-02T20:41:07Z" }
+```
+
+**The code never appears in any response.** It is texted, stored only as an
+HMAC under a server secret (`PHONE_VERIFY_SECRET`, Railway), expires in ten
+minutes, and dies after five wrong attempts. A new `start` for the same
+number retires the previous code, so at most one is live.
+
+**Numbers are US/Canada only** (`+1`), which is what makes international SMS
+pumping impossible. A number that has replied STOP is refused with
+`409 sms_opted_out` — the person must text START first.
+
+**Consent binds here exactly as on `PUT /schedule`:** `smsConsent: true`
+records consent (source `phone_verify`); an existing record satisfies;
+neither is a `400`. This is a text to a number we are about to text daily.
+
+**Limits, counted from durable rows, not memory:** 60 seconds between
+resends to the same number; 3 sends per 10 minutes and 6 per day per account;
+the same per phone number across ALL accounts; 100 per day service-wide
+with an admin alert at 50. Over a limit is `429 rate_limited` with
+`Retry-After`. The message says whether it is the resend wait or a cap.
+
+**`check` outcomes,** all `400` with a stable code the client branches on:
+`verification_not_found` (nothing waiting — request a new code),
+`verification_expired`, `verification_locked` (five wrong attempts — request
+a new code), `verification_incorrect` (message says attempts left). On
+success `profiles.verified_phone` is set and `/me` reports it under
+`phone`. A later change of number requires verifying again.
+
+**What it gates:** SMS on `PUT /schedule` (§4.7). Email-only schedules need
+no verification. Twilio Verify was considered and skipped: `+1` only plus
+the daily cap and alert bound the worst day at under a dollar; it is a
+one-day swap if abuse ever appears.
 
 ### 4.16 App Review demo account (server behaviour, not an endpoint)
 

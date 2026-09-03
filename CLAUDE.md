@@ -61,7 +61,8 @@ must report for testing.
 STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, DEEPGRAM_API_KEY,
 TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, Supabase keys, Brevo API key, BASE_URL,
 INTERNAL_ACCOUNT_EMAILS (comma list; internal accounts kept out of the county pool),
-DEMO_ACCOUNT_EMAIL (App Review demo account; profiles.is_demo, never dials)
+DEMO_ACCOUNT_EMAIL (App Review demo account; profiles.is_demo, never dials),
+PHONE_VERIFY_SECRET (≥32 random chars; HMAC for §4.17 codes — verification refuses everything without it)
 ```
 
 ---
