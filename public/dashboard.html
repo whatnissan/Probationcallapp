@@ -50,6 +50,10 @@ input,select{width:100%;padding:10px;border-radius:6px;border:1px solid rgba(255
 .btn-secondary{background:rgba(255,255,255,0.1);color:#fff}
 .btn-danger{background:#ef4444}
 .btn-green{background:linear-gradient(135deg,#22c55e,#16a34a)}
+.load-error{background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.4);border-radius:8px;
+  padding:14px 16px;margin-bottom:15px;color:#fecaca;font-size:0.88rem;line-height:1.55;
+  display:flex;gap:14px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.load-error strong{color:#ef4444}
 .status{padding:12px;border-radius:8px;margin-top:12px;text-align:center}
 .status.success{background:rgba(34,197,94,0.2);color:#22c55e}
 .status.error{background:rgba(239,68,68,0.2);color:#ef4444}
@@ -322,6 +326,22 @@ select option { background: #1a1a2e; color: #fff; }
   </nav>
   
   <div class="warning-strip">⚠️ <strong>Reminder:</strong> Always verify your status by calling the hotline yourself. This service is not guaranteed.</div>
+
+  <!-- Shown when /api/user fails. Before this existed the page kept its
+       hardcoded defaults on failure — 0 credits, no Admin button — which read
+       exactly like real data. An account with credits and admin rights
+       rendered as an empty one, silently. Anything the page could not load is
+       now said out loud, and the copy makes clear it is a display failure and
+       not a change to the account. -->
+  <div id="loadError" class="load-error" style="display:none">
+    <div>
+      <strong>Couldn't load your account.</strong>
+      <span id="loadErrorDetail" style="opacity:0.75"></span><br>
+      Nothing on this page has changed — your credits and settings are safe.
+      What you see below may be incomplete or out of date.
+    </div>
+    <button type="button" class="btn btn-secondary" onclick="loadUser()">Try again</button>
+  </div>
   
   <div class="schedule-banner" id="scheduleBanner">
     <div><h3>✅ Auto-Call Active</h3><p id="scheduleBannerText"></p></div>
@@ -331,7 +351,7 @@ select option { background: #1a1a2e; color: #fff; }
   
   <div class="credits-card">
     <div>
-      <div class="credits-num" id="credits">0</div>
+      <div class="credits-num" id="credits">&mdash;</div>
       <div class="credits-label">Credits</div>
       <div id="coveredUntil" style="font-size:0.8rem;color:rgba(0,0,0,0.7);margin-top:5px"></div>
     </div>
@@ -1188,11 +1208,22 @@ function loadUser() {
         console.log('Token invalid, redirecting to login');
         localStorage.removeItem('pb_token');
         window.location.href = '/login?logout=true';
-        throw new Error('Unauthorized');
+        var redirecting = new Error('Unauthorized');
+        redirecting.handled = true;   // already navigating away; not a failure to report
+        throw redirecting;
       }
+      // ANY other non-2xx must stop here. This used to fall through to
+      // r.json(), which parsed an error body, and the handler below then threw
+      // on d.user.email — skipping every line after it, including the admin
+      // check and the credit display, with nothing shown on screen.
+      if (!r.ok) throw new Error('server error ' + r.status);
       return r.json();
     })
     .then(function(d) {
+      // A 200 carrying the wrong shape is the same failure as a 500. Fail
+      // before rendering half a page rather than part-way through it.
+      if (!d || !d.user || !d.profile) throw new Error('incomplete response');
+      hideLoadError();
       termsAccepted = d.profile && d.profile.terms_accepted_at ? true : false;
       showDisclaimerIfNeeded();
       
@@ -1203,7 +1234,13 @@ function loadUser() {
       
       document.getElementById('userEmail').textContent = d.user.email;
       probationEndDate = d.probationEndDate || d.profile.probation_end_date;
-      updateProbationDisplay(); fetch('/api/admin/check',{headers:{Authorization:'Bearer '+token}}).then(function(r){return r.json()}).then(function(d){if(d.isAdmin){var el=document.getElementById('adminLink');if(el)el.style.display='inline-block';var ct=document.getElementById('callTabBtn');if(ct)ct.style.display='block';}}).catch(function(){});
+      updateProbationDisplay(); fetch('/api/admin/check',{headers:{Authorization:'Bearer '+token}}).then(function(r){return r.json()}).then(function(d){if(d.isAdmin){var el=document.getElementById('adminLink');if(el)el.style.display='inline-block';var ct=document.getElementById('callTabBtn');if(ct)ct.style.display='block';}}).catch(function(err){
+        // Fail closed and stay quiet on screen: the button only reveals a
+        // link, and every /api/admin/* route re-checks is_admin server-side,
+        // so hiding it grants nothing. But log it — a missing Admin button
+        // with no trace is what made the refund incident hard to read.
+        console.warn('[dashboard] admin check failed, Admin link stays hidden:', err && err.message ? err.message : err);
+      });
       document.getElementById('credits').textContent = d.isDev ? '∞' : d.profile.credits;
       updateCoveredUntil(d.profile.credits);
       renderSubscriptionStatus(d.profile);
@@ -1384,7 +1421,37 @@ function loadUser() {
       window.callHistoryData = d.history || [];
       renderCallHistory("all");
       calculateTestStats(d.history, window.systemStats);
+    })
+    // THE TERMINAL CATCH. Without it, anything thrown above became a silent
+    // unhandled rejection and the page simply stopped mid-render, still
+    // showing its hardcoded defaults as though they were this account's real
+    // data. Never fail quietly here: the defaults are indistinguishable from
+    // a genuine empty account.
+    .catch(function(e) {
+      if (e && e.handled) return;
+      console.error('[dashboard] /api/user failed:', e && e.message ? e.message : e);
+      showLoadError(e && e.message ? e.message : null);
     });
+}
+
+// The load-failure banner. Anything the page could not load is said out loud
+// rather than left to the HTML defaults to misrepresent.
+function showLoadError(detail) {
+  var box = document.getElementById('loadError');
+  if (!box) return;
+  var d = document.getElementById('loadErrorDetail');
+  if (d) d.textContent = detail ? '(' + detail + ')' : '';
+  box.style.display = 'flex';
+  // Blank the number rather than leave a stale or default one looking real.
+  var credits = document.getElementById('credits');
+  if (credits) credits.innerHTML = '&mdash;';
+  var covered = document.getElementById('coveredUntil');
+  if (covered) covered.textContent = '';
+}
+
+function hideLoadError() {
+  var box = document.getElementById('loadError');
+  if (box) box.style.display = 'none';
 }
 
 function showTab(name) {
