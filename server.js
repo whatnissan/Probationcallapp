@@ -31,6 +31,7 @@ const demoAccount = require('./lib/demo');
 const integrity = require('./lib/integrity');
 const phoneVerify = require('./lib/verify');
 const affiliate = require('./lib/affiliate');
+const officesLib = require('./lib/offices');
 const { constructEventWithSecrets } = require('./lib/stripe-webhook');
 const apns = require('./lib/apns');
 const { fallbackFieldsFor } = require('./lib/push');
@@ -3825,6 +3826,51 @@ app.get('/api/v1/pricing', rateLimit('pricing', 60, 60 * 1000), async function(r
   } catch (e) {
     console.error('[V1-PRICING] failed:', e.message);
     return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+  }
+});
+
+// §4.18 GET /offices — the county office directory, server-driven.
+//
+// Public, no auth, like /pricing: these are county facility addresses from
+// the county's own client instruction forms, and the app may want them
+// before sign-in. NOTHING HERE IS ABOUT A USER. §4.2's rule is unchanged —
+// the system holds no location data about anyone. This says where the
+// county's building is; nothing anywhere says where the user is.
+//
+// It exists because the directory used to be hardcoded Swift constants, so
+// correcting a set of hours needed an App Store release and never reached
+// anyone on an older build. The failure that prevents: hours change, the
+// app confidently shows the old ones, and someone drives to a closed office
+// and misses a test.
+//
+// ON FAILURE THIS 500s AND NEVER RETURNS AN EMPTY DIRECTORY. An empty
+// payload is not "no data"; it decodes as hasDirectory:false for every
+// county, i.e. "no verified addresses exist, fall back to a Maps search" —
+// a confident wrong answer. A 500 leaves the client on its last good cached
+// copy, which is the honest degradation.
+//
+// No server-side memo cache, deliberately. /pricing caches because it calls
+// Stripe; this reads four rows of our own. Caching would only add a window
+// where a correction we just made is still not being served, and a
+// correction reaching people quickly is the entire point of the endpoint.
+// Cache-Control carries the load: a day is right for data that changes a
+// few times a year, and still same-day propagation instead of never.
+app.get('/api/v1/offices', rateLimit('offices', 60, 60 * 1000), async function(req, res) {
+  try {
+    var countyRows = await supabase.from('office_counties')
+      .select('county, time_zone, assignment_rule, maps_query, updated_at');
+    if (countyRows.error) throw new Error('office_counties: ' + countyRows.error.message);
+
+    var officeRows = await supabase.from('offices')
+      .select('id, county, name, street, city_line, phone, hours, notes, sort_order, updated_at')
+      .eq('is_active', true);
+    if (officeRows.error) throw new Error('offices: ' + officeRows.error.message);
+
+    res.set('Cache-Control', 'public, max-age=86400');
+    res.json(officesLib.shapeDirectory(countyRows.data || [], officeRows.data || []));
+  } catch (e) {
+    console.error('[V1-OFFICES] failed:', e.message);
+    return v1Error(res, 500, 'internal', 'Could not load the office directory right now.', true);
   }
 });
 
