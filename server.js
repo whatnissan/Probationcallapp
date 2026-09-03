@@ -345,9 +345,13 @@ async function resolveAffiliateByCode(rawCode) {
 // also writes into this cache so a recent webhook reflects immediately
 // without waiting for the TTL to expire.
 //
-// The cached profile.stripe_connect_* columns (from migration 007) are
-// for admin display and reporting — they are NOT used as the source of
-// truth for transfer decisions, because webhooks can lag.
+// The cached profile.stripe_connect_* columns (from migrations 007 and
+// 048) are for admin display, the state §4.14 reports, and the payout
+// batch's cheap pre-screen — they are NOT used as the source of truth for
+// transfer decisions, because webhooks can lag. The rule that keeps that
+// safe: cached state may only ever PREVENT a payout attempt, never
+// authorize one. Every candidate the pre-screen lets through still has to
+// clear a live getConnectAccountStatus read here before money moves.
 var _connectAccountCache = new Map();
 var CONNECT_ACCOUNT_CACHE_TTL_MS = 60 * 1000;
 
@@ -6375,12 +6379,26 @@ async function runAffiliatePayoutBatch() {
   var month = formatLocalDay(new Date(), 'America/Chicago').slice(0, 7);
   for (var affId in byAff) {
     try {
-      var prof = await supabase.from('profiles').select('id, stripe_connect_id').eq('id', affId).maybeSingle();
-      if (!prof.data || !prof.data.stripe_connect_id) { console.log('[AFFILIATE-PAYOUT] ' + affId.slice(0, 8) + ' has available earnings but no Connect account — skipped'); continue; }
+      var prof = await supabase.from('profiles')
+        .select('id, stripe_connect_id, stripe_connect_payouts_enabled, stripe_connect_updated_at')
+        .eq('id', affId).maybeSingle();
+
+      // PRE-SCREEN on stored state — no Stripe call. Skips the affiliates
+      // who obviously cannot be paid this month (no Connect account, under
+      // the $20 minimum, or a recently-synced account Stripe has told us is
+      // not payouts-enabled). Most affiliates in a given month are under the
+      // minimum, so this is where the API calls are saved.
+      var screen = affiliate.payoutPreScreen(prof.data, byAff[affId], Date.now(), MIN_PAYOUT_CENTS);
+      if (!screen.attempt) { console.log('[AFFILIATE-PAYOUT] ' + affId.slice(0, 8) + ' skipped: ' + screen.reason + ' (' + screen.amountCents + ' cents)'); continue; }
+
+      // FINAL GATE — live, immediately before the transfer. The pre-screen
+      // above may only ever skip; nothing it says can authorize a payout.
+      // Webhooks lag, and paying an account that is not payouts-enabled
+      // strands the money in a balance the affiliate cannot withdraw.
       var status = await getConnectAccountStatus(prof.data.stripe_connect_id);
       if (status) await syncConnectStatusToProfile(prof.data.stripe_connect_id, status);
-      var plan = affiliate.payoutPlan(byAff[affId], Date.now(), !!(status && status.payouts_enabled), MIN_PAYOUT_CENTS);
-      if (!plan.pay) { console.log('[AFFILIATE-PAYOUT] ' + affId.slice(0, 8) + ' skipped: ' + plan.reason + ' (' + plan.amountCents + ' cents)'); continue; }
+      var plan = affiliate.payoutPlan(screen.rows, Date.now(), !!(status && status.payouts_enabled), MIN_PAYOUT_CENTS);
+      if (!plan.pay) { console.log('[AFFILIATE-PAYOUT] ' + affId.slice(0, 8) + ' skipped at the live gate: ' + plan.reason + ' (' + plan.amountCents + ' cents)' + (status ? '' : ' — Stripe status unavailable, will retry next month')); continue; }
       var group = 'aff-batch-' + month + '-' + affId.slice(0, 8);
       var batch = await supabase.from('payout_batches').insert({ affiliate_id: affId, amount_cents: plan.amountCents, earning_count: plan.rows.length, transfer_group: group, status: 'pending' }).select('id').single();
       if (batch.error) { console.error('[AFFILIATE-PAYOUT] batch insert failed for ' + affId.slice(0, 8) + ':', batch.error.message); continue; }

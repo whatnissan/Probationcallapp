@@ -34,6 +34,52 @@ test('clawback: ledger-only during the hold, transfer reversal only after payout
   assert.strictEqual(a.clawbackAction(row('reversal_failed', 449, 60)), 'noop');
 });
 
+test('pre-screen: skips without a Stripe call, and never authorizes one', function() {
+  var now = Date.parse('2026-09-03T12:00:00Z');
+  var big = [{ amount_cents: 5000, status: 'available' }];
+  var fresh = new Date(now - 86400000).toISOString();
+  var stale = new Date(now - 30 * 86400000).toISOString();
+
+  // No Connect account, and under the $20 minimum: skipped before Stripe.
+  assert.strictEqual(a.payoutPreScreen({}, big, now, 2000).reason, 'no_connect_account');
+  assert.strictEqual(a.payoutPreScreen({ stripe_connect_id: 'acct_1' },
+    [{ amount_cents: 300, status: 'available' }], now, 2000).reason, 'below_minimum');
+
+  // A recently-synced "not payouts enabled" is trusted to skip.
+  assert.strictEqual(a.payoutPreScreen({
+    stripe_connect_id: 'acct_1', stripe_connect_payouts_enabled: false,
+    stripe_connect_updated_at: fresh
+  }, big, now, 2000).reason, 'payouts_not_enabled_cached');
+
+  // UNKNOWN IS NOT FALSE. Never synced, or synced too long ago, falls
+  // through to the live gate rather than silently costing a month.
+  assert.strictEqual(a.payoutPreScreen({ stripe_connect_id: 'acct_1' }, big, now, 2000).attempt, true);
+  assert.strictEqual(a.payoutPreScreen({
+    stripe_connect_id: 'acct_1', stripe_connect_payouts_enabled: false,
+    stripe_connect_updated_at: stale
+  }, big, now, 2000).attempt, true);
+
+  // A cached "payouts enabled: true" still only means "attempt" — the live
+  // payoutPlan gate is what authorizes, and it can still refuse.
+  var pass = a.payoutPreScreen({
+    stripe_connect_id: 'acct_1', stripe_connect_payouts_enabled: true,
+    stripe_connect_updated_at: fresh
+  }, big, now, 2000);
+  assert.strictEqual(pass.attempt, true);
+  assert.strictEqual(a.payoutPlan(pass.rows, now, false, 2000).pay, false);
+});
+
+test('pre-screen counts a held row past its date, like the live plan does', function() {
+  var now = Date.parse('2026-09-03T12:00:00Z');
+  var rows = [{ amount_cents: 5000, status: 'held', available_at: '2026-08-01T00:00:00Z' }];
+  var screen = a.payoutPreScreen({ stripe_connect_id: 'acct_1' }, rows, now, 2000);
+  assert.strictEqual(screen.attempt, true);
+  assert.strictEqual(screen.amountCents, 5000);
+  // Still held, not yet due: below the minimum because it does not count.
+  var notYet = [{ amount_cents: 5000, status: 'held', available_at: '2026-10-01T00:00:00Z' }];
+  assert.strictEqual(a.payoutPreScreen({ stripe_connect_id: 'acct_1' }, notYet, now, 2000).reason, 'below_minimum');
+});
+
 test('connect state from the cached profile columns', function() {
   assert.strictEqual(a.connectState({}), 'not_started');
   assert.strictEqual(a.connectState({ stripe_connect_id: 'acct_1' }), 'in_progress');
