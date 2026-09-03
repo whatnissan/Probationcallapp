@@ -1047,6 +1047,11 @@ that is a fact the app reads rather than assumes.
 
 ### 4.14 `GET /referral`
 
+**`code` is never `null` (2026-09-02).** It is assigned when the profile is
+created — in the database trigger, migration 046 — and backfilled for every
+older account. The endpoint also assigns one on read if it somehow finds
+none. Clients may decode it as required.
+
 ```json
 { "code": "DAVE30", "signups": 14, "commissionRate": 0.30,
   "lifetimeEarnedCents": 31200, "availableCents": 12750,

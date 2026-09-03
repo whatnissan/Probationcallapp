@@ -3401,6 +3401,18 @@ app.get('/api/v1/referral', authV1, async function(req, res) {
       .eq('id', req.user.id).maybeSingle();
     if (!prof.data) return v1Error(res, 404, 'not_found', 'No referral account found.');
     var code = prof.data.referral_code || null;
+    // Every account has a code from signup (migration 046, the trigger). If
+    // a profile predates that and slipped the backfill, assign one now rather
+    // than return a null the client rightly treats as required.
+    if (!code) {
+      for (var attempt = 0; attempt < 5 && !code; attempt++) {
+        var candidate = generateReferralCode();
+        var setCode = await supabase.from('profiles').update({ referral_code: candidate }).eq('id', req.user.id).is('referral_code', null).select('referral_code');
+        if (!setCode.error && setCode.data && setCode.data.length) code = candidate;
+        else if (!setCode.error) { var re = await supabase.from('profiles').select('referral_code').eq('id', req.user.id).single(); code = re.data && re.data.referral_code; break; }
+      }
+      if (!code) console.error('[V1-REFERRAL] could not assign a referral code for ' + req.user.id.slice(0, 8));
+    }
     var signups = 0;
     if (code) {
       var refs = await supabase.from('profiles').select('id', { count: 'exact', head: true })
