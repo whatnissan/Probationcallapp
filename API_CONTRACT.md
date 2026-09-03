@@ -424,7 +424,9 @@ guessing.** The backend never invents a value to satisfy a type:
 - **`summary` is derived, not stored** — e.g. `"PIN 482913 · Montgomery
   County"`, `"Auburn announced · Missouri City"`, `"Skipped — out of credits ·
   Rosenberg 2"`. There is no location data anywhere in the system, so the
-  place is the county or office, never a city like "Conroe".
+  place is the county or office, never a city like "Conroe". (§4.18's office
+  directory is public information about county buildings, not about the user
+  — it does not change this.)
 - **`attempts` is `int | null`** — null for calls before 2026-08-15, when
   dial-time logging (`call_attempts`) began. Those calls have no attempt
   record at all, and `1` would be a number we made up.
@@ -1278,6 +1280,110 @@ without sending. Seeded by `scripts/seed-demo-account.js` (env
 Store Connect review notes, never in either repo. Clients need no special
 handling: the demo account looks like any other user.
 
+### 4.18 `GET /offices`
+
+**Public — no auth.** The county office directory: where the offices are,
+when they are open, and what the county says about testing at them. The app
+may want it before sign-in, and there is nothing account-specific in it.
+
+**This is public facility information, not location data.** These are the
+addresses of county probation offices, published by the county on its own
+client instruction forms. The system still holds no location data about any
+user: it does not know, ask, store, or infer where a person is, and §4.2's
+rule is unchanged — a history row names a county or an office, never a city.
+The direction of the fact is what matters. This endpoint tells the user where
+the county's building is. Nothing anywhere tells us where the user is.
+
+It exists because the directory used to be hardcoded in the app, so
+correcting a set of hours needed an App Store release and never reached
+anyone on an older build. The failure that prevents: hours change, the app
+confidently shows the old ones, and someone drives to a closed office and
+misses a test.
+
+```json
+{
+  "counties": {
+    "montgomery": {
+      "hasDirectory": true,
+      "timeZone": "America/Chicago",
+      "assignmentRule": "Test only at the office you're assigned to. Check with your officer if you're not sure.",
+      "mapsQuery": "Montgomery County Community Supervision and Corrections Department, Conroe, TX",
+      "offices": [
+        { "id": "conroe", "name": "RMS Conroe Office",
+          "street": "310 East Davis Street, Suite 100", "cityLine": "Conroe, TX 77301",
+          "phone": "(936) 207-4223",
+          "hours": { "monday": ["08:00-17:45"], "saturday": ["08:00-15:00"] },
+          "notes": ["Saturday: Conroe only, and only if you're required to test that day."] }
+      ]
+    },
+    "ftbend": {
+      "hasDirectory": false,
+      "timeZone": "America/Chicago",
+      "assignmentRule": null,
+      "mapsQuery": "Fort Bend County Community Supervision and Corrections Department, Missouri City, TX",
+      "offices": []
+    }
+  },
+  "asOf": "2026-09-03T20:12:20.621Z"
+}
+```
+
+The example is trimmed for length — the live Montgomery payload carries both
+offices and all their open days. Values are illustrative; read every one from
+the response.
+
+**`hours` is a weekday map of open spans, and a MISSING WEEKDAY MEANS CLOSED
+THAT DAY.** Keys are lowercase English weekday names, values arrays of
+`"HH:mm-HH:mm"` in 24-hour local time. **Two spans on one day is a closure in
+between** — a lunch break. A closed day is expressed by absence and never by
+an empty array, so a client must not read a missing key as "hours unknown".
+Hours are local to the office, in the county's `timeZone`, never the device's.
+
+**`hasDirectory` is the whole safety model, and it is derived from whether
+the county actually has verified offices — never from a flag.** When it is
+`true`, the app may show the address and offer directions to that pin. When
+it is `false` there are no verified addresses, and the app **must not** invent
+one: fall back to a Maps *search* rather than a pinned location, because a
+wrong address sends someone on probation to the wrong building. Fort Bend is
+`false` today, on purpose, until its client instruction form arrives and
+someone verifies its three offices.
+
+**`mapsQuery` is the fallback-of-the-fallback.** It is one search string per
+county, for a client that has no better idea. A client that already knows a
+finer-grained search for the specific office the user is assigned to should
+prefer its own — Fort Bend's three offices are in two different cities, and a
+single county-level string cannot express that. Once a county has real office
+rows, `hasDirectory` is `true` and `mapsQuery` stops being consulted at all.
+May be `null`.
+
+**`assignmentRule`** is the county's own rule about which office a person may
+test at, shown above the list. May be `null`. The app never picks an office
+for anyone.
+
+**`asOf` is when this data was last edited**, the newest change across the
+counties and offices returned. **Clients MUST show the `asOf` date whenever
+the directory they are displaying is more than 7 days old.** This is a MUST,
+not a SHOULD, and it is not a client's decision to skip. Office hours are the
+one thing in this app where a confidently wrong answer sends someone to a
+closed building and into a violation, so past a week the user is told how old
+the information is and can call the office instead of trusting the screen.
+
+**Caching.** `Cache-Control: public, max-age=86400` — the data changes a few
+times a year. Cache the last good response on device, like `/today`, so the
+chooser works on a dead connection.
+
+**On failure this returns `500`, never an empty directory.** An empty payload
+is not "no data": it decodes as `hasDirectory: false` for every county, which
+reads as "no verified addresses exist anywhere" — a confident wrong answer
+produced by a database hiccup. A `500` means the client keeps its last good
+cached copy, which is the honest degradation. A client must not treat an
+error as an empty directory either.
+
+**Retired offices simply disappear.** An office withdrawn from the directory
+stops being returned; the row is kept server-side so the record it existed
+survives. A client holding a cached office that is no longer listed should
+drop it.
+
 ## 5. Build order
 
 1. **`prediction-core.js`** — extract from `dashboard.html`, unit test it.
@@ -1300,3 +1406,6 @@ Steps 1–2 turn the app from a mockup into a product. Everything after is filli
 - Decode every enum with an `unknown(String)` fallback. No exceptions.
 - Cache the last `/today` response so the app opens to something on a dead
   connection at 5 AM, clearly marked stale.
+- Cache the last `/offices` response the same way, so the office chooser works
+  offline — and show its `asOf` date once that cache is over 7 days old
+  (§4.18, a MUST).
