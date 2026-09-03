@@ -33,6 +33,7 @@ const phoneVerify = require('./lib/verify');
 const affiliate = require('./lib/affiliate');
 const officesLib = require('./lib/offices');
 const returnPage = require('./lib/return-page');
+const connectRefresh = require('./lib/connect-refresh');
 const { constructEventWithSecrets } = require('./lib/stripe-webhook');
 const apns = require('./lib/apns');
 const { fallbackFieldsFor } = require('./lib/push');
@@ -2186,6 +2187,14 @@ app.get('/api/v1/calls/:callId', authV1, async function(req, res) {
 // for the life of the session rather than 15 minutes.
 var V1_RECORDING_TTL_MS = 15 * 60 * 1000;
 var WS_TICKET_TTL_MS = 60 * 1000;
+
+// Secret for the Connect refresh capability (lib/connect-refresh.js). No new
+// Railway variable: it reuses an existing one, and the lib derives a
+// domain-separated key so a token minted here can never verify anywhere else.
+// A dedicated CONNECT_REFRESH_SECRET wins if it is ever set.
+function connectRefreshSecret() {
+  return process.env.CONNECT_REFRESH_SECRET || process.env.RECORDING_TOKEN_SECRET || process.env.PHONE_VERIFY_SECRET || null;
+}
 
 // A capability token over ONE recording SID, valid for 15 minutes. Issued
 // only after an ownership check, and deliberately NOT the user's Supabase
@@ -4523,18 +4532,100 @@ async function connectOnboardingUrl(userId, email, profile) {
     var loginLink = await stripe.accounts.createLoginLink(acctId);
     return { url: loginLink.url, kind: 'dashboard' };
   }
-  var link = await stripe.accountLinks.create({
+  return { url: await onboardingLinkFor(acctId, userId), kind: 'onboarding' };
+}
+
+// One place that builds an onboarding Account Link, used by first entry and
+// by every refresh, so the two can never drift apart in their parameters.
+//
+// refresh_url and return_url are NOT the same thing, and treating them as
+// interchangeable is what broke onboarding:
+//   return_url  — the person finished. Bounce them back into the app.
+//   refresh_url — the link expired, was reused, or was opened on another
+//                 device. Stripe's contract is that this calls back to the
+//                 SERVER for a FRESH link and redirects on to it. It must
+//                 stay in the browser: sending it to the app-return page
+//                 dead-ends someone mid-onboarding, and Account Links expire
+//                 in minutes while onboarding takes several.
+// Each refresh carries a newly minted token, so a link that expires twice
+// still works the second time.
+async function onboardingLinkFor(acctId, userId) {
+  var params = {
     account: acctId,
-    // Both land on the app bounce. The app re-fetches /referral either way
-    // and reads the truth from connect.state — "finished" and "the link
-    // expired, start again" are not distinguishable here anyway, and were
-    // never meant to be acted on differently.
-    refresh_url: process.env.BASE_URL + '/return?to=connect',
     return_url: process.env.BASE_URL + '/return?to=connect',
     type: 'account_onboarding'
-  });
-  return { url: link.url, kind: 'onboarding' };
+  };
+  var tok = connectRefresh.mintToken(userId, connectRefreshSecret(), Date.now());
+  if (tok) {
+    params.refresh_url = process.env.BASE_URL + '/connect/refresh?t=' + encodeURIComponent(tok);
+  } else {
+    // No secret configured. Degrade to the old behaviour rather than refuse
+    // to onboard at all — no worse than before this endpoint existed — but
+    // say so, because it silently reintroduces the dead end.
+    console.error('[CONNECT] No secret for the refresh capability (set CONNECT_REFRESH_SECRET) — refresh_url falls back to the return page and an expired link will dead-end');
+    params.refresh_url = process.env.BASE_URL + '/return?to=connect';
+  }
+  var link = await stripe.accountLinks.create(params);
+  return link.url;
 }
+
+// GET /connect/refresh — Stripe's refresh_url. Mints a FRESH Account Link
+// for the account this token names and 302s the browser straight to it.
+//
+// IT STAYS IN THE BROWSER. It must not bounce to /return and must not open
+// the app: the person is mid-onboarding on Stripe's hosted flow, and the
+// only useful thing to do is put them back into it where they left off.
+//
+// Unauthenticated by necessity — Stripe's flow carries no session of ours.
+// The token is an encrypted capability (lib/connect-refresh.js): unguessable,
+// unforgeable, opaque so the URL never reveals whose account it is, and dead
+// after 30 minutes.
+//
+// IT NEVER CREATES AN ACCOUNT. It resumes the existing stripe_connect_id and
+// nothing else, so a half-onboarded Express account picks up where it
+// stopped. A second account here would strand the first one's balance.
+app.get('/connect/refresh', rateLimit('connect_refresh', 30, 10 * 60 * 1000), async function(req, res) {
+  function deadEnd(reason, log) {
+    console.warn('[CONNECT-REFRESH] ' + log);
+    res.set('Cache-Control', 'no-store');
+    return res.status(400).type('html').send(
+      '<!DOCTYPE html><meta charset="utf-8"><meta name="robots" content="noindex">' +
+      '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+      '<title>Set up payouts</title>' +
+      '<body style="font-family:-apple-system,sans-serif;background:#0a1929;color:#fff;padding:28px;line-height:1.6">' +
+      '<h1 style="font-size:1.25rem">This setup link has expired</h1>' +
+      '<p style="color:#8892b0">' + reason + '</p>' +
+      '<p style="color:#8892b0">Open ProbationCall and tap <b>Set up payouts</b> to start again. ' +
+      'Nothing you have already entered is lost.</p>' +
+      '<p><a style="color:#00d9ff" href="probationcall://return?to=connect">Return to the app</a></p>');
+  }
+  try {
+    var userId = connectRefresh.readToken(req.query && req.query.t, connectRefreshSecret(), Date.now());
+    if (!userId) {
+      return deadEnd('For your security these links stop working after a short time.',
+        'token missing, malformed, tampered or expired');
+    }
+    var prof = await supabase.from('profiles').select('id, stripe_connect_id').eq('id', userId).maybeSingle();
+    if (prof.error) {
+      console.error('[CONNECT-REFRESH] profile read failed for ' + userId.slice(0, 8) + ':', prof.error.message);
+      return deadEnd('We could not reach your account just now. Please try again.', 'profile read failed');
+    }
+    if (!prof.data || !prof.data.stripe_connect_id) {
+      // Deliberately does NOT create one. Account creation belongs to
+      // POST /referral/connect, which is authenticated and knows it is the
+      // account holder asking.
+      return deadEnd('There is no payout account to resume.',
+        'no stripe_connect_id for ' + userId.slice(0, 8) + ' — refusing to create one here');
+    }
+    var url = await onboardingLinkFor(prof.data.stripe_connect_id, userId);
+    console.log('[CONNECT-REFRESH] fresh onboarding link for ' + userId.slice(0, 8) + ' acct=' + prof.data.stripe_connect_id);
+    res.set('Cache-Control', 'no-store');
+    return res.redirect(302, url);
+  } catch (e) {
+    logStripeError('connect refresh', e);
+    return deadEnd('Stripe could not start the setup again just now. Please try again.', 'accountLinks.create failed');
+  }
+});
 
 app.post('/api/affiliate/connect', auth, requireAffiliateEnabled, async function(req, res) {
   try {
