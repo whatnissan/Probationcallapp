@@ -1,0 +1,15 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["232HWV6L3Y.com.probationcall.app"],
+        "components": [
+          {
+            "/": "/return",
+            "comment": "The Stripe return bounce, and ONLY that. Claiming /* would make iOS swallow every link to this site - the marketing pages, the privacy policy, the web dashboard - which must keep opening in a browser."
+          }
+        ]
+      }
+    ]
+  }
+}

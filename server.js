@@ -112,6 +112,50 @@ const DEV_EMAILS = ['whatnissan@gmail.com', 'whatnissan@protonmail.com'];
 app.use('/webhook/stripe', express.raw({ type: 'application/json' }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+// GET /.well-known/apple-app-site-association — the universal-links claim,
+// so a Stripe return opens the app directly instead of raising the iOS
+// "Open in Probationcall?" confirmation.
+//
+// EVERY REQUIREMENT HERE IS ENFORCED SILENTLY BY iOS. Get one wrong and
+// there is no error anywhere: the link simply opens in Safari, exactly as
+// if this file did not exist. So, deliberately:
+//   - exact path, and NO .json extension on the file or the URL
+//   - Content-Type: application/json, set explicitly
+//   - registered BEFORE express.static and before every auth or rate-limit
+//     layer, so nothing can shadow, gate, throttle or redirect it
+//
+// THE FILE LIVES IN well-known/, NOT public/. If it sat in public/,
+// express.static would answer this path first and serve it as
+// application/octet-stream — verified, and iOS rejects that silently. Out
+// of the static root, that shadowing is impossible rather than merely
+// avoided by keeping these lines in the right order.
+//
+// It claims /return ONLY. Claiming /* would make iOS intercept every link
+// to this site — marketing pages, privacy policy, the web dashboard — which
+// must keep opening in a browser. Universal links are additive: if this
+// works the prompt is skipped, and if it does not, /return still shows its
+// button, its probationcall:// link and its "Tap Open" line.
+var _aasa = null;
+app.get('/.well-known/apple-app-site-association', function(req, res) {
+  try {
+    if (_aasa === null) {
+      _aasa = require('fs').readFileSync(path.join(__dirname, 'well-known', 'apple-app-site-association'), 'utf8');
+    }
+    // writeHead, not res.set: res.set appends "; charset=utf-8" to a known
+    // type. That is almost certainly fine, but "almost certainly" is the
+    // wrong standard for a requirement that fails silently, so send exactly
+    // the Content-Type Apple documents and nothing else.
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'public, max-age=3600'
+    });
+    res.end(_aasa);
+  } catch (e) {
+    console.error('[AASA] could not read apple-app-site-association:', e.message);
+    res.status(500).json({ error: 'aasa_unavailable' });
+  }
+});
+
 app.use(express.static('public'));
 
 const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
