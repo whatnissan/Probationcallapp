@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Returning you to ProbationCall</title>
+<style>
+  html,body{margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0a1929;color:#fff;
+       min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+  .card{max-width:420px;width:100%;text-align:center}
+  h1{font-size:1.35rem;font-weight:600;margin:0 0 10px}
+  p{color:#8892b0;font-size:0.95rem;line-height:1.6;margin:0 0 24px}
+  .btn{display:block;background:#00d9ff;color:#000;text-decoration:none;font-weight:700;
+       font-size:1.05rem;padding:16px 20px;border-radius:10px;margin-bottom:18px}
+  .btn:active{opacity:0.85}
+  .fine{color:#5c6b8a;font-size:0.8rem;line-height:1.55;margin:0}
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Returning you to the app</h1>
+    <p>If ProbationCall doesn&rsquo;t open on its own, tap the button.</p>
+
+    <!-- THE BUTTON IS THE PRIMARY PATH, NOT A FALLBACK. Inside
+         SFSafariViewController an automatic window.location bounce to a custom
+         scheme is sometimes blocked and shows an "address is invalid" error
+         instead of opening the app — a dead end for anyone who lands here,
+         including an App Store reviewer making a test purchase. A tap is a
+         user gesture and opens the app reliably. The href is written by the
+         server from a fixed allowlist, so this works with no JavaScript at
+         all. -->
+    <a class="btn" id="open" href="probationcall://return?to=__DEST__">Return to the app</a>
+
+    <!-- Deliberately makes NO claim about the payment. Stripe sends people
+         here the moment they finish, which can be before our webhook has
+         granted anything — "Payment complete" here would be a guess. The app
+         shows the real balance. -->
+    <p class="fine">You can close this page. Your balance is shown in the app.</p>
+  </div>
+
+<script>
+// Try the automatic bounce, but only after the card above has painted, so a
+// blocked redirect leaves the button on screen instead of a blank page.
+// location.replace keeps this page out of the back stack.
+setTimeout(function () {
+  try { window.location.replace(document.getElementById('open').href); } catch (e) {}
+}, 400);
+</script>
+</body>
+</html>

@@ -32,6 +32,7 @@ const integrity = require('./lib/integrity');
 const phoneVerify = require('./lib/verify');
 const affiliate = require('./lib/affiliate');
 const officesLib = require('./lib/offices');
+const returnPage = require('./lib/return-page');
 const { constructEventWithSecrets } = require('./lib/stripe-webhook');
 const apns = require('./lib/apns');
 const { fallbackFieldsFor } = require('./lib/push');
@@ -1316,6 +1317,43 @@ function authAllowDisabled(req, res, next) {
 app.get('/', function(req, res) { res.sendFile(path.join(__dirname, 'public', 'index.html')); });
 app.get('/login', function(req, res) { res.sendFile(path.join(__dirname, 'public', 'login.html')); });
 app.get('/dashboard', function(req, res) { res.sendFile(path.join(__dirname, 'public', 'dashboard.html')); });
+
+// GET /return — the bounce back into the iOS app after Stripe.
+//
+// Stripe demands an http(s) return URL, so an app-originated checkout cannot
+// name probationcall:// directly. It used to point at /dashboard, which is
+// login-gated client-side: SFSafariViewController carries no Supabase
+// session, so the buyer landed on a LOGIN PAGE. An App Store reviewer making
+// a test purchase hits that same dead end, which is why this blocks
+// submission.
+//
+// Unauthenticated by necessity — there is no session here, ever. It carries
+// no token, no session id, no amount: only a destination hint, because this
+// URL sits in Safari history and in Stripe's logs.
+//
+// `to` IS ATTACKER-CONTROLLED and is resolved through a fixed allowlist,
+// never concatenated. Interpolating it raw would let a crafted link rewrite
+// the button's href — an open redirect, or a javascript: URL — on a page we
+// hand people straight after they pay. Anything unrecognised falls back to
+// simply opening the app.
+var _returnPage = null;
+app.get('/return', function(req, res) {
+  try {
+    if (_returnPage === null) {
+      _returnPage = require('fs').readFileSync(path.join(__dirname, 'public', 'return.html'), 'utf8');
+    }
+    res.set('Cache-Control', 'no-store');
+    res.type('html').send(returnPage.renderReturnPage(_returnPage, req.query && req.query.to));
+  } catch (e) {
+    console.error('[RETURN] could not render return page:', e.message);
+    // Never leave someone stranded on an error after they have paid: send
+    // them at the app with no destination hint rather than showing nothing.
+    res.type('html').send('<!DOCTYPE html><meta charset="utf-8"><title>Return to ProbationCall</title>' +
+      '<body style="font-family:-apple-system,sans-serif;background:#0a1929;color:#fff;padding:24px">' +
+      '<p>Returning you to the app.</p>' +
+      '<p><a style="color:#00d9ff" href="probationcall://return?to=app">Return to the app</a></p>');
+  }
+});
 // Extension-less aliases. These are linked from emails, the app, and the
 // App Store listing, where a bare /privacy is what people write — and they
 // 404'd, which for a privacy policy is the worst page to lose.
@@ -3705,8 +3743,10 @@ app.post('/api/v1/checkout-link', authV1, rateLimit('checkout', 10, 5 * 60 * 100
         var subParams = {
           mode: 'subscription',
           line_items: [{ price: subPriceId, quantity: 1 }],
-          success_url: process.env.BASE_URL + '/dashboard?subscribed=true',
-          cancel_url: process.env.BASE_URL + '/dashboard?canceled=true',
+          // App-originated: bounce back into the app, not the login-gated
+          // web dashboard. Web checkout routes keep /dashboard.
+          success_url: process.env.BASE_URL + '/return?to=subscription',
+          cancel_url: process.env.BASE_URL + '/return?to=subscription',
           // user_id on the SUBSCRIPTION metadata so renewal invoices resolve
           // back to this user, and on the SESSION metadata for the completed
           // event — both, exactly as the web path does.
@@ -3733,8 +3773,9 @@ app.post('/api/v1/checkout-link', authV1, rateLimit('checkout', 10, 5 * 60 * 100
           quantity: 1
         }],
         mode: 'payment',
-        success_url: process.env.BASE_URL + '/dashboard?success=true',
-        cancel_url: process.env.BASE_URL + '/dashboard?canceled=true',
+        // App-originated: see the subscription branch above.
+        success_url: process.env.BASE_URL + '/return?to=credits',
+        cancel_url: process.env.BASE_URL + '/return?to=credits',
         // package_id/credits match the existing one-time bundle webhook path,
         // so this rides the same idempotent credit grant. attribution_id is
         // additive and ignored by that handler.
@@ -4411,8 +4452,12 @@ async function connectOnboardingUrl(userId, email, profile) {
   }
   var link = await stripe.accountLinks.create({
     account: acctId,
-    refresh_url: process.env.BASE_URL + '/dashboard?connect=refresh',
-    return_url: process.env.BASE_URL + '/dashboard?connect=success',
+    // Both land on the app bounce. The app re-fetches /referral either way
+    // and reads the truth from connect.state — "finished" and "the link
+    // expired, start again" are not distinguishable here anyway, and were
+    // never meant to be acted on differently.
+    refresh_url: process.env.BASE_URL + '/return?to=connect',
+    return_url: process.env.BASE_URL + '/return?to=connect',
     type: 'account_onboarding'
   });
   return { url: link.url, kind: 'onboarding' };
