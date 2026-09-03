@@ -6,6 +6,13 @@ const WebSocket = require('ws');
 const twilio = require('twilio');
 const path = require('path');
 const cron = require('node-cron');
+// A LOCAL instance for a test walk must never run the schedulers: it would
+// be a second production instance dialling hotlines and draining queues.
+// With DISABLE_BACKGROUND_JOBS=true every cron.schedule becomes a no-op.
+if (process.env.DISABLE_BACKGROUND_JOBS === 'true') {
+  console.error('[BOOT] DISABLE_BACKGROUND_JOBS=true — NO cron jobs will run in this process (local test instance)');
+  cron.schedule = function() { return { stop: function() {}, start: function() {} }; };
+}
 const Stripe = require('stripe');
 const { createClient } = require('@supabase/supabase-js');
 
@@ -24,6 +31,7 @@ const demoAccount = require('./lib/demo');
 const integrity = require('./lib/integrity');
 const phoneVerify = require('./lib/verify');
 const affiliate = require('./lib/affiliate');
+const { constructEventWithSecrets } = require('./lib/stripe-webhook');
 const apns = require('./lib/apns');
 const { fallbackFieldsFor } = require('./lib/push');
 const { isValidPin, isValidTimezone, isValidEmail, normalizePhoneE164, isValidSupportSubject, isValidSupportBody } = require('./lib/validation');
@@ -3452,6 +3460,56 @@ app.get('/api/v1/referral', authV1, async function(req, res) {
   }
 });
 
+// §4.14a POST /referral/apply — the app's attribution path (2026-09-02).
+// Someone taps a share link, installs the app, signs up there: without this
+// they were invisible to the program. Attribution is recorded whether or
+// not the program switch is on (links circulate while it is off); the
+// referred-signup bonus is granted only while it is on, so a code cannot
+// be a credit-farming lever for an inactive program. Same atomic claim as
+// the web path: exactly one code per account, ever.
+app.post('/api/v1/referral/apply', authV1, rateLimit('referral_apply', 10, 10 * 60 * 1000), async function(req, res) {
+  try {
+    var code = String((req.body && req.body.code) || '').trim().toUpperCase();
+    if (!/^[A-Z0-9]{4,12}$/.test(code)) return v1Error(res, 400, 'validation_failed', 'Enter the referral code you were given.');
+    var referrer = await resolveAffiliateByCode(code);
+    if (!referrer) return v1Error(res, 404, 'not_found', 'That referral code is not valid.');
+    if (referrer.id === req.user.id) return v1Error(res, 400, 'validation_failed', 'You cannot use your own referral code.');
+    var lock = await supabase.from('profiles').update({ referred_by: code }).eq('id', req.user.id).is('referred_by', null).select('id');
+    if (lock.error) {
+      console.error('[V1-REFERRAL] claim failed for ' + req.user.id.slice(0, 8) + ':', lock.error.message);
+      return v1Error(res, 500, 'internal', 'Could not apply that code. Please try again.', true);
+    }
+    if (!lock.data || !lock.data.length) return v1Error(res, 409, 'referral_already_applied', 'A referral code has already been applied to this account.');
+    var refRow = await supabase.from('referrals').insert({ referrer_id: referrer.id, referred_id: req.user.id, referral_code: code, status: 'signed_up' });
+    if (refRow.error) console.error('[V1-REFERRAL] referrals row failed for ' + req.user.id.slice(0, 8) + ':', refRow.error.message);
+    var bonus = 0;
+    if (AFFILIATE_ENABLED) {
+      var granted = await recordCreditAdd({ userId: req.user.id, amount: REFERRED_BONUS_CREDITS, source: 'referral_bonus', note: 'Referral signup bonus (code ' + code + ', app)' });
+      if (granted !== null) bonus = REFERRED_BONUS_CREDITS;
+      else console.error('[V1-REFERRAL] bonus grant failed for ' + req.user.id.slice(0, 8) + ' (attribution kept)');
+    }
+    console.log('[V1-REFERRAL] ' + req.user.id.slice(0, 8) + ' applied code ' + code + (bonus ? ' (+' + bonus + ')' : ' (program off, no bonus)'));
+    res.json({ applied: true, code: code, bonusCredits: bonus });
+  } catch (e) {
+    console.error('[V1-REFERRAL] apply error:', e.message);
+    return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+  }
+});
+
+// Admin: run the promote + payout batch now (the same code the 1st-of-month
+// cron runs). For a re-run after a failed transfer, and for the test walk.
+app.post('/api/admin/affiliate/run-payout-batch', adminAuth, requireAffiliateEnabled, async function(req, res) {
+  try {
+    await promoteHeldEarnings();
+    await runAffiliatePayoutBatch();
+    var batches = await supabase.from('payout_batches').select('id, affiliate_id, amount_cents, status, error_message, created_at').order('created_at', { ascending: false }).limit(20);
+    res.json({ ran: true, recentBatches: (batches.data || []).map(function(b) { return { id: b.id, affiliate: String(b.affiliate_id).slice(0, 8), amountCents: b.amount_cents, status: b.status, error: b.error_message, at: b.created_at }; }) });
+  } catch (e) {
+    console.error('[AFFILIATE-PAYOUT] manual run failed:', e.message);
+    res.status(500).json({ error: 'Batch run failed: ' + e.message });
+  }
+});
+
 // §4.14 POST /referral/connect — Express onboarding link (or dashboard login
 // once ready). Refused while the program switch is off.
 app.post('/api/v1/referral/connect', authV1, rateLimit('connect', 10, 10 * 60 * 1000), async function(req, res) {
@@ -4180,7 +4238,12 @@ async function connectOnboardingUrl(userId, email, profile) {
       country: 'US',
       email: email,
       business_type: 'individual',
-      capabilities: { transfers: { requested: true } },
+      // tax_reporting_us_1099_misc is what makes Stripe collect the taxpayer
+      // number and file the form. Requested only once the tax picture is
+      // settled (CONNECT_REQUEST_1099_CAPABILITY=true in Railway).
+      capabilities: process.env.CONNECT_REQUEST_1099_CAPABILITY === 'true'
+        ? { transfers: { requested: true }, tax_reporting_us_1099_misc: { requested: true } }
+        : { transfers: { requested: true } },
       business_profile: { product_description: 'ProbationCall referral commissions' },
       metadata: { user_id: userId }
     });
@@ -5204,7 +5267,11 @@ async function handleChargeDisputeCreated(dispute, res) {
 app.post('/webhook/stripe', async function(req, res) {
   var event;
   try {
-    event = stripe.webhooks.constructEvent(req.body, req.headers['stripe-signature'], process.env.STRIPE_WEBHOOK_SECRET);
+    // Two secrets: the account endpoint's and the Connect endpoint's (events
+    // from connected accounts, e.g. account.updated for an affiliate's
+    // Express account). Either may sign — see lib/stripe-webhook.js.
+    event = constructEventWithSecrets(stripe, req.body, req.headers['stripe-signature'],
+      [process.env.STRIPE_WEBHOOK_SECRET, process.env.STRIPE_CONNECT_WEBHOOK_SECRET]);
   } catch (e) {
     console.error('[STRIPE WEBHOOK] Signature verification failed:', e.message);
     return res.status(400).send('Webhook error');

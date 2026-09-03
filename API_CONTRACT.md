@@ -68,6 +68,7 @@ Standard codes: `unauthenticated`, `forbidden`, `not_found`, `validation_failed`
 `insufficient_credits`, `rate_limited`, `outside_call_window`, `schedule_missing`,
 `internal`, `billing_cancel_failed`, `unpaid_affiliate_earnings`,
 `account_deletion_blocked` (all three §4.15), `phone_not_verified` (§4.7),
+`referral_already_applied` (§4.14),
 `sms_opted_out`, `sms_send_failed`, `verification_not_found`,
 `verification_expired`, `verification_locked`, `verification_incorrect`
 (§4.17).
@@ -1102,6 +1103,18 @@ where it stopped). Open it in an in-app browser sheet; Stripe returns to
 `{BASE_URL}/dashboard?connect=success` or `…?connect=refresh`, which the
 sheet should treat as "done, re-fetch `/referral`". Refused with
 `403 forbidden` while `programEnabled` is `false`.
+
+**`POST /referral/apply`** `{ "code": "DAVE30" }` →
+`{ "applied": true, "code": "DAVE30", "bonusCredits": 0 }`. The app's
+attribution path (2026-09-02): the app captures `ref` from the share link
+(universal link or clipboard) at signup and submits it here, so someone who
+taps a link, installs the app and signs up in it is attributed exactly like a
+web signup. Rules: one code per account, ever (`409
+referral_already_applied`); not your own (`400`); unknown code `404`.
+**Attribution is recorded whether or not `programEnabled` is true** — links
+circulate while the program is off — but the referred-signup bonus
+(`bonusCredits`, 5 today) is granted only while it is on, so a code cannot be
+used to farm credits from an inactive program.
 
 ### 4.15 `DELETE /account`
 
