@@ -1282,7 +1282,17 @@ async function auth(req, res, next) {
     if (result.error || !result.data.user) return res.status(401).json({ error: 'Invalid token' });
     
     var user = result.data.user;
-    var profileResult = await supabase.from('profiles').select('*').eq('id', user.id).single();
+    // maybeSingle, NOT single. single() reports "no rows" as an error, so code
+    // that only reads .data cannot tell "this row does not exist" from "the
+    // read failed" — a timeout, a dropped connection, a PostgREST schema
+    // reload after a migration. maybeSingle separates them: data null with no
+    // error means genuinely absent, and .error means WE DO NOT KNOW.
+    // Guessing wrong here WRITES: the branch below inserts a profile.
+    var profileResult = await supabase.from('profiles').select('*').eq('id', user.id).maybeSingle();
+    if (profileResult.error) {
+      console.error('[AUTH] profile read failed for ' + user.id.slice(0, 8) + ' — refusing to treat this as a missing profile:', profileResult.error.message);
+      return res.status(503).json({ error: 'Could not load your account. Please try again.' });
+    }
     var profile = profileResult.data;
     
     if (!profile) {
@@ -1299,7 +1309,7 @@ async function auth(req, res, next) {
         affiliate_total_earned_cents: 0
       });
       if (ins.error) {
-        var rf = await supabase.from('profiles').select('*').eq('id', user.id).single();
+        var rf = await supabase.from('profiles').select('*').eq('id', user.id).maybeSingle();
         if (rf.data) {
           profile = rf.data;
         } else {
@@ -1308,7 +1318,7 @@ async function auth(req, res, next) {
         }
       } else {
         console.log('[AUTH] profile created by the app for ' + user.id.slice(0, 8) + ' (trigger did not) — no starter grant here');
-        var rf2 = await supabase.from('profiles').select('*').eq('id', user.id).single();
+        var rf2 = await supabase.from('profiles').select('*').eq('id', user.id).maybeSingle();
         if (!rf2.data) return res.status(500).json({ error: 'Account setup failed, please retry' });
         profile = rf2.data;
       }
@@ -1699,7 +1709,17 @@ function v1Schedule(row, profile) {
 // credits through the ledger) — for an iOS-first signup this IS first touch.
 app.get('/api/v1/me', authV1, async function(req, res) {
   try {
-    var pr = await supabase.from('profiles').select('*').eq('id', req.user.id).single();
+    // maybeSingle, NOT single. single() reports "no rows" as an error, so code
+    // that only reads .data cannot tell "this row does not exist" from "the
+    // read failed" — a timeout, a dropped connection, a PostgREST schema
+    // reload after a migration. maybeSingle separates them: data null with no
+    // error means genuinely absent, and .error means WE DO NOT KNOW.
+    // Guessing wrong here WRITES: the branch below inserts a profile.
+    var pr = await supabase.from('profiles').select('*').eq('id', req.user.id).maybeSingle();
+    if (pr.error) {
+      console.error('[V1-ME] profile read failed for ' + req.user.id.slice(0, 8) + ' — refusing to treat this as a missing profile:', pr.error.message);
+      return v1Error(res, 503, 'internal', 'Could not load your account. Please try again.', true);
+    }
     var profile = pr.data;
     if (!profile) {
       // Zero credits, no grant — see the web bootstrap: the trigger owns it.
@@ -1709,12 +1729,12 @@ app.get('/api/v1/me', authV1, async function(req, res) {
         affiliate_balance_cents: 0, affiliate_total_earned_cents: 0
       });
       if (ins.error) {
-        var rf = await supabase.from('profiles').select('*').eq('id', req.user.id).single();
+        var rf = await supabase.from('profiles').select('*').eq('id', req.user.id).maybeSingle();
         if (!rf.data) return v1Error(res, 500, 'internal', 'Account setup failed — please try again.', true);
         profile = rf.data;
       } else {
         console.log('[V1-ME] profile created by the app for ' + req.user.id.slice(0, 8) + ' (trigger did not) — no starter grant here');
-        var rf2 = await supabase.from('profiles').select('*').eq('id', req.user.id).single();
+        var rf2 = await supabase.from('profiles').select('*').eq('id', req.user.id).maybeSingle();
         if (!rf2.data) return v1Error(res, 500, 'internal', 'Account setup failed — please try again.', true);
         profile = rf2.data;
       }
@@ -3419,7 +3439,15 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
       ftbendColorName = resolved.name;
     }
 
+    // This read decides UPDATE vs INSERT, so an unchecked failure does not
+    // degrade — it writes the wrong thing. maybeSingle already returns null
+    // without an error when the row is genuinely absent, so any .error here
+    // means the read failed and we must not conclude there is no schedule.
     var existing = await supabase.from('user_schedules').select('id').eq('user_id', req.user.id).maybeSingle();
+    if (existing.error) {
+      console.error('[V1-SCHEDULE] existing-schedule read failed for ' + req.user.id.slice(0, 8) + ' — refusing to guess insert vs update:', existing.error.message);
+      return v1Error(res, 503, 'internal', 'Could not save your schedule. Please try again.', true);
+    }
     var result = existing.data
       ? await supabase.from('user_schedules').update(data).eq('user_id', req.user.id)
       : await supabase.from('user_schedules').insert(data);
@@ -4707,7 +4735,16 @@ app.post('/api/schedule', auth, async function(req, res) {
     consecutive_pin_expired: 0
   };
   
-  var existingResult = await supabase.from('user_schedules').select('id').eq('user_id', req.user.id).single();
+  // Decides UPDATE vs INSERT. A failed read used to look identical to "no
+  // schedule yet", which would insert a second row for someone who already
+  // had one AND send them the first-time welcome SMS again. maybeSingle
+  // returns null with no error when the row really is absent, so .error here
+  // means the read failed and nothing should be written on a guess.
+  var existingResult = await supabase.from('user_schedules').select('id').eq('user_id', req.user.id).maybeSingle();
+  if (existingResult.error) {
+    console.error('[SCHEDULE] existing-schedule read failed for ' + req.user.id.slice(0, 8) + ' — refusing to guess insert vs update:', existingResult.error.message);
+    return res.status(503).json({ error: 'Could not save your schedule. Please try again.' });
+  }
   
   var result;
   if (existingResult.data) {
@@ -7487,7 +7524,17 @@ async function adminAuth(req, res, next) {
     if (result.error || !result.data.user) {
       return res.status(401).json({ error: 'Your session expired — reload to sign in again.', code: 'SESSION_EXPIRED' });
     }
-    var pr = await supabase.from('profiles').select('*').eq('id', result.data.user.id).single();
+    // A failed read is not an answer. This used to return NOT_ADMIN on any
+    // error, telling a real admin their account is not an admin — alarming,
+    // and it sends them looking for a permissions problem that does not
+    // exist. It fails CLOSED either way, so this is about being truthful,
+    // not about access. maybeSingle keeps "no such profile" (still
+    // NOT_ADMIN) separate from "the read failed" (say so, and retryable).
+    var pr = await supabase.from('profiles').select('*').eq('id', result.data.user.id).maybeSingle();
+    if (pr.error) {
+      console.error('[ADMIN-AUTH] profile read failed for ' + String(result.data.user.id).slice(0, 8) + ':', pr.error.message);
+      return res.status(503).json({ error: 'Could not check your admin access just now — try again in a moment.', code: 'ADMIN_CHECK_FAILED' });
+    }
     if (!pr.data || !pr.data.is_admin) {
       return res.status(403).json({ error: 'This account is not an admin.', code: 'NOT_ADMIN' });
     }
