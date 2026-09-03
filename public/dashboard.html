@@ -564,7 +564,7 @@ select option { background: #1a1a2e; color: #fff; }
       
       <div class="card" style="background:rgba(0,217,255,0.1);border-color:rgba(0,217,255,0.3);margin-bottom:20px">
         <h3 style="color:#00d9ff;margin-bottom:15px">💳 Get Paid Automatically</h3>
-        <p style="color:#8892b0;font-size:0.85rem;margin-bottom:15px">Connect your bank account to receive commissions instantly when your referrals purchase.</p>
+        <p style="color:#8892b0;font-size:0.85rem;margin-bottom:15px">Commissions are paid to your connected bank account through Stripe. Payouts go out monthly once your available balance reaches $20.</p>
         <div id="connectStatus" style="margin-bottom:10px"></div>
         <button class="btn" id="connectBtn" onclick="setupStripeConnect()" style="background:#00d9ff;color:#000">Connect Bank Account</button>
       </div>
@@ -1252,11 +1252,7 @@ function loadUser() {
         document.getElementById('totalReferred').textContent = d.affiliate.referrals ? d.affiliate.referrals.length : 0;
         document.getElementById('totalConverted').textContent = d.affiliate.referrals ? d.affiliate.referrals.filter(function(r) { return r.status === 'converted'; }).length : 0;
         
-        if (d.affiliate.payoutEmail) {
-          document.getElementById('payoutEmail').value = d.affiliate.payoutEmail;
-        }
-        
-        
+
         // Show earnings
         if (d.affiliate.earnings && d.affiliate.earnings.length > 0) {
           document.getElementById('earningsSection').style.display = 'block';
@@ -1720,7 +1716,7 @@ function checkConnectStatus() {
     var statusEl = document.getElementById('connectStatus');
     var btnEl = document.getElementById('connectBtn');
     if (d.connected && d.payouts_enabled) {
-      statusEl.innerHTML = '<span style="color:#22c55e">✅ Connected - You will receive payouts automatically!</span>';
+      statusEl.innerHTML = '<span style="color:#22c55e">✅ Connected — payouts go to this account monthly once you reach $20.</span>';
       btnEl.textContent = 'Manage Account';
     } else if (d.connected) {
       statusEl.innerHTML = '<span style="color:#f59e0b">⚠️ Setup incomplete - Click below to finish</span>';
@@ -1736,44 +1732,8 @@ function copyReferralLink() {
   alert('✅ Referral link copied!');
 }
 
-function savePayoutEmail() {
-  var email = document.getElementById('payoutEmail').value;
-  if (!email) { alert('Please enter your PayPal email'); return; }
-  
-  fetch('/api/affiliate/payout-email', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
-    body: JSON.stringify({ email: email })
-  }).then(function(r) { return r.json(); }).then(function(d) {
-    if (d.success) {
-      alert('✅ PayPal email saved!');
-    } else {
-      alert('Error: ' + (d.error || 'Failed to save'));
-    }
-  });
-}
-
-function requestPayout() {
-  var st = document.getElementById('payoutStatus');
-  st.style.display = 'block';
-  st.className = 'status calling';
-  st.textContent = 'Requesting payout...';
-  
-  fetch('/api/affiliate/request-payout', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
-    body: JSON.stringify({ method: 'paypal' })
-  }).then(function(r) { return r.json(); }).then(function(d) {
-    if (d.success) {
-      st.className = 'status success';
-      st.textContent = '✅ Payout requested! You will receive $' + (d.amount / 100).toFixed(2) + ' within 48 hours.';
-      loadUser();
-    } else {
-      st.className = 'status error';
-      st.textContent = '❌ ' + (d.error || 'Failed');
-    }
-  });
-}
+// Manual payouts (PayPal) were removed 2026-09-02. Commissions are paid to
+// the affiliate's connected Stripe account once the program is live.
 
 // Ask the server for a 15-minute playback link for one recording. Returns
 // null if the server declines, so callers can stay quiet.
