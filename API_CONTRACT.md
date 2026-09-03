@@ -996,8 +996,38 @@ currently 0% commission, but the district court is setting a fee on remand. When
 a number lands you'll need to know which purchases originated in-app, and you
 cannot reconstruct that retroactively.
 
-The app opens the URL in `SFSafariViewController`, then re-fetches `/me` on
-return to refresh the balance.
+The app opens the URL in `SFSafariViewController`. Stripe returns to
+`{BASE_URL}/return?to=credits` or `…?to=subscription` — never to the web
+dashboard, which is login-gated and would strand an app buyer on a login
+page. `cancel_url` goes to the same place, so a cancelled checkout comes
+back too.
+
+`/return` is a public page carrying no token, session or amount, only that
+destination hint. It shows a **Return to the app** button linking to
+`probationcall://return?to=…` and also attempts the redirect automatically.
+**The app must handle that URL**, or the return goes nowhere. The button is
+the primary path, not a fallback: inside `SFSafariViewController` an
+automatic bounce to a custom scheme is sometimes blocked and shows an
+invalid-address error, and a tap is a user gesture that opens the app
+reliably.
+
+**iOS asks first, and that is expected.** Handing control back from a web
+context raises a system confirmation — *Open in "Probationcall"?* with Cancel
+and Open — and the user must tap **Open**. It appears on both the button and
+the automatic redirect. This is iOS behaviour, not a fault in the page; the
+page says "Tap Open when your phone asks" so nobody reads the dialog as
+something going wrong and cancels out of it.
+
+**Re-fetch `/me` on both dismissal paths.** The sheet may now be closed by
+the scheme redirect rather than by the user, so a refresh hung only on the
+user-dismissed callback will miss the case where the bounce worked — which
+is the common one.
+
+**`/return` never says the payment succeeded, and neither should the screen
+behind it.** Stripe sends people there the moment they finish, which can be
+before the webhook has granted anything. The balance from `/me` is the only
+statement about what was actually credited; a purchase confirmation shown on
+return alone would be a guess.
 
 ### 4.13a `GET /pricing`
 
@@ -1128,10 +1158,22 @@ confirms in writing.
 **`POST /referral/connect`** → `{ "url": "https://connect.stripe.com/…" }`.
 Creates the Express account on first call, then mints an onboarding link
 (fresh each time — links expire, and an abandoned onboarding simply resumes
-where it stopped). Open it in an in-app browser sheet; Stripe returns to
-`{BASE_URL}/dashboard?connect=success` or `…?connect=refresh`, which the
-sheet should treat as "done, re-fetch `/referral`". Refused with
-`403 forbidden` while `programEnabled` is `false`.
+where it stopped). Open it in an in-app browser sheet.
+
+Stripe returns to `{BASE_URL}/return?to=connect` — **both** on completion and
+when the link has expired. The two are not distinguishable there, and were
+never meant to be acted on differently. That page bounces into the app via
+`probationcall://return?to=connect`; treat arriving back as "done, re-fetch
+`/referral`" and read the truth from `connect.state`.
+
+These used to be `{BASE_URL}/dashboard?connect=success` and `…?connect=refresh`.
+The web dashboard is login-gated and the in-app sheet carries no session, so
+that return landed on a **login page** — a dead end for the person who had
+just finished onboarding. See §4.13 for the same fix on the checkout return,
+for the iOS *Open in "Probationcall"?* prompt, and for what the app must
+handle.
+
+Refused with `403 forbidden` while `programEnabled` is `false`.
 
 **`POST /referral/apply`** `{ "code": "DAVE30" }` →
 `{ "applied": true, "code": "DAVE30", "bonusCredits": 0 }`. The app's

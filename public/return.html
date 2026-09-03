@@ -15,6 +15,8 @@
   .btn{display:block;background:#00d9ff;color:#000;text-decoration:none;font-weight:700;
        font-size:1.05rem;padding:16px 20px;border-radius:10px;margin-bottom:18px}
   .btn:active{opacity:0.85}
+  .hint{color:#c7d3e8;font-size:0.92rem;margin:0 0 22px}
+  .hint b{color:#fff}
   .fine{color:#5c6b8a;font-size:0.8rem;line-height:1.55;margin:0}
 </style>
 </head>
@@ -32,6 +34,15 @@
          server from a fixed allowlist, so this works with no JavaScript at
          all. -->
     <a class="btn" id="open" href="probationcall://return?to=__DEST__">Return to the app</a>
+
+    <!-- iOS shows a system confirmation — Open in "Probationcall"? / Cancel /
+         Open — before handing control back from a web context, on BOTH the
+         button and the automatic redirect. Verified on device. Someone who
+         taps and then meets an unexplained dialog can reasonably read it as
+         something going wrong and hit Cancel, which strands them here. This
+         line sits directly under the button because that is where the eye
+         goes after tapping. -->
+    <p class="hint">Tap <b>Open</b> when your phone asks.</p>
 
     <!-- Deliberately makes NO claim about the payment. Stripe sends people
          here the moment they finish, which can be before our webhook has

@@ -1351,7 +1351,8 @@ app.get('/return', function(req, res) {
     res.type('html').send('<!DOCTYPE html><meta charset="utf-8"><title>Return to ProbationCall</title>' +
       '<body style="font-family:-apple-system,sans-serif;background:#0a1929;color:#fff;padding:24px">' +
       '<p>Returning you to the app.</p>' +
-      '<p><a style="color:#00d9ff" href="probationcall://return?to=app">Return to the app</a></p>');
+      '<p><a style="color:#00d9ff" href="probationcall://return?to=app">Return to the app</a></p>' +
+      '<p>Tap <b>Open</b> when your phone asks.</p>');
   }
 });
 // Extension-less aliases. These are linked from emails, the app, and the

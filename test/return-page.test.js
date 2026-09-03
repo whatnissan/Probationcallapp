@@ -36,6 +36,15 @@ test('no placeholder survives rendering', function() {
   });
 });
 
+test('the page warns about the iOS "Open in..." prompt', function() {
+  // iOS shows a system confirmation before handing control back from a web
+  // context, on both the button and the automatic redirect. Someone meeting
+  // an unexplained dialog can read it as a failure and tap Cancel, which
+  // strands them on this page. The warning is load-bearing, so pin it.
+  const html = r.renderReturnPage(template, 'credits');
+  assert.match(html, /Tap <b>Open<\/b> when your phone asks\./);
+});
+
 test('the visible copy never claims the payment succeeded', function() {
   // Stripe sends people here the moment they finish, which can be before the
   // webhook has granted anything. A success claim here would be a guess.
