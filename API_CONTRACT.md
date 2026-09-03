@@ -1045,7 +1045,7 @@ the paywall screen appears, not on every render.
 `currency` is ISO 4217 lowercase. Everything is USD today; the field exists so
 that is a fact the app reads rather than assumes.
 
-### 4.14 `GET /referral`
+### 4.14 `GET /referral` · `POST /referral/connect`
 
 **`code` is never `null` (2026-09-02).** It is assigned when the profile is
 created — in the database trigger, migration 046 — and backfilled for every
@@ -1053,10 +1053,55 @@ older account. The endpoint also assigns one on read if it somehow finds
 none. Clients may decode it as required.
 
 ```json
-{ "code": "DAVE30", "signups": 14, "commissionRate": 0.30,
+{
+  "code": "DAVE30", "signups": 14, "commissionRate": 0.30,
+  "shareUrl": "https://www.probationcall.com/?ref=DAVE30",
+  "programEnabled": false,
   "lifetimeEarnedCents": 31200, "availableCents": 12750,
-  "shareUrl": "https://www.probationcall.com/?ref=DAVE30" }
+  "balances": { "heldCents": 898, "availableCents": 12750, "paidCents": 17552,
+                "minimumPayoutCents": 2000, "nextPayoutDate": "2026-10-01", "holdDays": 30 },
+  "connect": { "state": "ready", "payoutsEnabled": true, "detailsSubmitted": true },
+  "payouts": [ { "date": "2026-09-01", "amountCents": 17552, "status": "paid" } ]
+}
 ```
+
+**`programEnabled` gates every action.** While it is `false` the Earn tab
+shows the code and the share link and nothing else — no balances copy that
+promises money, no Set up payouts button. It stays `false` until the tax
+picture is confirmed and onboarding has been tested end to end with a real
+connected account.
+
+**Money model: accrue, hold, pay — not split at checkout.** A commission is
+30% of a one-time bundle (subscriptions and the month pass pay none). It is
+written as a ledger row the moment the sale settles, **held for 30 days**,
+then available, then paid on the **1st of each month** in ONE Stripe
+transfer per affiliate, only when the available balance is at or above
+**$20** and the connected account is payouts-enabled. `connect.state` is
+`not_started` | `in_progress` | `pending_review` | `ready`.
+
+Why not destination charges with `application_fee_amount`? They were the
+elegant answer for reconciliation, and were rejected on refund safety: a
+split at checkout requires a payouts-enabled account at the moment the
+referred customer pays (most referrers have not onboarded when their first
+referral buys, so a ledger path is needed anyway — two money paths, not
+one), and a refund a week later reverses funds an Express account has
+usually already paid out, driving it negative with the platform liable.
+Holding the commission for 30 days makes a refund in that window a ledger
+entry and nothing else. Disputes after payout still reverse the transfer.
+
+**Tax paperwork.** Express is the Connect type where Stripe collects the
+taxpayer number, matches it, files the forms and delivers them. **The
+platform remains the payer of record and the forms carry its name; there is
+no arrangement in which the obligation vanishes — destination charges
+included.** The app never asks for, sees, or stores a taxpayer number.
+
+**`POST /referral/connect`** → `{ "url": "https://connect.stripe.com/…" }`.
+Creates the Express account on first call, then mints an onboarding link
+(fresh each time — links expire, and an abandoned onboarding simply resumes
+where it stopped). Open it in an in-app browser sheet; Stripe returns to
+`{BASE_URL}/dashboard?connect=success` or `…?connect=refresh`, which the
+sheet should treat as "done, re-fetch `/referral`". Refused with
+`403 forbidden` while `programEnabled` is `false`.
 
 ### 4.15 `DELETE /account`
 

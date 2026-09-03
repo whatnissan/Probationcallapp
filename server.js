@@ -23,6 +23,7 @@ const { resolveBearerUser, emailTombstoneHash } = require('./lib/auth');
 const demoAccount = require('./lib/demo');
 const integrity = require('./lib/integrity');
 const phoneVerify = require('./lib/verify');
+const affiliate = require('./lib/affiliate');
 const apns = require('./lib/apns');
 const { fallbackFieldsFor } = require('./lib/push');
 const { isValidPin, isValidTimezone, isValidEmail, normalizePhoneE164, isValidSupportSubject, isValidSupportBody } = require('./lib/validation');
@@ -1307,8 +1308,9 @@ app.get('/api/user', auth, async function(req, res) {
   // Get earnings history
   var earningsResult = await supabase.from('affiliate_earnings').select('*').eq('affiliate_id', req.user.id).order('created_at', { ascending: false }).limit(20);
   
-  // Get payout history
-  var payoutsResult = await supabase.from('payout_requests').select('*').eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(10);
+  // Payout history is the monthly Connect batches (migration 047).
+  var payoutsResult = await supabase.from('payout_batches').select('created_at, amount_cents, status').eq('affiliate_id', req.user.id).order('created_at', { ascending: false }).limit(12);
+  var _webBal = affiliate.summarizeBalances(earningsResult.data || [], Date.now());
   
   res.json({
     user: req.user,
@@ -1332,8 +1334,9 @@ app.get('/api/user', auth, async function(req, res) {
     isDev: isDev(req.user.email),
     affiliate: {
       referralCode: req.profile.referral_code,
-      balance: req.profile.affiliate_balance_cents || 0,
-      totalEarned: req.profile.affiliate_total_earned_cents || 0,
+      balance: _webBal.availableCents,
+      heldCents: _webBal.heldCents,
+      totalEarned: _webBal.lifetimeCents,
       minPayout: MIN_PAYOUT_CENTS,
       commissionPercent: AFFILIATE_COMMISSION_PERCENT,
       referrals: referrals,
@@ -3397,7 +3400,7 @@ app.post('/api/v1/schedule/resume', authV1, async function(req, res) {
 app.get('/api/v1/referral', authV1, async function(req, res) {
   try {
     var prof = await supabase.from('profiles')
-      .select('referral_code, affiliate_balance_cents, affiliate_total_earned_cents')
+      .select('referral_code, affiliate_balance_cents, affiliate_total_earned_cents, stripe_connect_id, stripe_connect_payouts_enabled, stripe_connect_details_submitted')
       .eq('id', req.user.id).maybeSingle();
     if (!prof.data) return v1Error(res, 404, 'not_found', 'No referral account found.');
     var code = prof.data.referral_code || null;
@@ -3419,18 +3422,48 @@ app.get('/api/v1/referral', authV1, async function(req, res) {
         .eq('referred_by', code.toUpperCase());
       signups = refs.count || 0;
     }
+    // Balances from the ledger rows (accrue, hold, pay — §4.14).
+    var earn = await supabase.from('affiliate_earnings').select('amount_cents, status, available_at, stripe_transfer_id').eq('affiliate_id', req.user.id);
+    var bal = affiliate.summarizeBalances(earn.data || [], Date.now());
+    var batches = await supabase.from('payout_batches').select('created_at, amount_cents, status').eq('affiliate_id', req.user.id).order('created_at', { ascending: false }).limit(12);
     res.json({
       code: code,
       signups: signups,
       // A fraction, not a percent — §4.14's example is 0.30.
       commissionRate: AFFILIATE_COMMISSION_PERCENT / 100,
-      lifetimeEarnedCents: prof.data.affiliate_total_earned_cents || 0,
-      availableCents: prof.data.affiliate_balance_cents || 0,
-      shareUrl: code ? (process.env.BASE_URL + '/?ref=' + code) : null
+      shareUrl: code ? (process.env.BASE_URL + '/?ref=' + code) : null,
+      programEnabled: AFFILIATE_ENABLED,
+      lifetimeEarnedCents: bal.lifetimeCents,
+      availableCents: bal.availableCents,
+      balances: {
+        heldCents: bal.heldCents, availableCents: bal.availableCents, paidCents: bal.paidCents,
+        minimumPayoutCents: MIN_PAYOUT_CENTS, nextPayoutDate: affiliate.nextPayoutDate(Date.now()), holdDays: affiliate.HOLD_DAYS
+      },
+      connect: {
+        state: affiliate.connectState(prof.data),
+        payoutsEnabled: !!prof.data.stripe_connect_payouts_enabled,
+        detailsSubmitted: !!prof.data.stripe_connect_details_submitted
+      },
+      payouts: (batches.data || []).map(function(b) { return { date: String(b.created_at).slice(0, 10), amountCents: b.amount_cents, status: b.status }; })
     });
   } catch (e) {
     console.error('[V1-REFERRAL] failed:', e.message);
     return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+  }
+});
+
+// §4.14 POST /referral/connect — Express onboarding link (or dashboard login
+// once ready). Refused while the program switch is off.
+app.post('/api/v1/referral/connect', authV1, rateLimit('connect', 10, 10 * 60 * 1000), async function(req, res) {
+  try {
+    if (!AFFILIATE_ENABLED) return v1Error(res, 403, 'forbidden', 'The referral program is not active yet.');
+    var prof = await supabase.from('profiles').select('id, stripe_connect_id').eq('id', req.user.id).maybeSingle();
+    if (!prof.data) return v1Error(res, 404, 'not_found', 'No referral account found.');
+    var out = await connectOnboardingUrl(req.user.id, req.user.email, prof.data);
+    res.json({ url: out.url, kind: out.kind });
+  } catch (e) {
+    logStripeError('v1 referral connect (user ' + req.user.id.slice(0, 8) + ')', e);
+    return v1Error(res, 502, 'internal', 'Could not start Stripe onboarding. Please try again.', true);
   }
 });
 
@@ -3963,6 +3996,7 @@ app.post('/api/apply-referral', auth, requireAffiliateEnabled, async function(re
 
 // Set payout email
 app.post('/api/affiliate/payout-email', auth, requireAffiliateEnabled, async function(req, res) {
+  return res.status(410).json({ error: 'PayPal payouts have ended. Connect a bank account through Stripe instead.' });
   var email = req.body.email ? String(req.body.email).trim() : '';
   if (!email) return res.status(400).json({ error: 'Email required' });
   // Rendered in the admin payouts table; was previously stored unvalidated.
@@ -3978,6 +4012,9 @@ app.post('/api/affiliate/payout-email', auth, requireAffiliateEnabled, async fun
 
 // Request payout
 app.post('/api/affiliate/request-payout', auth, requireAffiliateEnabled, async function(req, res) {
+  // Manual payouts ended 2026-09-02: commissions are paid monthly to the
+  // connected Stripe account. Kept as a clear answer for any old client.
+  return res.status(410).json({ error: 'Manual payouts have ended. Commissions are paid to your connected Stripe account monthly once your available balance reaches $20.' });
   // FIX (AFFILIATE_AUDIT §6.A — double-pay hole):
   // Connect affiliates are paid automatically via stripe.transfers.create on
   // each commission. Letting them ALSO request a manual PayPal payout from
@@ -4129,41 +4166,51 @@ app.post('/api/check-affiliate-code', auth, requireAffiliateEnabled, async funct
   }
 });
 
-// Stripe Connect - Create onboarding link for affiliates
+// Stripe Connect EXPRESS onboarding (2026-09-02). Express, not Standard:
+// it is the Connect type where Stripe collects the taxpayer number, matches
+// it, files the 1099s and delivers them. The platform stays payer of record;
+// the app never asks for or stores a taxpayer number. Every call mints a
+// fresh onboarding link — links expire, and an abandoned onboarding resumes
+// where it stopped. A ready account gets an Express dashboard login link.
+async function connectOnboardingUrl(userId, email, profile) {
+  var acctId = profile && profile.stripe_connect_id;
+  if (!acctId) {
+    var account = await stripe.accounts.create({
+      type: 'express',
+      country: 'US',
+      email: email,
+      business_type: 'individual',
+      capabilities: { transfers: { requested: true } },
+      business_profile: { product_description: 'ProbationCall referral commissions' },
+      metadata: { user_id: userId }
+    });
+    var saved = await supabase.from('profiles').update({ stripe_connect_id: account.id }).eq('id', userId);
+    if (saved.error) throw new Error('could not save connect id: ' + saved.error.message);
+    acctId = account.id;
+    console.log('[CONNECT] Created Express account for ' + userId.slice(0, 8) + ': ' + acctId);
+  }
+  var status = await getConnectAccountStatus(acctId);
+  if (status) await syncConnectStatusToProfile(acctId, status);
+  if (status && status.payouts_enabled && status.details_submitted) {
+    var loginLink = await stripe.accounts.createLoginLink(acctId);
+    return { url: loginLink.url, kind: 'dashboard' };
+  }
+  var link = await stripe.accountLinks.create({
+    account: acctId,
+    refresh_url: process.env.BASE_URL + '/dashboard?connect=refresh',
+    return_url: process.env.BASE_URL + '/dashboard?connect=success',
+    type: 'account_onboarding'
+  });
+  return { url: link.url, kind: 'onboarding' };
+}
+
 app.post('/api/affiliate/connect', auth, requireAffiliateEnabled, async function(req, res) {
   try {
-    // Check if user already has a connected account
-    if (req.profile.stripe_connect_id) {
-      // Create login link for existing account
-      var loginLink = await stripe.accounts.createLoginLink(req.profile.stripe_connect_id);
-      return res.json({ url: loginLink.url });
-    }
-    
-    // Create new connected account
-    var account = await stripe.accounts.create({
-      type: 'standard',
-      email: req.user.email,
-      metadata: { user_id: req.user.id }
-    });
-    
-    // Save the account ID
-    await supabase.from('profiles')
-      .update({ stripe_connect_id: account.id })
-      .eq('id', req.user.id);
-    
-    // Create onboarding link
-    var accountLink = await stripe.accountLinks.create({
-      account: account.id,
-      refresh_url: process.env.BASE_URL + '/dashboard?connect=refresh',
-      return_url: process.env.BASE_URL + '/dashboard?connect=success',
-      type: 'account_onboarding'
-    });
-    
-    console.log('[CONNECT] Created account for ' + req.user.email + ': ' + account.id);
-    res.json({ url: accountLink.url });
+    var out = await connectOnboardingUrl(req.user.id, req.user.email, req.profile);
+    res.json({ url: out.url });
   } catch (e) {
     console.error('[CONNECT] Error:', e.message);
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: 'Could not start Stripe onboarding. Please try again.' });
   }
 });
 
@@ -4944,8 +4991,16 @@ async function clawbackAffiliateCommissionForCharge(opts) {
       continue;
     }
 
-    if (e.status === 'transferred' && e.stripe_transfer_id) {
-      // Connect affiliate — reverse the Stripe transfer.
+    if (e.status === 'held' || e.status === 'available') {
+      // Still inside the hold (or unpaid): a ledger entry, no money moved.
+      await supabase.from('affiliate_earnings').update({ status: 'reversed', error_message: null }).eq('id', e.id);
+      reversedCount++;
+      console.log('[CLAWBACK] Reversed unpaid earning ' + e.id + ' (' + e.status + ', ' + reason + ') — no money moved');
+      continue;
+    }
+    if ((e.status === 'transferred' || e.status === 'paid') && e.stripe_transfer_id) {
+      // Paid out — reverse the Stripe transfer. May leave the Express
+      // account negative if they already withdrew; the platform is liable.
       try {
         await stripe.transfers.createReversal(e.stripe_transfer_id, {
           amount: e.amount_cents,
@@ -5306,83 +5361,29 @@ app.post('/webhook/stripe', async function(req, res) {
 
         if (referrerResult.data) {
           var commission = Math.floor(s.amount_total * AFFILIATE_COMMISSION_PERCENT / 100);
-          // §6.A (double-pay hole): Connect affiliates do NOT accrue
-          // affiliate_balance_cents — their Stripe transfer IS the payout.
-          // affiliate_total_earned_cents increments unconditionally (lifetime).
-          var isConnect = !!referrerResult.data.stripe_connect_id;
-          var newBalance = isConnect
-            ? (referrerResult.data.affiliate_balance_cents || 0)
-            : (referrerResult.data.affiliate_balance_cents || 0) + commission;
+          // ACCRUE, HOLD, PAY (2026-09-02, lib/affiliate.js). No transfer at
+          // the sale: the commission is a ledger row held for HOLD_DAYS —
+          // a refund in that window moves no money — then paid by the
+          // monthly batch, one transfer per affiliate, at or above $20, to
+          // an Express account that is payouts-enabled. Lifetime earned is
+          // the only profile counter still maintained; balances are computed
+          // from the rows.
           var newTotal = (referrerResult.data.affiliate_total_earned_cents || 0) + commission;
+          await supabase.from('profiles').update({ affiliate_total_earned_cents: newTotal }).eq('id', referrerResult.data.id);
 
-          await supabase.from('profiles').update({
-            affiliate_balance_cents: newBalance,
-            affiliate_total_earned_cents: newTotal
-          }).eq('id', referrerResult.data.id);
-
-          // §3 (silent transfer failures): for Connect affiliates, attempt the
-          // Stripe transfer FIRST, then record the row with the real outcome.
-          // Old order recorded status='transferred' before transfer ran, so a
-          // failure left the DB lying. Now: status is one of
-          //   'transferred' (with stripe_transfer_id), 'failed' (with
-          //   error_message), or 'credited' (non-Connect, no transfer needed).
-          var earningStatus = 'credited';
-          var stripeTransferId = null;
-          var transferErrorMessage = null;
-          if (isConnect) {
-            // §6.B — pre-flight check: never transfer to an account that
-            // can't receive payouts. Without this guard, funds either fail
-            // outright or land in a frozen holding balance the affiliate
-            // can't withdraw. The row gets marked 'failed' (reusing §3's
-            // failed-retry queue) with a clear error_message; admin clicks
-            // retry once the affiliate finishes Stripe onboarding.
-            var connectStatus = await getConnectAccountStatus(referrerResult.data.stripe_connect_id);
-            if (connectStatus) {
-              // Opportunistically sync the cache columns on the profile
-              // since we just paid for a fresh API call.
-              await syncConnectStatusToProfile(referrerResult.data.stripe_connect_id, connectStatus);
-            }
-            if (!connectStatus) {
-              earningStatus = 'failed';
-              transferErrorMessage = 'Could not verify Connect account status (Stripe API error). Admin can retry via /api/admin/affiliate-earnings/:id/retry.';
-              console.error('[CONNECT] SKIPPING transfer for ' + referrerResult.data.stripe_connect_id + ' — Stripe API unreachable; earning marked failed');
-            } else if (!connectStatus.payouts_enabled) {
-              earningStatus = 'failed';
-              transferErrorMessage = 'Connect account not payouts_enabled (charges_enabled=' + connectStatus.charges_enabled + ', details_submitted=' + connectStatus.details_submitted + '). Affiliate needs to complete Stripe onboarding; admin can retry via /api/admin/affiliate-earnings/:id/retry once ready.';
-              console.error('[CONNECT] SKIPPING transfer for ' + referrerResult.data.stripe_connect_id + ' — payouts_enabled=false (charges=' + connectStatus.charges_enabled + ' details=' + connectStatus.details_submitted + ')');
-            } else {
-              // Account is ready — proceed with the transfer.
-              try {
-                var transfer = await stripe.transfers.create({
-                  amount: commission,
-                  currency: 'usd',
-                  destination: referrerResult.data.stripe_connect_id,
-                  description: 'Affiliate commission for referral'
-                }, {
-                  // Idempotency: a webhook replay must not create a second transfer.
-                  idempotencyKey: 'aff-commission-' + s.id
-                });
-                earningStatus = 'transferred';
-                stripeTransferId = transfer.id;
-                console.log('[CONNECT] Transferred $' + (commission / 100).toFixed(2) + ' to ' + referrerResult.data.stripe_connect_id + ' tr=' + transfer.id);
-              } catch (te) {
-                earningStatus = 'failed';
-                transferErrorMessage = te && te.message ? te.message : String(te);
-                console.error('[CONNECT] Transfer FAILED for ' + referrerResult.data.stripe_connect_id + ' (earnings row marked failed; retry via /api/admin/affiliate-earnings/:id/retry):', transferErrorMessage);
-              }
-            }
-          }
-
-          await supabase.from('affiliate_earnings').insert({
+          var earningStatus = 'held';
+          var heldIns = await supabase.from('affiliate_earnings').insert({
             affiliate_id: referrerResult.data.id,
             referred_id: userId,
             purchase_id: purchaseResult.data ? purchaseResult.data.id : null,
             amount_cents: commission,
             purchase_amount_cents: s.amount_total,
             status: earningStatus,
-            stripe_transfer_id: stripeTransferId,
-            error_message: transferErrorMessage
+            available_at: affiliate.availableAt(Date.now()),
+            stripe_transfer_id: null,
+            error_message: null
           });
+          if (heldIns.error) console.error('[AFFILIATE] earning insert failed for ' + referrerResult.data.id.slice(0, 8) + ':', heldIns.error.message);
 
           await supabase.from('referrals')
             .update({ status: 'converted' })
@@ -6221,6 +6222,64 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
 // Cron job to delete old recordings (runs daily at 3am).
 // Only nulls recording_url for rows whose Twilio delete actually succeeded
 // — otherwise the DB and Twilio drift apart and stale URLs are unrecoverable.
+// ========== AFFILIATE PAYOUTS (migration 047) ==========
+// Daily at 09:10 Central: promote held rows past their hold date to
+// available. On the 1st, also pay: one transfer per affiliate for the
+// available total, at or above $20, only to a payouts-enabled Express
+// account. Idempotent per batch id; a failed transfer leaves the rows
+// available for next month. Never runs while the program switch is off.
+async function promoteHeldEarnings() {
+  var r = await supabase.from('affiliate_earnings').update({ status: 'available' })
+    .eq('status', 'held').lte('available_at', new Date().toISOString()).select('id');
+  if (r.error) console.error('[AFFILIATE-PAYOUT] promote failed:', r.error.message);
+  else if (r.data && r.data.length) console.log('[AFFILIATE-PAYOUT] ' + r.data.length + ' earning(s) now available');
+}
+
+async function runAffiliatePayoutBatch() {
+  var rows = await supabase.from('affiliate_earnings').select('id, affiliate_id, amount_cents, status, available_at').eq('status', 'available');
+  if (rows.error) { console.error('[AFFILIATE-PAYOUT] read failed:', rows.error.message); return; }
+  var byAff = {};
+  (rows.data || []).forEach(function(r) { (byAff[r.affiliate_id] = byAff[r.affiliate_id] || []).push(r); });
+  var month = formatLocalDay(new Date(), 'America/Chicago').slice(0, 7);
+  for (var affId in byAff) {
+    try {
+      var prof = await supabase.from('profiles').select('id, stripe_connect_id').eq('id', affId).maybeSingle();
+      if (!prof.data || !prof.data.stripe_connect_id) { console.log('[AFFILIATE-PAYOUT] ' + affId.slice(0, 8) + ' has available earnings but no Connect account — skipped'); continue; }
+      var status = await getConnectAccountStatus(prof.data.stripe_connect_id);
+      if (status) await syncConnectStatusToProfile(prof.data.stripe_connect_id, status);
+      var plan = affiliate.payoutPlan(byAff[affId], Date.now(), !!(status && status.payouts_enabled), MIN_PAYOUT_CENTS);
+      if (!plan.pay) { console.log('[AFFILIATE-PAYOUT] ' + affId.slice(0, 8) + ' skipped: ' + plan.reason + ' (' + plan.amountCents + ' cents)'); continue; }
+      var group = 'aff-batch-' + month + '-' + affId.slice(0, 8);
+      var batch = await supabase.from('payout_batches').insert({ affiliate_id: affId, amount_cents: plan.amountCents, earning_count: plan.rows.length, transfer_group: group, status: 'pending' }).select('id').single();
+      if (batch.error) { console.error('[AFFILIATE-PAYOUT] batch insert failed for ' + affId.slice(0, 8) + ':', batch.error.message); continue; }
+      var ids = plan.rows.map(function(r) { return r.id; });
+      try {
+        var transfer = await stripe.transfers.create({
+          amount: plan.amountCents, currency: 'usd', destination: prof.data.stripe_connect_id,
+          transfer_group: group, description: 'ProbationCall referral commissions, ' + month, metadata: { payout_batch_id: batch.data.id }
+        }, { idempotencyKey: 'aff-batch-' + batch.data.id });
+        var nowIso = new Date().toISOString();
+        await supabase.from('affiliate_earnings').update({ status: 'paid', paid_at: nowIso, payout_batch_id: batch.data.id, stripe_transfer_id: transfer.id }).in('id', ids);
+        await supabase.from('payout_batches').update({ status: 'paid', stripe_transfer_id: transfer.id, paid_at: nowIso }).eq('id', batch.data.id);
+        console.log('[AFFILIATE-PAYOUT] paid $' + (plan.amountCents / 100).toFixed(2) + ' to ' + affId.slice(0, 8) + ' (' + ids.length + ' earnings, ' + transfer.id + ')');
+      } catch (te) {
+        await supabase.from('payout_batches').update({ status: 'failed', error_message: String(te && te.message || te).slice(0, 300) }).eq('id', batch.data.id);
+        console.error('[AFFILIATE-PAYOUT] transfer FAILED for ' + affId.slice(0, 8) + ' (rows stay available for next month):', te && te.message);
+      }
+    } catch (e) {
+      console.error('[AFFILIATE-PAYOUT] ' + String(affId).slice(0, 8) + ' threw:', e.message);
+    }
+  }
+}
+
+cron.schedule('10 9 * * *', async function() {
+  if (!AFFILIATE_ENABLED) return;
+  try {
+    await promoteHeldEarnings();
+    if (formatLocalDay(new Date(), 'America/Chicago').slice(-2) === '01') await runAffiliatePayoutBatch();
+  } catch (e) { console.error('[AFFILIATE-PAYOUT] cron error:', e.message); }
+}, { timezone: 'America/Chicago' });
+
 // ========== DAILY INTEGRITY DIGEST (migration 044) ==========
 // 07:30 Central, after the morning run. Two things, one email, sent only
 // when there is something to say: profiles whose balance no longer equals
