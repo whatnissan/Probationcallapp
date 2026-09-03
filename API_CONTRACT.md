@@ -1053,9 +1053,13 @@ created — in the database trigger, migration 046 — and backfilled for every
 older account. The endpoint also assigns one on read if it somehow finds
 none. Clients may decode it as required.
 
+Example response — **the values are illustrative, not normative.** Read
+every number from the live response; none of them is a constant you may
+hardcode.
+
 ```json
 {
-  "code": "DAVE30", "signups": 14, "commissionRate": 0.30,
+  "code": "DAVE30", "signups": 14, "commissionRate": 0.20,
   "shareUrl": "https://www.probationcall.com/?ref=DAVE30",
   "programEnabled": false,
   "lifetimeEarnedCents": 31200, "availableCents": 12750,
@@ -1073,8 +1077,11 @@ picture is confirmed and onboarding has been tested end to end with a real
 connected account.
 
 **Money model: accrue, hold, pay — not split at checkout.** A commission is
-30% of a one-time bundle (subscriptions and the month pass pay none). It is
-written as a ledger row the moment the sale settles, **held for 30 days**,
+`commissionRate` of a one-time bundle (subscriptions and the month pass pay
+none). **The server is the only source of the rate: clients render the value
+from `GET /referral` and never hardcode it**, so the rate can move without a
+contract change or a client release. It is written as a ledger row the
+moment the sale settles, **held for 30 days**,
 then available, then paid on the **1st of each month** in ONE Stripe
 transfer per affiliate, only when the available balance is at or above
 **$20** and the connected account is payouts-enabled. `connect.state` is
