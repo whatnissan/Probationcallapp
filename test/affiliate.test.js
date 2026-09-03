@@ -41,6 +41,36 @@ test('connect state from the cached profile columns', function() {
   assert.strictEqual(a.connectState({ stripe_connect_id: 'acct_1', stripe_connect_details_submitted: true, stripe_connect_payouts_enabled: true }), 'ready');
 });
 
+test('connect state: requirements tell "Stripe is reviewing" from "you owe a document"', function() {
+  var submitted = { stripe_connect_id: 'acct_1', stripe_connect_details_submitted: true };
+  // Submitted, nothing outstanding -> Stripe is reviewing.
+  assert.strictEqual(a.connectState(Object.assign({}, submitted, {
+    stripe_connect_requirements_currently_due: [], stripe_connect_requirements_past_due: []
+  })), 'pending_review');
+  // Submitted, but Stripe came back asking for something -> the affiliate's move.
+  assert.strictEqual(a.connectState(Object.assign({}, submitted, {
+    stripe_connect_requirements_currently_due: ['individual.id_number']
+  })), 'in_progress');
+  assert.strictEqual(a.connectState(Object.assign({}, submitted, {
+    stripe_connect_requirements_past_due: ['external_account']
+  })), 'in_progress');
+  // payouts_enabled still wins over anything outstanding.
+  assert.strictEqual(a.connectState(Object.assign({}, submitted, {
+    stripe_connect_payouts_enabled: true, stripe_connect_requirements_currently_due: ['x']
+  })), 'ready');
+});
+
+test('connect state: NULL requirements are UNKNOWN, not "nothing due"', function() {
+  // Never synced (pre-048 row): keep the old, less precise answer rather
+  // than claiming the affiliate has nothing left to do.
+  assert.strictEqual(a.connectState({
+    stripe_connect_id: 'acct_1', stripe_connect_details_submitted: true,
+    stripe_connect_requirements_currently_due: null, stripe_connect_requirements_past_due: null
+  }), 'pending_review');
+  assert.strictEqual(a.requirementsOutstanding({}), false);
+  assert.strictEqual(a.requirementsOutstanding(null), false);
+});
+
 test('next payout date is the first of next month, Central time', function() {
   assert.strictEqual(a.nextPayoutDate(Date.parse('2026-09-02T21:00:00Z')), '2026-10-01');
   assert.strictEqual(a.nextPayoutDate(Date.parse('2026-12-31T23:00:00Z')), '2027-01-01'); // still Dec 31 in Chicago

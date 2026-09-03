@@ -22,6 +22,15 @@ Each morning at 5:05 AM CST it calls county hotlines, navigates the IVR with DTM
 detects the announced color/phase, and notifies subscribers by SMS + email whether they
 must report for testing.
 
+## Companion docs — where they actually live
+- `API_CONTRACT.md` — in THIS repo root AND the iOS repo root, byte-identical.
+  It is the boundary with the app. Any edit must be mirrored to
+  ~/Documents/Probationcall/API_CONTRACT.md as a FRESH commit (never amend —
+  another author commits there), and the sha256 confirmed equal on both sides.
+- `FEATURES.md` — **iOS repo ONLY**: ~/Documents/Probationcall/FEATURES.md.
+  There is no FEATURES.md in this repo and there is not meant to be. Don't go
+  looking for one here; read it at that path.
+
 ## Stack
 - Runtime: Node.js / Express. Entry point: server.js
 - Database + Auth: Supabase

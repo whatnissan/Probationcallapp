@@ -351,6 +351,27 @@ async function resolveAffiliateByCode(rawCode) {
 var _connectAccountCache = new Map();
 var CONNECT_ACCOUNT_CACHE_TTL_MS = 60 * 1000;
 
+// One shape for a connected account's state, built identically whether it
+// came from an API retrieve or from an account.updated event — so the cache,
+// the profile columns and the pre-transfer check can never disagree about
+// structure. The requirements arrays are stored VERBATIM: they are opaque
+// Stripe requirement ids that we forward without interpreting. A payload
+// with no requirements hash yields [] rather than null, because a response
+// we actually read that listed nothing really does mean nothing is due.
+function connectStatusFrom(account) {
+  var req = (account && account.requirements) || {};
+  return {
+    id: account.id,
+    charges_enabled: !!account.charges_enabled,
+    payouts_enabled: !!account.payouts_enabled,
+    details_submitted: !!account.details_submitted,
+    requirements_currently_due: req.currently_due || [],
+    requirements_eventually_due: req.eventually_due || [],
+    requirements_past_due: req.past_due || [],
+    disabled_reason: req.disabled_reason || null
+  };
+}
+
 async function getConnectAccountStatus(accountId) {
   if (!accountId) return null;
   var cached = _connectAccountCache.get(accountId);
@@ -359,12 +380,7 @@ async function getConnectAccountStatus(accountId) {
   }
   try {
     var account = await stripe.accounts.retrieve(accountId);
-    var status = {
-      id: account.id,
-      charges_enabled: !!account.charges_enabled,
-      payouts_enabled: !!account.payouts_enabled,
-      details_submitted: !!account.details_submitted
-    };
+    var status = connectStatusFrom(account);
     _connectAccountCache.set(accountId, { data: status, fetchedAt: Date.now() });
     // Bound the cache so it can't grow unbounded across many affiliates.
     if (_connectAccountCache.size > 1000) {
@@ -380,8 +396,9 @@ async function getConnectAccountStatus(accountId) {
 
 // Sync the cached status onto the profile row. Called from both the
 // pre-transfer check (when it just fetched fresh data) and the
-// account.updated webhook handler. Failures here are non-critical;
-// the cache columns are display-only.
+// account.updated webhook handler. Failures here are non-critical; the
+// cache columns drive display and the state §4.14 reports, and are still
+// NOT the source of truth for a transfer decision (see §6.B above).
 async function syncConnectStatusToProfile(accountId, status) {
   if (!accountId || !status) return;
   try {
@@ -389,6 +406,10 @@ async function syncConnectStatusToProfile(accountId, status) {
       stripe_connect_charges_enabled: status.charges_enabled,
       stripe_connect_payouts_enabled: status.payouts_enabled,
       stripe_connect_details_submitted: status.details_submitted,
+      stripe_connect_requirements_currently_due: status.requirements_currently_due,
+      stripe_connect_requirements_eventually_due: status.requirements_eventually_due,
+      stripe_connect_requirements_past_due: status.requirements_past_due,
+      stripe_connect_disabled_reason: status.disabled_reason,
       stripe_connect_updated_at: new Date().toISOString()
     }).eq('stripe_connect_id', accountId);
     if (r.error) console.error('[CONNECT] Profile cache sync failed for ' + accountId + ':', r.error);
@@ -3408,7 +3429,7 @@ app.post('/api/v1/schedule/resume', authV1, async function(req, res) {
 app.get('/api/v1/referral', authV1, async function(req, res) {
   try {
     var prof = await supabase.from('profiles')
-      .select('referral_code, affiliate_balance_cents, affiliate_total_earned_cents, stripe_connect_id, stripe_connect_payouts_enabled, stripe_connect_details_submitted')
+      .select('referral_code, affiliate_balance_cents, affiliate_total_earned_cents, stripe_connect_id, stripe_connect_payouts_enabled, stripe_connect_details_submitted, stripe_connect_requirements_currently_due, stripe_connect_requirements_past_due')
       .eq('id', req.user.id).maybeSingle();
     if (!prof.data) return v1Error(res, 404, 'not_found', 'No referral account found.');
     var code = prof.data.referral_code || null;
@@ -4936,36 +4957,32 @@ async function handleSubscriptionDeleted(subscription, res) {
 // We sync the relevant flags onto the profile so the admin UI can show
 // onboarding progress and the §6.B pre-transfer cache stays warm.
 //
-// Note: account.updated is a CONNECT event, not a platform event. The
-// webhook endpoint in Stripe Dashboard must be configured to listen to
-// events on connected accounts AND have account.updated in its event
-// list. Without that, this handler never fires.
+// Note: account.updated is a CONNECT event, not a platform event. It
+// arrives on the connected-accounts endpoint, /webhook/stripe/connect —
+// that Stripe destination must be of type "connected accounts" AND have
+// account.updated in its event list, or this handler never fires.
+//
+// Since migration 048 this persists the full picture, not just the three
+// booleans: the requirements columns are what let connectState() tell
+// "Stripe is reviewing you" apart from "Stripe wants another document",
+// which §4.14 reports to the app.
 async function handleAccountUpdated(account, res) {
   try {
     if (!account || !account.id) {
       console.log('[STRIPE WEBHOOK] account.updated: no account id, ignoring');
       return res.json({ received: true });
     }
-    var status = {
-      id: account.id,
-      charges_enabled: !!account.charges_enabled,
-      payouts_enabled: !!account.payouts_enabled,
-      details_submitted: !!account.details_submitted
-    };
+    var status = connectStatusFrom(account);
     // Refresh the in-memory cache so the next pre-transfer check sees
     // the new state without an API call.
     _connectAccountCache.set(account.id, { data: status, fetchedAt: Date.now() });
-    // Mirror to the profile (cached display fields).
-    var r = await supabase.from('profiles').update({
-      stripe_connect_charges_enabled: status.charges_enabled,
-      stripe_connect_payouts_enabled: status.payouts_enabled,
-      stripe_connect_details_submitted: status.details_submitted,
-      stripe_connect_updated_at: new Date().toISOString()
-    }).eq('stripe_connect_id', account.id);
-    if (r.error) {
-      console.error('[STRIPE WEBHOOK] account.updated profile sync failed for ' + account.id + ':', r.error);
-    }
-    console.log('[STRIPE WEBHOOK] Account updated: ' + account.id + ' charges=' + status.charges_enabled + ' payouts=' + status.payouts_enabled + ' details=' + status.details_submitted);
+    await syncConnectStatusToProfile(account.id, status);
+    console.log('[STRIPE WEBHOOK] Account updated: ' + account.id +
+      ' charges=' + status.charges_enabled + ' payouts=' + status.payouts_enabled +
+      ' details=' + status.details_submitted +
+      ' currently_due=' + status.requirements_currently_due.length +
+      ' past_due=' + status.requirements_past_due.length +
+      (status.disabled_reason ? ' disabled_reason=' + status.disabled_reason : ''));
     return res.json({ received: true });
   } catch (e) {
     console.error('[STRIPE WEBHOOK] handleAccountUpdated error:', e.message);
@@ -5274,19 +5291,11 @@ async function handleChargeDisputeCreated(dispute, res) {
   }
 }
 
-app.post('/webhook/stripe', async function(req, res) {
-  var event;
-  try {
-    // Two secrets: the account endpoint's and the Connect endpoint's (events
-    // from connected accounts, e.g. account.updated for an affiliate's
-    // Express account). Either may sign — see lib/stripe-webhook.js.
-    event = constructEventWithSecrets(stripe, req.body, req.headers['stripe-signature'],
-      [process.env.STRIPE_WEBHOOK_SECRET, process.env.STRIPE_CONNECT_WEBHOOK_SECRET]);
-  } catch (e) {
-    console.error('[STRIPE WEBHOOK] Signature verification failed:', e.message);
-    return res.status(400).send('Webhook error');
-  }
-
+// Everything a Stripe event does AFTER its signature is verified. Both
+// endpoints — the account one and the connected-accounts one — run this
+// same dispatch; only the signing secret differs, and that lives in the
+// route wrapper below.
+async function dispatchStripeEvent(event, res) {
   console.log('[STRIPE WEBHOOK] Received event:', event.type, event.id);
 
   // Subscription event branches — no affiliate logic in any of these.
@@ -5395,13 +5404,25 @@ app.post('/webhook/stripe', async function(req, res) {
 
     // AFFILIATE COMMISSION — accept either a code passed at checkout or a
     // prior referral lock on the profile. Failures here log but never undo
-    // the credit grant above. Gated by AFFILIATE_ENABLED so a bundle
-    // purchase still succeeds and credits are still granted when the
-    // program is off — only the commission/transfer path is skipped.
-    if (!AFFILIATE_ENABLED) {
-      console.log('[STRIPE WEBHOOK] Affiliate program disabled — skipping commission for session ' + s.id);
-      return res.json({ received: true });
-    }
+    // the credit grant above.
+    //
+    // DELIBERATELY NOT GATED BY AFFILIATE_ENABLED (changed 2026-09-03).
+    // This is where the switch used to return early, which meant a referred
+    // purchase made while the program was off wrote NO ledger row and the
+    // commission was lost permanently — there was no backfill path, while
+    // POST /referral/apply deliberately keeps recording attribution with the
+    // program off (contract §4.14, "links circulate while the program is
+    // off"). The row is now always written. The switch instead gates only
+    // promotion and payout: promoteHeldEarnings and runAffiliatePayoutBatch
+    // both sit behind `if (!AFFILIATE_ENABLED) return` in the 09:10 cron,
+    // and every other money path (the admin retry route, the payout batch)
+    // is behind requireAffiliateEnabled — so writing this row moves no money.
+    //
+    // ACCEPTED CONSEQUENCE, recorded here so it is findable: on the day
+    // AFFILIATE_ENABLED is flipped to true, every accrued row whose
+    // available_at has already passed becomes immediately payable in the
+    // next 1st-of-month batch. Total the outstanding liability BEFORE
+    // flipping it.
 
     // month_pass is the $14.99 subscription's one-time twin — commission-free
     // for parity, so affiliates have no incentive to steer signups away from
@@ -5479,7 +5500,40 @@ app.post('/webhook/stripe', async function(req, res) {
     console.error('[STRIPE WEBHOOK] Unhandled error processing session', s.id, ':', e.message, e.stack);
     res.status(500).json({ error: 'webhook_handler_error' });
   }
-});
+}
+
+// ONE secret per endpoint. Stripe signs an event with the signing secret of
+// the destination it was sent to, so accepting either secret on either URL
+// (which is what this did before 2026-09-03) let a connected-account event
+// be replayed at the account endpoint and vice versa. Each route now
+// verifies against its own secret and nothing else. An unset secret makes
+// constructEventWithSecrets throw, so the route rejects rather than
+// silently accepting anything.
+function stripeWebhookRoute(secretName) {
+  return async function(req, res) {
+    var event;
+    try {
+      event = constructEventWithSecrets(stripe, req.body, req.headers['stripe-signature'],
+        [process.env[secretName]]);
+    } catch (e) {
+      console.error('[STRIPE WEBHOOK] Signature verification failed on ' + req.originalUrl +
+        ' (' + secretName + '):', e.message);
+      return res.status(400).send('Webhook error');
+    }
+    return dispatchStripeEvent(event, res);
+  };
+}
+
+// The platform account's own events (checkout, invoices, refunds, disputes).
+app.post('/webhook/stripe', stripeWebhookRoute('STRIPE_WEBHOOK_SECRET'));
+
+// Connected-account events — account.updated for an affiliate's Express
+// account. NOTE the path: app.use('/webhook/stripe', express.raw(...)) near
+// the top of this file is a PREFIX mount, so this sub-path inherits the raw
+// body that signature verification requires. A sibling path such as
+// /webhook/connect would be parsed by express.json() first and every
+// signature check would fail.
+app.post('/webhook/stripe/connect', stripeWebhookRoute('STRIPE_CONNECT_WEBHOOK_SECRET'));
 
 app.post('/api/call', auth, async function(req, res) {
   // Demo account never dials — the morning row is written by the scheduler.
