@@ -68,7 +68,7 @@ Standard codes: `unauthenticated`, `forbidden`, `not_found`, `validation_failed`
 `insufficient_credits`, `rate_limited`, `outside_call_window`, `schedule_missing`,
 `internal`, `billing_cancel_failed`, `unpaid_affiliate_earnings`,
 `account_deletion_blocked` (all three §4.15), `phone_not_verified` (§4.7),
-`referral_already_applied` (§4.14),
+`referral_already_applied`, `referral_after_purchase` (both §4.14),
 `sms_opted_out`, `sms_send_failed`, `verification_not_found`,
 `verification_expired`, `verification_locked`, `verification_incorrect`
 (§4.17).
@@ -1136,8 +1136,27 @@ sheet should treat as "done, re-fetch `/referral`". Refused with
 attribution path (2026-09-02): the app captures `ref` from the share link
 (universal link or clipboard) at signup and submits it here, so someone who
 taps a link, installs the app and signs up in it is attributed exactly like a
-web signup. Rules: one code per account, ever (`409
-referral_already_applied`); not your own (`400`); unknown code `404`.
+web signup.
+
+Rules: one code per account, ever; not your own (`400`); unknown code `404`.
+
+**A code may be applied at any time until the account's first successful
+purchase, and is refused after it** (`409 referral_after_purchase`). There is
+no time limit — a code applied months after signup is valid, because a
+referral is an acquisition claim and an account that has never paid has not
+yet been acquired. An account that has already paid was not acquired by
+anyone, so the claim is refused. Any purchase counts, including a
+subscription, the month pass, and a purchase later refunded. Free starter
+credits are not a purchase.
+
+**Retrying is safe.** Submitting the *same* code again returns `200` with
+`applied: true` — the call is idempotent, so an app that retries a request
+whose response it never saw is not told its own success was an error.
+`bonusCredits` counts only what THIS call granted and is `0` on a repeat;
+clients must not add it to a balance twice. Submitting a *different* code
+once one is applied is `409 referral_already_applied`. Those two 409s are
+distinct conditions and clients branch on `code`, never on the status.
+
 **Attribution is recorded whether or not `programEnabled` is true** — links
 circulate while the program is off — but the referred-signup bonus
 (`bonusCredits`, 5 today) is granted only while it is on, so a code cannot be

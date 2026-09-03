@@ -117,6 +117,23 @@ test('connect state: NULL requirements are UNKNOWN, not "nothing due"', function
   assert.strictEqual(a.requirementsOutstanding(null), false);
 });
 
+test('referral apply: idempotency outranks the purchase gate', function() {
+  var d = a.referralApplyDecision;
+  // The ordering that matters: same code already applied, and the account has
+  // since bought something. This is a RETRY of a call that already worked, so
+  // it must not be refused as too late.
+  assert.strictEqual(d('DAVE30', 'DAVE30', true), 'idempotent');
+  assert.strictEqual(d('DAVE30', 'DAVE30', false), 'idempotent');
+});
+
+test('referral apply: the other three outcomes', function() {
+  var d = a.referralApplyDecision;
+  assert.strictEqual(d('DAVE30', 'OTHER99', false), 'conflict');      // 409 referral_already_applied
+  assert.strictEqual(d('DAVE30', 'OTHER99', true), 'conflict');       // a code wins over the gate either way
+  assert.strictEqual(d(null, 'DAVE30', true), 'after_purchase');      // 409 referral_after_purchase
+  assert.strictEqual(d(null, 'DAVE30', false), 'apply');              // the only path that claims
+});
+
 test('next payout date is the first of next month, Central time', function() {
   assert.strictEqual(a.nextPayoutDate(Date.parse('2026-09-02T21:00:00Z')), '2026-10-01');
   assert.strictEqual(a.nextPayoutDate(Date.parse('2026-12-31T23:00:00Z')), '2027-01-01'); // still Dec 31 in Chicago

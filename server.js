@@ -3493,19 +3493,88 @@ app.get('/api/v1/referral', authV1, async function(req, res) {
 // referred-signup bonus is granted only while it is on, so a code cannot
 // be a credit-farming lever for an inactive program. Same atomic claim as
 // the web path: exactly one code per account, ever.
+//
+// Two things this has to get right:
+//
+// 1. IDEMPOTENCY IS CHECKED BEFORE THE PURCHASE GATE. The app retries a
+//    request whose response it never saw. If the gate ran first, the
+//    sequence apply -> buy -> retry would answer referral_after_purchase
+//    for a call that had ALREADY SUCCEEDED. So "is a code already applied?"
+//    is settled first, and only an account with no code reaches the gate.
+// 2. The two 409s are different failures and the client branches on `code`.
+//    Resubmitting the SAME code is a success (200, bonusCredits 0 — this
+//    call granted nothing). A DIFFERENT code is referral_already_applied.
+//    Being past the first purchase is referral_after_purchase.
 app.post('/api/v1/referral/apply', authV1, rateLimit('referral_apply', 10, 10 * 60 * 1000), async function(req, res) {
+  // Turn a decision from lib/affiliate.js into a response. Every refusal
+  // path goes through here so the two 409s cannot drift apart.
+  function settle(decision, existingCode, submitted) {
+    if (decision === 'idempotent') {
+      console.log('[V1-REFERRAL] ' + req.user.id.slice(0, 8) + ' re-submitted ' + submitted + ' — idempotent, nothing granted');
+      return res.json({ applied: true, code: existingCode, bonusCredits: 0 });
+    }
+    if (decision === 'conflict') {
+      return v1Error(res, 409, 'referral_already_applied', 'A referral code has already been applied to this account.');
+    }
+    console.log('[V1-REFERRAL] ' + req.user.id.slice(0, 8) + ' tried ' + submitted + ' after a purchase — refused');
+    return v1Error(res, 409, 'referral_after_purchase', 'You have already made a purchase, so a referral code can no longer be added.');
+  }
   try {
     var code = String((req.body && req.body.code) || '').trim().toUpperCase();
     if (!/^[A-Z0-9]{4,12}$/.test(code)) return v1Error(res, 400, 'validation_failed', 'Enter the referral code you were given.');
     var referrer = await resolveAffiliateByCode(code);
     if (!referrer) return v1Error(res, 404, 'not_found', 'That referral code is not valid.');
     if (referrer.id === req.user.id) return v1Error(res, 400, 'validation_failed', 'You cannot use your own referral code.');
+
+    var cur = await supabase.from('profiles').select('referred_by').eq('id', req.user.id).maybeSingle();
+    if (cur.error) {
+      console.error('[V1-REFERRAL] referred_by read failed for ' + req.user.id.slice(0, 8) + ':', cur.error.message);
+      return v1Error(res, 500, 'internal', 'Could not apply that code. Please try again.', true);
+    }
+    var existingCode = cur.data && cur.data.referred_by ? String(cur.data.referred_by).toUpperCase() : null;
+
+    // THE WINDOW: open until the account's first successful purchase, then
+    // closed for good. No time limit — a code applied months after signup is
+    // valid, because a referral is an acquisition claim and an account that
+    // has never paid has not yet been acquired. One that has already paid
+    // was not acquired by anyone.
+    //
+    // Any purchases row counts: subscription, month pass, one-time bundle,
+    // and one later REFUNDED — the row survives a refund on purpose, because
+    // buy / refund / apply a code / buy again would otherwise be an open
+    // door. Free starter credits go through the trigger and
+    // credit_transactions, never purchases, so they do not close the window.
+    // Skipped entirely when a code is already present: the decision below
+    // never reads hasPurchase in that case, and an idempotent retry must not
+    // depend on a query that can fail.
+    var hasPurchase = false;
+    if (!existingCode) {
+      var paid = await supabase.from('purchases').select('id').eq('user_id', req.user.id).limit(1);
+      if (paid.error) {
+        console.error('[V1-REFERRAL] purchase check failed for ' + req.user.id.slice(0, 8) + ':', paid.error.message);
+        return v1Error(res, 500, 'internal', 'Could not apply that code. Please try again.', true);
+      }
+      hasPurchase = !!(paid.data && paid.data.length);
+    }
+
+    var decision = affiliate.referralApplyDecision(existingCode, code, hasPurchase);
+    if (decision !== 'apply') return settle(decision, existingCode, code);
+
     var lock = await supabase.from('profiles').update({ referred_by: code }).eq('id', req.user.id).is('referred_by', null).select('id');
     if (lock.error) {
       console.error('[V1-REFERRAL] claim failed for ' + req.user.id.slice(0, 8) + ':', lock.error.message);
       return v1Error(res, 500, 'internal', 'Could not apply that code. Please try again.', true);
     }
-    if (!lock.data || !lock.data.length) return v1Error(res, 409, 'referral_already_applied', 'A referral code has already been applied to this account.');
+    if (!lock.data || !lock.data.length) {
+      // Raced with a concurrent apply between the read above and here. Re-read
+      // and settle on what actually landed, so the loser of the race still
+      // gets a truthful answer rather than a blanket conflict.
+      var after = await supabase.from('profiles').select('referred_by').eq('id', req.user.id).maybeSingle();
+      var existing = after.data && after.data.referred_by ? String(after.data.referred_by).toUpperCase() : null;
+      if (existing) return settle(affiliate.referralApplyDecision(existing, code, false), existing, code);
+      console.error('[V1-REFERRAL] claim matched no row and no code is present for ' + req.user.id.slice(0, 8));
+      return v1Error(res, 500, 'internal', 'Could not apply that code. Please try again.', true);
+    }
     var refRow = await supabase.from('referrals').insert({ referrer_id: referrer.id, referred_id: req.user.id, referral_code: code, status: 'signed_up' });
     if (refRow.error) console.error('[V1-REFERRAL] referrals row failed for ' + req.user.id.slice(0, 8) + ':', refRow.error.message);
     var bonus = 0;
