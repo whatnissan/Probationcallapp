@@ -7558,7 +7558,29 @@ app.get('/api/admin/check', auth, async function(req, res) {
 
 app.get('/api/admin/dashboard', adminAuth, async function(req, res) {
   try {
-    var usersResult = await supabase.from('profiles').select('*').order('created_at', { ascending: false });
+    // Named columns, not select('*'). This is the query the admin panel runs
+    // most, and '*' pulled every column of every profile on each load —
+    // including a dozen the panel never renders: every stripe_* and
+    // stripe_connect_* identifier and its requirements arrays, the
+    // subscription_* fields, probation_end_date, user_color, payout_email,
+    // is_demo, affiliate_total_earned_cents.
+    //
+    // The list below is the exact union of what the client reads: the users
+    // table with its sorter and filter (admin.html 158-160), the user detail
+    // modal (162), and the fallback stats computed further down this handler.
+    // auth_created_at and last_sign_in_at are NOT here — they are merged in
+    // from the auth API below.
+    //
+    // ADDING A FIELD TO THE ADMIN PANEL NOW MEANS ADDING IT HERE TOO. That is
+    // the trade: an undefined in the UI is a cheap, visible failure, and it
+    // is worth it to stop shipping every column of the profiles table on
+    // every refresh.
+    var usersResult = await supabase.from('profiles')
+      .select('id, email, credits, referred_by, is_disabled, is_admin, terms_accepted_at, created_at, last_login, referral_code, affiliate_balance_cents, ftbend_access')
+      .order('created_at', { ascending: false });
+    if (usersResult.error) {
+      console.error('[ADMIN-DASH] profiles read failed:', usersResult.error.message);
+    }
     var users = usersResult.data || [];
     
     // Get auth users data for created_at and last_sign_in_at. listUsers()
