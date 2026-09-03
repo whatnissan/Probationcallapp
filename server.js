@@ -271,7 +271,7 @@ function getCountyConfig(countyId) {
 
 
 // Affiliate settings
-const AFFILIATE_COMMISSION_PERCENT = 30;
+const AFFILIATE_COMMISSION_PERCENT = 20;
 
 // Format phone to E.164 (+1XXXXXXXXXX)
 // formatPhone removed — its last caller (/api/schedule) moved to
@@ -3458,7 +3458,8 @@ app.get('/api/v1/referral', authV1, async function(req, res) {
     res.json({
       code: code,
       signups: signups,
-      // A fraction, not a percent — §4.14's example is 0.30.
+      // A fraction, not a percent — §4.14's example is 0.20. The client
+      // renders THIS value; it never hardcodes a rate.
       commissionRate: AFFILIATE_COMMISSION_PERCENT / 100,
       shareUrl: code ? (process.env.BASE_URL + '/?ref=' + code) : null,
       programEnabled: AFFILIATE_ENABLED,

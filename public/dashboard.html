@@ -519,8 +519,12 @@ select option { background: #1a1a2e; color: #fff; }
     <div class="card">
       <h2>💰 Earn Cash - Affiliate Program</h2>
       
-      <div class="info-box green">
-        <strong>Earn 30% commission</strong> on every purchase made by people you refer!
+      <!-- Rate comes from the server (affiliate.commissionPercent). Hidden
+           until that value lands: a hardcoded number here drifts the day the
+           rate moves, and with the program off a page promising money is
+           exactly what we don't want on screen. -->
+      <div class="info-box green" id="commissionBox" hidden>
+        <strong>Earn <span id="commissionPercent"></span>% commission</strong> on every purchase made by people you refer!
       </div>
       
       <div class="affiliate-balance">
@@ -1247,6 +1251,10 @@ function loadUser() {
       if (d.affiliateEnabled && d.affiliate) {
         affiliateData = d.affiliate;
         document.getElementById('referralLink').value = 'https://www.probationcall.com/r/' + d.affiliate.referralCode; document.getElementById('qrCode').src = 'https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=' + encodeURIComponent('https://www.probationcall.com/r/' + d.affiliate.referralCode); document.getElementById('refCodeDisplay').textContent = d.affiliate.referralCode;
+        if (typeof d.affiliate.commissionPercent === 'number') {
+          document.getElementById('commissionPercent').textContent = d.affiliate.commissionPercent;
+          document.getElementById('commissionBox').hidden = false;
+        }
         document.getElementById('affiliateBalance').textContent = '$' + (d.affiliate.balance / 100).toFixed(2);
         document.getElementById('totalEarned').textContent = '$' + (d.affiliate.totalEarned / 100).toFixed(2);
         document.getElementById('totalReferred').textContent = d.affiliate.referrals ? d.affiliate.referrals.length : 0;
