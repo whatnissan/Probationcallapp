@@ -4070,8 +4070,12 @@ app.post('/api/affiliate/payout-email', auth, requireAffiliateEnabled, async fun
 
 // Request payout
 app.post('/api/affiliate/request-payout', auth, requireAffiliateEnabled, async function(req, res) {
-  // Manual payouts ended 2026-09-02: commissions are paid monthly to the
-  // connected Stripe account. Kept as a clear answer for any old client.
+  // Manual payouts ended 2026-09-02, and the rule is absolute: NEVER pay
+  // anyone outside Connect, no exceptions. Tax research (2026-09-03): a
+  // payee who refuses a TIN triggers 24% backup withholding; pay them
+  // without it and that 24% is OUR liability, and withholding forces a 1099
+  // even below the $2,000 federal threshold. Express collects the TIN at
+  // onboarding, which is the only reason none of that applies here.
   return res.status(410).json({ error: 'Manual payouts have ended. Commissions are paid to your connected Stripe account monthly once your available balance reaches $20.' });
   // FIX (AFFILIATE_AUDIT §6.A — double-pay hole):
   // Connect affiliates are paid automatically via stripe.transfers.create on
@@ -4227,7 +4231,13 @@ app.post('/api/check-affiliate-code', auth, requireAffiliateEnabled, async funct
 // Stripe Connect EXPRESS onboarding (2026-09-02). Express, not Standard:
 // it is the Connect type where Stripe collects the taxpayer number, matches
 // it, files the 1099s and delivers them. The platform stays payer of record;
-// the app never asks for or stores a taxpayer number. Every call mints a
+// the app never asks for or stores a taxpayer number.
+// Tax research (2026-09-03): credits instead of cash would NOT avoid this —
+// a referral reward is compensation whatever the medium, deemed paid when
+// credited and usable. Federal 1099-NEC threshold for 2026 payments is
+// $2,000; some STATES may still be $600 (Mississippi, Wisconsin and
+// Massachusetts flagged) and filing follows the AFFILIATE's address — open
+// item, tracked in the contract §4.14. Every call mints a
 // fresh onboarding link — links expire, and an abandoned onboarding resumes
 // where it stopped. A ready account gets an Express dashboard login link.
 async function connectOnboardingUrl(userId, email, profile) {

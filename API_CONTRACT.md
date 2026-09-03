@@ -1096,6 +1096,26 @@ platform remains the payer of record and the forms carry its name; there is
 no arrangement in which the obligation vanishes — destination charges
 included.** The app never asks for, sees, or stores a taxpayer number.
 
+**Tax research, 2026-09-03 — three rules a future change must not break:**
+1. **Credits do not avoid 1099s.** The IRS deems payment when an amount is
+   credited and usable, at fair market value; a referral reward is
+   compensation whatever the medium. Connect stays.
+2. **The 30-day hold is a tax control, not only refund safety.** A held
+   commission is "restricted" — not yet income — until the clawback window
+   closes, which keeps Year-1 / Year-2 reporting clean. Do not shorten it
+   without understanding that.
+3. **Never pay anyone outside Connect, ever.** A payee who refuses a TIN
+   triggers 24% backup withholding; paying without it makes that 24% the
+   platform's liability, and withholding forces a 1099 even below the
+   threshold. Express collects the TIN at onboarding; no manual payouts, no
+   exceptions.
+
+The federal 1099-NEC threshold for 2026 payments is **$2,000**. **Open
+item:** some states may still be $600 (Mississippi, Wisconsin and
+Massachusetts flagged), and filing follows the affiliate's address, not the
+platform's. The tax-forms setting in Stripe stays off until the accountant
+confirms in writing.
+
 **`POST /referral/connect`** → `{ "url": "https://connect.stripe.com/…" }`.
 Creates the Express account on first call, then mints an onboarding link
 (fresh each time — links expire, and an abandoned onboarding simply resumes
