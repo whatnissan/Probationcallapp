@@ -3059,6 +3059,26 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
       }
     }
 
+    // probationEndDate (2026-09-02): collected in onboarding, previously
+    // dropped here and posted to the website's /api/profile/probation-end as a
+    // workaround. Optional; null clears it; a bad date is a 400 naming it.
+    var probationEnd;
+    if (b.probationEndDate !== undefined) {
+      if (b.probationEndDate === null || b.probationEndDate === '') {
+        probationEnd = null;
+      } else {
+        var pe = String(b.probationEndDate).trim();
+        var ped = /^(\d{4})-(\d{2})-(\d{2})$/.exec(pe);
+        var peDate = ped ? new Date(Date.UTC(+ped[1], +ped[2] - 1, +ped[3])) : null;
+        var peValid = peDate && peDate.toISOString().slice(0, 10) === pe;
+        var peYear = peValid ? peDate.getUTCFullYear() : 0;
+        if (!peValid || peYear < 2000 || peYear > new Date().getUTCFullYear() + 15) {
+          return v1Error(res, 400, 'validation_failed', 'probationEndDate must be a real date as YYYY-MM-DD.');
+        }
+        probationEnd = pe;
+      }
+    }
+
     var data = {
       user_id: req.user.id,
       county: county,
@@ -3107,6 +3127,18 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
       return v1Error(res, 500, 'internal', 'Could not save your schedule.', true);
     }
     flagSharedPhone(req.user.id, data.notify_number).catch(function() {});
+    if (probationEnd !== undefined) {
+      var peUpd = await supabase.from('profiles').update({ probation_end_date: probationEnd }).eq('id', req.user.id);
+      if (peUpd.error) console.error('[V1-SCHEDULE] probation_end_date save failed for ' + req.user.id.slice(0, 8) + ':', peUpd.error.message);
+    }
+    // First schedule = the welcome (2026-09-02). It lived only in the
+    // website's /api/schedule, so every app signup got nothing. One message,
+    // on the channels the person just chose; sendSMS honours opt-outs.
+    if (!existing.data) {
+      var welcome = '🎉 Welcome to ProbationCall!\n\nYour daily check-in is now active. We\'ll call the hotline for you every morning and let you know the result.\n\nManage your account anytime at:\nprobationcall.com\n\n- ProbationCall.com';
+      notify(data.notify_number, data.notify_email, data.notify_method, welcome, 'welcome')
+        .catch(function(e) { console.error('[V1-SCHEDULE] welcome failed for ' + req.user.id.slice(0, 8) + ':', e.message); });
+    }
     if (county === 'ftbend') {
       var profUpdate = { ftbend_access: true };
       if (ftbendColorName) profUpdate.user_color = ftbendColorName;

@@ -527,6 +527,17 @@ rather than a value that silently never matches an announcement. It is stored
 on `profiles.user_color`, and sending it with a Montgomery schedule is a `400`
 — colour has no meaning there.
 
+**`probationEndDate` is writable here (2026-09-02).** `"YYYY-MM-DD"` or
+`null` to clear; stored on `profiles.probation_end_date` and read back from
+`/me`. A malformed or impossible date is a `400` naming the field. The app
+must no longer post it to the website's `/api/profile/probation-end`.
+
+**The first schedule sends the welcome (2026-09-02).** When `PUT /schedule`
+creates a schedule for an account that had none, one welcome message goes
+out on the channels just chosen ("Your daily check-in is now active…"). It
+used to live only in the website's route, so app signups got nothing. A
+re-save is not a first schedule and sends nothing.
+
 **Shared phone numbers are flagged, never refused (2026-09-02).** A notify
 number already on another account's schedule opens a review flag for the
 daily admin digest. The schedule saves normally and the client sees nothing
