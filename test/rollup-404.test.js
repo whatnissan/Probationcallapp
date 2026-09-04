@@ -37,23 +37,23 @@ test('the 404 answers each caller in its own shape', function() {
 });
 
 // ---- the widened rollup ----
-test('the rollup never logs a raw user-agent', function() {
-  const m = server.match(/function uaBucket\(req\) \{([\s\S]*?)\n\}/);
-  assert.ok(m, 'uaBucket not found');
-  const body = m[1];
-  assert.ok(!/return ua;/.test(body), 'a raw UA must never become a bucket');
-  assert.ok(/uaSlug\(ua\)/.test(body), 'open-ended buckets go through the slug');
-  const slug = server.match(/function uaSlug\(ua\) \{([\s\S]*?)\n\}/);
-  assert.ok(/slice\(0, 20\)/.test(slug[1]), 'the slug is length capped');
-  assert.ok(/\[A-Za-z0-9_.-\]/.test(slug[1]), 'the slug is word characters only');
+test('the rollup gets its buckets from the lib, never a raw header', function() {
+  assert.ok(/require\('\.\/lib\/ua-bucket'\)/.test(server), 'server.js must use lib/ua-bucket');
+  // The raw header may be READ (to hand to uaBucket) but must never be
+  // concatenated into a key.
+  assert.ok(!/\+ ' a=' \+ String\(req\.headers\['user-agent'\]\)/.test(server),
+    'a raw User-Agent must never be concatenated into a rollup key');
+  assert.ok(!/function uaBucket\(req\)/.test(server),
+    'the inline copy of uaBucket should be gone — lib/ua-bucket.js is the one');
 });
 
-test('the API rollup line is unchanged — it is load bearing', function() {
+test('an authenticated API line names the user; an anonymous one names the agent', function() {
   const m = server.match(/function reqRollupKey\(req\) \{([\s\S]*?)\n\}/);
-  assert.ok(/u=' \+ uid/.test(m[1]), 'the API line still keys on the user id');
-  assert.ok(/isApi\n?\s*\? reqRollupKey\(req\)/.test(server.replace(/\s+/g, ' ').replace(/ /g, ' ')) ||
-    /isApi[\s\S]{0,40}reqRollupKey\(req\)/.test(server),
-    'API requests must still use reqRollupKey');
+  assert.ok(m, 'reqRollupKey not found');
+  const body = m[1];
+  assert.ok(/uid \? ' u=' \+ uid/.test(body), 'a known user is still named the same way');
+  assert.ok(/' u=- a=' \+ uaBucket\(req\.headers\['user-agent'\]\)/.test(body),
+    "a request with no user must name the agent — 'u=-' alone identifies nobody");
 });
 
 test('the page rollup is switchable without a deploy and marked temporary', function() {

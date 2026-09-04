@@ -33,6 +33,7 @@ const phoneVerify = require('./lib/verify');
 const affiliate = require('./lib/affiliate');
 const officesLib = require('./lib/offices');
 const returnPage = require('./lib/return-page');
+const { uaBucket } = require('./lib/ua-bucket');
 const connectRefresh = require('./lib/connect-refresh');
 const { createThrottle } = require('./lib/write-throttle');
 const { constructEventWithSecrets } = require('./lib/stripe-webhook');
@@ -179,58 +180,31 @@ var _reqDropped = 0;
 
 function reqRollupKey(req) {
   var path = String(req.path || '').slice(0, 60);
-  var uid = req.user && req.user.id ? String(req.user.id).slice(0, 8) : '-';
-  return String(req.method || '?').slice(0, 6) + ' ' + path + ' u=' + uid;
+  var uid = req.user && req.user.id ? String(req.user.id).slice(0, 8) : null;
+  // An authenticated line names the user, and that line is unchanged.
+  //
+  // An UNAUTHENTICATED one used to say 'u=-', which names nobody — and that
+  // is precisely the line worth naming. Rate limiting ws-ticket in front of
+  // auth() had the side effect of anonymising the loop it was catching: the
+  // 429 happens before req.user exists, so 25,000 rejected requests all
+  // logged as 'u=-' and told us nothing about WHAT was calling. The agent
+  // bucket answers that — browser vs our iOS app vs a script — without ever
+  // logging a raw User-Agent. See lib/ua-bucket.js.
+  return String(req.method || '?').slice(0, 6) + ' ' + path
+    + (uid ? ' u=' + uid : ' u=- a=' + uaBucket(req.headers['user-agent']));
 }
 
-// ---- TEMPORARY (2026-09-03): pages and static assets, bucketed by agent ----
+// ---- TEMPORARY (2026-09-03): count pages and static assets too ----
 // Added to answer one question — is a crawler a meaningful share of our
 // egress? — without sitting and watching the Railway HTTP log. REMOVE THIS
-// once that question is answered: delete UA_BUCKETS, uaBucket, ROLLUP_PAGES
-// and the else-branch below, and the rollup goes back to the API surface.
-// Set REQ_ROLLUP_PAGES=false in Railway to switch it off without a deploy.
+// once that question is answered: drop ROLLUP_PAGES and the else-branch
+// below and the rollup goes back to the API surface. Set
+// REQ_ROLLUP_PAGES=false in Railway to switch it off without a deploy.
 //
-// It never logs a raw User-Agent. A UA is a fingerprinting surface and a
-// raw one is unbounded text from a stranger; every request here collapses
-// into one of a fixed list of buckets. The two open-ended buckets get a
-// 20-char slug of word characters only, which is enough to recognise an
-// unknown agent and is what makes an unidentified crawler identifiable at
-// all — the whole point of the exercise.
+// NOTE: the agent bucketing itself is NOT temporary and does not live here
+// — it is lib/ua-bucket.js, and reqRollupKey above uses it on every
+// unauthenticated API line. Removing this block must not remove that.
 var ROLLUP_PAGES = process.env.REQ_ROLLUP_PAGES !== 'false';
-var UA_BUCKETS = [
-  ['grok', /grok/i], ['xai', /xai|x-ai\b/i], ['gptbot', /gptbot/i],
-  ['oai-search', /oai-searchbot/i], ['chatgpt-user', /chatgpt-user/i],
-  ['claudebot', /claudebot|claude-web|anthropic-ai/i], ['ccbot', /ccbot/i],
-  ['bytespider', /bytespider/i], ['perplexity', /perplexity/i],
-  ['googlebot', /googlebot|google-extended/i], ['bingbot', /bingbot/i],
-  ['applebot', /applebot/i], ['amazonbot', /amazonbot/i],
-  ['meta', /meta-externalagent|facebookexternalhit|facebookbot/i],
-  ['semrush', /semrushbot/i], ['ahrefs', /ahrefsbot/i],
-  ['yandex', /yandexbot/i], ['baidu', /baiduspider/i],
-  ['uptime', /uptimerobot|pingdom|betteruptime|railway/i],
-  ['stripe', /^stripe\//i], ['twilio', /^twiliopro|^twilio/i],
-  ['curl', /^curl\//i], ['wget', /^wget/i],
-  ['script', /python-requests|scrapy|aiohttp|httpx|go-http-client|okhttp|java\//i],
-  ['headless', /headlesschrome|puppeteer|playwright|phantomjs/i]
-];
-function uaSlug(ua) {
-  var m = String(ua).match(/[A-Za-z0-9_.-]+/);
-  return m ? m[0].slice(0, 20) : 'x';
-}
-function uaBucket(req) {
-  var ua = String(req.headers['user-agent'] || '');
-  if (!ua) return 'none';
-  for (var i = 0; i < UA_BUCKETS.length; i++) {
-    if (UA_BUCKETS[i][1].test(ua)) return UA_BUCKETS[i][0];
-  }
-  if (/bot|crawler|spider|scrape|fetch/i.test(ua)) return 'bot?:' + uaSlug(ua);
-  // A browser UA is the overwhelming majority and tells us nothing, so it
-  // stays a single bucket. Anything else keeps a slug — that is the bucket
-  // an unidentified crawler lands in.
-  if (/^mozilla\/5\.0/i.test(ua)) return 'browser';
-  return 'ua?:' + uaSlug(ua);
-}
-
 app.use(function(req, res, next) {
   var isApi = req.path && req.path.indexOf('/api/') === 0;
   if (!isApi && !(ROLLUP_PAGES && req.path)) return next();
@@ -243,7 +217,7 @@ app.use(function(req, res, next) {
       var k = isApi
         ? reqRollupKey(req) + ' ' + res.statusCode
         : String(req.method || '?').slice(0, 6) + ' ' + String(req.path || '').slice(0, 60)
-          + ' a=' + uaBucket(req) + ' ' + res.statusCode;
+          + ' a=' + uaBucket(req.headers['user-agent']) + ' ' + res.statusCode;
       if (_reqCounts.size >= 200 && !_reqCounts.has(k)) { _reqDropped++; return; }
       var e = _reqCounts.get(k);
       // Bytes are the actual question for the crawler hunt — 200 requests
