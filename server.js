@@ -7735,7 +7735,12 @@ app.post('/api/admin/push-test/:userId', adminAuth, async function(req, res) {
           apnsId: r.apnsId || null,
           unregistered: !!r.unregistered,
           appVersion: d.app_version || null,
-          osVersion: d.os_version || null
+          osVersion: d.os_version || null,
+          // Freshness, so a stale registration is distinguishable from a
+          // current one at a glance — "which of these three tokens is the
+          // one my phone actually holds" is the question being asked.
+          registeredAt: d.created_at || null,
+          lastSeenAt: d.last_seen_at || null
         });
       }
     }
