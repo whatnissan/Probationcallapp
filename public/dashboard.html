@@ -1858,6 +1858,11 @@ var wsAttempts = 0;
 var wsTimer = null;
 var wsStopped = false;
 var WS_MAX_ATTEMPTS = 8;   // ~4 minutes of backoff before we stop asking
+// How long a socket must stay open before it counts as a real connection
+// and refunds the reconnect budget. Well above a flap (milliseconds), far
+// below a healthy session (hours).
+var WS_HEALTHY_MS = 10000;
+var wsOpenedAt = 0;
 
 function wsRetryDelay() {
   return WS_BACKOFF_MS[Math.min(wsAttempts, WS_BACKOFF_MS.length - 1)];
@@ -1922,28 +1927,32 @@ async function connectWS() {
     }
   };
   ws.onopen = function() {
-    // A real connection resets the budget, so a later drop starts at 5s again
-    // rather than inheriting an exhausted one.
+    // NOTE: the reconnect budget is deliberately NOT reset here. onopen
+    // means the socket OPENED, which is not the same as the connection
+    // being any good, and resetting on it is what defeated WS_MAX_ATTEMPTS:
+    // a socket that opens and is closed immediately refunded the budget on
+    // every pass, so the cap never accrued and the retry loop was unbounded
+    // — one authenticated POST /api/ws-ticket per turn, forever.
     //
-    // CAREFUL: this reset is the one thing that can defeat WS_MAX_ATTEMPTS
-    // entirely. onopen fires when the socket OPENS, which is not the same as
-    // the connection being good — the server accepts the upgrade first and
-    // only then closes 1008 if the ticket is missing, invalid or past its
-    // 60-second TTL (see wss.on('connection') in server.js). An open that is
-    // immediately closed therefore zeroes the counter on every pass, and the
-    // cap never accrues: mint a ticket, open, get closed, retry, forever, at
-    // one auth'd POST /api/ws-ticket each time.
-    //
-    // It is bounded today only because POST /api/ws-ticket is now rate
-    // limited server-side (10/min per session). That is the backstop, not
-    // the design. If you move the reset, widen that limit, or make the
-    // budget depend on this counter alone, gate the reset on the connection
-    // having actually LASTED — e.g. only reset after a few seconds open, or
-    // reset in onmessage instead — or you reintroduce the unbounded loop.
-    wsAttempts = 0;
+    // The server now rejects a bad ticket BEFORE the handshake, so a
+    // rejection no longer reaches onopen at all. This is the second line of
+    // defence, and it is the one that still holds if anything ever
+    // reintroduces an accept-then-close path. Reset on LIFETIME, in
+    // onclose, below.
+    wsOpenedAt = Date.now();
     setWsStatus('');
   };
-  ws.onclose = function() { scheduleWsReconnect(); };
+  ws.onclose = function() {
+    // A connection that actually lasted earns a fresh budget; a flap does
+    // not. The socket is idle by design — the server only pushes on call
+    // events — so duration is the only health signal available, and it
+    // separates cleanly: a flap dies in milliseconds, a real session runs
+    // for hours. Resetting on first message instead would never fire on a
+    // healthy quiet socket.
+    if (wsOpenedAt && (Date.now() - wsOpenedAt) >= WS_HEALTHY_MS) wsAttempts = 0;
+    wsOpenedAt = 0;
+    scheduleWsReconnect();
+  };
   ws.onerror = function() {};
 }
 

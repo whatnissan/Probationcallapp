@@ -34,6 +34,7 @@ const affiliate = require('./lib/affiliate');
 const officesLib = require('./lib/offices');
 const returnPage = require('./lib/return-page');
 const { uaBucket } = require('./lib/ua-bucket');
+const wsTicketLib = require('./lib/ws-ticket');
 const connectRefresh = require('./lib/connect-refresh');
 const { createThrottle } = require('./lib/write-throttle');
 const { constructEventWithSecrets } = require('./lib/stripe-webhook');
@@ -99,7 +100,13 @@ const brevoMail = {
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+// noServer: WE decide whether an upgrade becomes a WebSocket, in the
+// server's own 'upgrade' handler below. Passing { server } instead makes ws
+// complete the HANDSHAKE for every upgrade on every path and only then emit
+// 'connection' — so a rejected client still saw onopen, and a browser that
+// resets its reconnect budget on onopen could never accrue a cap. See the
+// upgrade handler for the full story.
+const wss = new WebSocket.Server({ noServer: true });
 
 // Node 20 terminates the process on an unhandled promise rejection by
 // default. Express 4 doesn't catch async route errors, so a single
@@ -2414,26 +2421,17 @@ function verifyRecordingCapToken(token, sid) {
 // Same idea for the WebSocket: a 60-second ticket bound to the user id,
 // instead of the full session JWT that used to sit in the socket URL.
 function wsTicket(userId, expMs) {
-  var secret = process.env.RECORDING_TOKEN_SECRET;
-  if (!secret) return null;
-  var sig = require('crypto').createHmac('sha256', secret).update('ws.' + userId + '.' + expMs).digest('hex');
-  return userId + '.' + expMs + '.' + sig;
+  return wsTicketLib.mint(process.env.RECORDING_TOKEN_SECRET, userId, expMs);
+}
+
+// Ticket mint/verify live in lib/ws-ticket.js — see there for why the
+// reason codes exist and why expiry is checked before the signature.
+function verifyWsTicketDetailed(ticket) {
+  return wsTicketLib.verify(process.env.RECORDING_TOKEN_SECRET, ticket);
 }
 
 function verifyWsTicket(ticket) {
-  var secret = process.env.RECORDING_TOKEN_SECRET;
-  if (!secret || !ticket) return null;
-  var parts = String(ticket).split('.');
-  if (parts.length !== 3) return null;
-  var userId = parts[0];
-  var expMs = parseInt(parts[1], 10);
-  if (!expMs || Date.now() > expMs) return null;
-  var crypto = require('crypto');
-  var expect = crypto.createHmac('sha256', secret).update('ws.' + userId + '.' + expMs).digest('hex');
-  var a = Buffer.from(String(parts[2] || ''), 'utf8');
-  var b = Buffer.from(expect, 'utf8');
-  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
-  return userId;
+  return verifyWsTicketDetailed(ticket).userId;
 }
 
 function recordingLinkFor(sid) {
@@ -4712,6 +4710,38 @@ app.post('/api/check-affiliate-code', auth, requireAffiliateEnabled, async funct
 // item, tracked in the contract §4.14. Every call mints a
 // fresh onboarding link — links expire, and an abandoned onboarding resumes
 // where it stopped. A ready account gets an Express dashboard login link.
+//
+// ---- THE VERIFICATION WALL AHEAD (observed 2026-09-03, first live account) ----
+// The first connected account onboarded clean: status Enabled, payouts and
+// transfers active, tax_reporting_us_1099_misc ACTIVE (confirmed by an API
+// retrieve, not inferred from the env flag), currently_due [] and past_due
+// [] — genuinely nothing owed today.
+//
+// But requirements.eventually_due was NOT empty:
+//   individual.dob.day, individual.dob.month, individual.dob.year,
+//   individual.verification.document
+//
+// Stripe will ask for a date of birth and an identity document at some
+// later point — typically as payout volume crosses a threshold. Nothing is
+// wrong and nothing is due; connectState() correctly reports 'ready',
+// because payouts_enabled wins and requirementsOutstanding() deliberately
+// reads only currently_due and past_due. eventually_due is a forecast, not
+// a debt, and treating it as one would show every healthy affiliate an
+// in_progress card for something they cannot act on yet.
+//
+// The risk is the TIMING, not the requirement. Left alone, the first person
+// to meet it is a real affiliate whose first commission stalls behind an
+// identity document they were never warned about — the worst possible
+// moment to discover what that flow looks like.
+//
+// TODO before the affiliate program carries real money: walk that wall
+// deliberately with a test account. Drive an account to the threshold,
+// watch those fields move from eventually_due into currently_due, and
+// confirm what the affiliate actually sees when they do — the card should
+// flip to in_progress (it will: the fields land in currently_due) and the
+// Express dashboard link must take them somewhere they can finish. Decide
+// then whether to warn earlier off eventually_due rather than letting it
+// surprise someone mid-payout.
 async function connectOnboardingUrl(userId, email, profile) {
   var acctId = profile && profile.stripe_connect_id;
   if (!acctId) {
@@ -7489,34 +7519,104 @@ app.post('/api/test-sms', auth, rateLimit('test-sms', 3, 5 * 60 * 1000), async f
   res.json(result);
 });
 
-wss.on('connection', function(ws, req) {
-  // Only accept /ws connections carrying a valid short-lived ticket. We tag
-  // the socket with userId so broadcastToClients can route per-call events to
-  // only that user.
+// ========== WEBSOCKET UPGRADE ==========
+// Authentication happens HERE, before the handshake, and this is a
+// deliberate change from how it used to work.
+//
+// It used to be WebSocket.Server({ server }), which makes ws complete the
+// handshake for every upgrade on every path and only then emit 'connection',
+// where we closed 1008 on a bad path or ticket. Three things were wrong
+// with that:
+//   1. The client saw onopen BEFORE onclose on every rejection. The
+//      dashboard resets its reconnect budget on onopen, so an
+//      accept-then-close flap refunded the budget on every pass and
+//      WS_MAX_ATTEMPTS could never accrue — an unbounded reconnect loop,
+//      one authenticated POST /api/ws-ticket per turn. (Reproduced: onopen
+//      then close 1008.) The client now also gates that reset on
+//      connection lifetime, but this is the fix; that is the guard.
+//   2. Anyone could complete a WebSocket handshake against us with no
+//      credentials at all and hold a real socket, however briefly.
+//   3. We did full handshake work for traffic we were about to throw away.
+//
+// Rejections write a plain 401 and destroy the socket. No handshake, so the
+// browser fires onerror/onclose and never onopen.
+//
+// Rejection logging is a 10-second ROLLUP, not a line per rejection — this
+// path is exactly what a loop hammers, so a line each would be the next
+// incident. Same shape and same reasoning as the [REQ] rollup above.
+//
+// It is a rollup rather than a throttle on purpose. A throttle ("log at
+// most one line per reason per 10s") drops the count of everything it
+// suppresses unless another rejection arrives later to flush it — so a
+// burst that stops reports x1 and the magnitude is simply lost. Counting
+// into a map and flushing on a timer cannot lose the tail.
+//
+// Keyed on reason + agent bucket (never a raw User-Agent, same rule as the
+// request rollup), so the line names both WHY a client was refused and
+// WHAT it was. Bounded to 50 keys.
+var _wsRejects = new Map();
+
+function logWsReject(reason, req) {
+  try {
+    var k = reason + ' a=' + uaBucket(req && req.headers && req.headers['user-agent']);
+    if (_wsRejects.size >= 50 && !_wsRejects.has(k)) return;
+    _wsRejects.set(k, (_wsRejects.get(k) || 0) + 1);
+  } catch (e) { /* logging must never break the upgrade path */ }
+}
+
+setInterval(function() {
+  if (!_wsRejects.size) return;
+  var parts = [];
+  _wsRejects.forEach(function(n, k) { parts.push(k + ' x' + n); });
+  _wsRejects.clear();
+  console.log('[WS] upgrade rejected 10s | ' + parts.join(' | '));
+}, 10 * 1000).unref();
+
+function denyUpgrade(socket, req, reason) {
+  logWsReject(reason, req);
+  try {
+    socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+  } catch (e) { /* the peer may already be gone */ }
+  try { socket.destroy(); } catch (e) {}
+}
+
+server.on('upgrade', function(req, socket, head) {
+  // A socket erroring mid-upgrade must not take the process down: there is
+  // no request/response cycle here to absorb it.
+  socket.on('error', function() {});
   try {
     var url = req.url || '';
-    if (url.indexOf('/ws') !== 0) {
-      ws.close(1008, 'bad path');
-      return;
-    }
+    // Path first, and only /ws. ws with { server } would have accepted an
+    // upgrade on ANY path — that is why the old handler had to check the
+    // path after the fact.
     var qIndex = url.indexOf('?');
-    var query = qIndex >= 0 ? url.slice(qIndex + 1) : '';
-    var params = new URLSearchParams(query);
+    var pathname = qIndex >= 0 ? url.slice(0, qIndex) : url;
+    if (pathname !== '/ws') return denyUpgrade(socket, req, 'bad_path');
+
+    var params = new URLSearchParams(qIndex >= 0 ? url.slice(qIndex + 1) : '');
     // Was ?token=<supabase JWT>. A socket URL is logged in exactly the same
     // places an HTTP URL is, so it carried the same defect as the old
     // recording route. Now a 60-second ticket from POST /api/ws-ticket.
-    var ticketUserId = verifyWsTicket(params.get('ticket'));
-    if (!ticketUserId) {
-      ws.close(1008, 'auth required');
-      return;
-    }
-    ws.userId = ticketUserId;
-    wsClients.add(ws);
-    ws.on('close', function() { wsClients.delete(ws); });
+    var v = verifyWsTicketDetailed(params.get('ticket'));
+    if (!v.userId) return denyUpgrade(socket, req, v.reason);
+
+    wss.handleUpgrade(req, socket, head, function(ws) {
+      ws.userId = v.userId;
+      wss.emit('connection', ws, req);
+    });
   } catch (e) {
-    console.error('[WS] connection auth error:', e.message);
-    try { ws.close(1011, 'server error'); } catch (_) {}
+    console.error('[WS] upgrade failed:', e.message);
+    try { socket.destroy(); } catch (_) {}
   }
+});
+
+// Everything reaching here is already authenticated by the upgrade handler
+// above, and ws.userId is already set — broadcastToClients routes per-call
+// events on it. This handler only does bookkeeping.
+wss.on('connection', function(ws) {
+  wsClients.add(ws);
+  ws.on('error', function() { wsClients.delete(ws); });
+  ws.on('close', function() { wsClients.delete(ws); });
 });
 
 
