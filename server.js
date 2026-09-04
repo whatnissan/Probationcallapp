@@ -7724,6 +7724,11 @@ app.post('/api/admin/push-test/:userId', adminAuth, async function(req, res) {
           token: '…' + String(d.token).slice(-8),
           storedEnvironment: d.environment,
           sentTo: envs[j],
+          // The host actually dialled, from inside the sender — not derived
+          // from the value we passed in. Whether the routing matches the
+          // intent is the whole question in any environment dispute, and
+          // restating the input would not answer it.
+          gateway: r.host || null,
           ok: !!r.ok,
           status: r.status,
           reason: r.reason || null,

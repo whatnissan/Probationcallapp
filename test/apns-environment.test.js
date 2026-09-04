@@ -90,3 +90,24 @@ test('preferStored honours the stored claim first, for callers that want it', as
   await sendPushBothEnvironments(sender, { token: 't', environment: 'sandbox', preferStored: true });
   assert.deepStrictEqual(sent, ['sandbox']);
 });
+
+// The gateway is the fact that settles any environment dispute, and it has
+// to come from inside the sender — restating the environment we passed in
+// would just be echoing the value under suspicion.
+test('every attempt reports the gateway it actually dialled', async function() {
+  const { HOSTS } = require('../lib/apns');
+  const sender = async (opts) => ({
+    ok: opts.environment === 'sandbox',
+    status: opts.environment === 'sandbox' ? 200 : 400,
+    reason: opts.environment === 'sandbox' ? null : 'BadDeviceToken',
+    unregistered: opts.environment !== 'sandbox',
+    host: HOSTS[opts.environment]
+  });
+  const r = await sendPushBothEnvironments(sender, { token: 't', environment: 'sandbox' });
+  assert.deepStrictEqual(r.attempts.map(a => a.host), [
+    'https://api.push.apple.com',
+    'https://api.sandbox.push.apple.com'
+  ]);
+  assert.strictEqual(HOSTS.production, 'https://api.push.apple.com');
+  assert.strictEqual(HOSTS.sandbox, 'https://api.sandbox.push.apple.com');
+});
