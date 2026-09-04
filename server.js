@@ -34,6 +34,7 @@ const affiliate = require('./lib/affiliate');
 const officesLib = require('./lib/offices');
 const returnPage = require('./lib/return-page');
 const connectRefresh = require('./lib/connect-refresh');
+const { createThrottle } = require('./lib/write-throttle');
 const { constructEventWithSecrets } = require('./lib/stripe-webhook');
 const apns = require('./lib/apns');
 const { fallbackFieldsFor } = require('./lib/push');
@@ -156,6 +157,58 @@ app.get('/.well-known/apple-app-site-association', function(req, res) {
     res.status(500).json({ error: 'aasa_unavailable' });
   }
 });
+
+// ========== REQUEST ROLLUP ==========
+// There was no access logging at all, so when a request loop hammered an
+// authenticated endpoint on 2026-09-03 we could prove WHAT was being written
+// but never WHO was calling. This closes that blind spot.
+//
+// It is a 10-second ROLLUP, not a line per request, precisely so the
+// diagnostic cannot become the next incident: a loop doing 300 requests a
+// second produces one line saying "x3000", not 3000 lines. Bounded to the
+// top 8 entries per window.
+//
+// Deliberately minimal, and none of it is sensitive: method, req.path (NEVER
+// originalUrl — the query string carries profile ids, which are already in
+// the gateway logs and do not need to be in Railway's too), an 8-char user
+// prefix, and a count. No bodies. No headers. No tokens. Every field is
+// length-capped.
+var REQ_ROLLUP_MS = 10 * 1000;
+var _reqCounts = new Map();
+var _reqDropped = 0;
+
+function reqRollupKey(req) {
+  var path = String(req.path || '').slice(0, 60);
+  var uid = req.user && req.user.id ? String(req.user.id).slice(0, 8) : '-';
+  return String(req.method || '?').slice(0, 6) + ' ' + path + ' u=' + uid;
+}
+
+app.use(function(req, res, next) {
+  // Only the API surface. Static assets and pages are noise here, and the
+  // loop we are hunting is authenticated.
+  if (req.path && req.path.indexOf('/api/') === 0) {
+    res.on('finish', function() {
+      try {
+        var k = reqRollupKey(req) + ' ' + res.statusCode;
+        if (_reqCounts.size >= 200 && !_reqCounts.has(k)) { _reqDropped++; return; }
+        _reqCounts.set(k, (_reqCounts.get(k) || 0) + 1);
+      } catch (e) { /* logging must never break a request */ }
+    });
+  }
+  next();
+});
+
+setInterval(function() {
+  if (!_reqCounts.size) return;
+  var top = Array.from(_reqCounts.entries()).sort(function(a, b) { return b[1] - a[1]; });
+  var shown = top.slice(0, 8).map(function(e) { return e[0] + ' x' + e[1]; });
+  var rest = top.length - shown.length;
+  console.log('[REQ] 10s | ' + shown.join(' | ')
+    + (rest > 0 ? ' | +' + rest + ' more' : '')
+    + (_reqDropped ? ' | ' + _reqDropped + ' uncounted' : ''));
+  _reqCounts.clear();
+  _reqDropped = 0;
+}, REQ_ROLLUP_MS).unref();
 
 app.use(express.static('public'));
 
@@ -1284,6 +1337,21 @@ var AUTH_PROFILE_COLUMNS = [
   'stripe_customer_id', 'stripe_subscription_id', 'stripe_connect_id'
 ].join(', ');
 
+// Truncate anything before it reaches a log line. Supabase behind Cloudflare
+// answers an overloaded database with a FULL HTML ERROR PAGE, and the retry
+// pollers were logging that verbatim — about 100 lines per failure, twice a
+// minute, which buried every other line in Railway exactly when the logs
+// mattered most.
+function briefErr(e) {
+  var m = (e && e.message) ? e.message : String(e === undefined ? '' : e);
+  m = String(m).replace(/\s+/g, ' ').trim();
+  return m.length > 200 ? m.slice(0, 200) + '… [truncated]' : m;
+}
+
+// last_login is written at most once per 10 minutes per user. See the call
+// site in auth() for why.
+var lastLoginThrottle = createThrottle(10 * 60 * 1000, 5000);
+
 async function auth(req, res, next) {
   var authHeader = req.headers.authorization;
   var token = authHeader ? authHeader.replace('Bearer ', '') : null;
@@ -1382,11 +1450,23 @@ async function auth(req, res, next) {
     
     req.user = user;
     req.profile = profile;
-    // Track last login. Fire-and-forget, but supabase-js builders are lazy
-    // and only execute when awaited/then'd — without the .then() this
-    // statement was a no-op and last_login was never written.
-    supabase.from('profiles').update({ last_login: new Date().toISOString() }).eq('id', user.id)
-      .then(function() {}, function(e) { console.error('[AUTH] last_login update failed:', e.message); });
+    // Track last login, AT MOST ONCE EVERY 10 MINUTES PER USER.
+    //
+    // This used to write on EVERY authenticated request. On 2026-09-03 a
+    // request loop against a web endpoint turned that into hundreds of
+    // PATCH /rest/v1/profiles per second on one row — the write half of the
+    // Supabase egress incident. Every authenticated request was a read AND a
+    // write, so any caller that looped doubled its own damage.
+    //
+    // The column is rendered as a date in the admin panel and has never
+    // needed per-request precision. Throttling caps the damage from a future
+    // loop no matter where the loop is: the reads may repeat, the writes
+    // cannot. Fire-and-forget, but supabase-js builders are lazy and only
+    // execute when awaited or then'd — without the .then() this is a no-op.
+    if (lastLoginThrottle.take(user.id)) {
+      supabase.from('profiles').update({ last_login: new Date().toISOString() }).eq('id', user.id)
+        .then(function() {}, function(e) { console.error('[AUTH] last_login update failed:', briefErr(e)); });
+    }
     next();
   } catch(e) {
     console.error('Auth error:', e);
@@ -10331,7 +10411,7 @@ cron.schedule('* * * * *', async function() {
     .select('*')
     .lte('next_attempt_at', new Date().toISOString());
   if (dueResult.error) {
-    console.error('[RETRY-POLLER] Failed to scan pending_retries:', dueResult.error.message);
+    console.error('[RETRY-POLLER] Failed to scan pending_retries:', briefErr(dueResult.error));
   } else if (dueResult.data && dueResult.data.length > 0) {
   for (var i = 0; i < dueResult.data.length; i++) {
     var row = dueResult.data[i];
@@ -10430,7 +10510,7 @@ cron.schedule('* * * * *', async function() {
     .select('*')
     .lte('next_attempt_at', new Date().toISOString());
   if (ftbDueResult.error) {
-    console.error('[FTBEND-RETRY-POLLER] Failed to scan fort_bend_retries:', ftbDueResult.error.message);
+    console.error('[FTBEND-RETRY-POLLER] Failed to scan fort_bend_retries:', briefErr(ftbDueResult.error));
   } else if (ftbDueResult.data && ftbDueResult.data.length > 0) {
     for (var k = 0; k < ftbDueResult.data.length; k++) {
       var ftbRow = ftbDueResult.data[k];
