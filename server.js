@@ -2617,6 +2617,29 @@ async function pushSchedule(userId) {
   }
 }
 
+// Persist the environment that actually worked. IDEMPOTENT in two ways: the
+// .neq means a token already holding the right value is not written at all
+// (so the steady state costs no writes), and writing the same value twice is
+// indistinguishable from writing it once. Never throws — a bookkeeping
+// failure must not cost anyone their notification.
+async function correctDeviceEnvironment(token, environment) {
+  try {
+    var r = await supabase.from('device_tokens')
+      .update({ environment: environment })
+      .eq('token', token).neq('environment', environment).select('id');
+    if (r.error) {
+      console.error('[PUSH] could not correct environment for …' + String(token).slice(-8) + ':', r.error.message);
+      return;
+    }
+    if ((r.data || []).length) {
+      console.log('[PUSH] corrected environment for …' + String(token).slice(-8) +
+        ' to ' + environment + ' (the app had claimed otherwise)');
+    }
+  } catch (e) {
+    console.error('[PUSH] could not correct environment:', e.message);
+  }
+}
+
 async function pruneDeviceToken(token, reason) {
   try {
     await supabase.from('device_tokens')
@@ -2706,7 +2729,10 @@ async function tryPushFirst(opts) {
     var accepted = null, lastReason = null;
     for (var i = 0; i < live.length; i++) {
       var d = live[i];
-      var r = await apns.sendPush({
+      // BOTH environments, production first — device_tokens.environment is
+      // only what the app claimed, and on 2026-09-04 that claim was wrong
+      // for every live token in the fleet. See lib/apns.js.
+      var r = await apns.sendPushBothEnvironments(apns.sendPush, {
         token: d.token,
         environment: d.environment,
         payload: payload,
@@ -2714,9 +2740,14 @@ async function tryPushFirst(opts) {
         // Pointless to deliver this evening: it is a statement about today.
         expirationEpochSeconds: Math.floor(Date.now() / 1000) + 6 * 3600
       });
+      // Prune only when BOTH environments called it dead — sendPushBothEnvironments
+      // already ands the two together. Pruning on the first BadDeviceToken
+      // would retire a live token that was merely sent to the wrong host.
       if (r.unregistered) await pruneDeviceToken(d.token, r.reason || 'unregistered');
+      if (r.environmentFixed) await correctDeviceEnvironment(d.token, r.environmentUsed);
       if (r.ok) { accepted = { token: d.token, apnsId: r.apnsId }; break; }
-      lastReason = r.reason || ('status ' + r.status);
+      lastReason = (r.reason || ('status ' + r.status)) +
+        ' [' + r.attempts.map(function(a) { return a.environment + ':' + (a.reason || a.status); }).join(' ') + ']';
     }
 
     if (accepted) {
@@ -7619,6 +7650,113 @@ wss.on('connection', function(ws) {
   ws.on('close', function() { wsClients.delete(ws); });
 });
 
+
+// Fire a test push at one user's devices and report EXACTLY what Apple said.
+//
+// This exists because on 2026-09-04 push was broken for every device in the
+// fleet and the only way to find out was to wait for the 5 AM run and read
+// the logs afterwards. A notification product whose delivery can only be
+// tested once a day, in retrospect, is a product nobody can debug.
+//
+// Two things it deliberately does NOT do:
+//
+//   1. It NEVER writes a push_deliveries row. UNIQUE (user_id, local_date)
+//      is what makes a morning's notification singular — a test row would
+//      take that slot and SUPPRESS the real 5 AM delivery, turning a
+//      diagnostic into an outage. Testing must not be able to cost someone
+//      their MUST_TEST.
+//   2. It never prunes a token or corrects a stored environment. A probe
+//      reports state; it does not edit it. That also means firing at the
+//      "wrong" environment on purpose is free.
+//
+// ?environment=production|sandbox|both (default both) — 'both' fires the
+// SAME token at each host and reports both answers, which is the definitive
+// way to find out where a token actually lives.
+app.post('/api/admin/push-test/:userId', adminAuth, async function(req, res) {
+  try {
+    if (!apns.apnsConfigured()) {
+      return res.status(503).json({ error: 'APNs is not configured on this instance (APNS_KEY_ID / APNS_TEAM_ID / APNS_BUNDLE_ID / APNS_PRIVATE_KEY).' });
+    }
+    var userId = String(req.params.userId || '');
+    if (!/^[0-9a-f-]{36}$/i.test(userId)) return res.status(400).json({ error: 'Not a user id.' });
+
+    var which = String((req.body && req.body.environment) || req.query.environment || 'both').toLowerCase();
+    if (['production', 'sandbox', 'both'].indexOf(which) < 0) {
+      return res.status(400).json({ error: "environment must be 'production', 'sandbox' or 'both'." });
+    }
+    var envs = which === 'both' ? ['production', 'sandbox'] : [which];
+
+    var devices = await supabase.from('device_tokens')
+      .select('token, environment, platform, app_version, os_version, created_at, last_seen_at')
+      .eq('user_id', userId).is('unregistered_at', null);
+    if (devices.error) return res.status(503).json({ error: 'Could not read device tokens: ' + devices.error.message });
+    var live = devices.data || [];
+    if (!live.length) {
+      return res.json({ userId: userId, devices: 0, results: [],
+        note: 'No live device tokens for this user. Nothing to send to — this is what the morning path records as no_device.' });
+    }
+
+    var payload = apns.buildPayload({
+      title: 'ProbationCall test',
+      body: 'Test push — ' + new Date().toISOString().slice(11, 19) + 'Z. Not a real result.',
+      mustTest: false,
+      // NO deliveryId: there is no push_deliveries row to ack, and handing
+      // the app an id that does not exist would have it ack into nothing.
+      deliveryId: null,
+      result: 'TEST',
+      date: null,
+      resultAvailable: false
+    });
+
+    var results = [];
+    for (var i = 0; i < live.length; i++) {
+      var d = live[i];
+      for (var j = 0; j < envs.length; j++) {
+        var r = await apns.sendPush({
+          token: d.token,
+          environment: envs[j],
+          payload: payload,
+          // No collapse id: a test must never coalesce with the morning's
+          // real notification, which collapses on localDate:userId.
+          expirationEpochSeconds: Math.floor(Date.now() / 1000) + 300
+        });
+        results.push({
+          token: '…' + String(d.token).slice(-8),
+          storedEnvironment: d.environment,
+          sentTo: envs[j],
+          ok: !!r.ok,
+          status: r.status,
+          reason: r.reason || null,
+          apnsId: r.apnsId || null,
+          unregistered: !!r.unregistered,
+          appVersion: d.app_version || null,
+          osVersion: d.os_version || null
+        });
+      }
+    }
+    var anyOk = results.some(function(x) { return x.ok; });
+    var worked = results.filter(function(x) { return x.ok; }).map(function(x) { return x.sentTo; });
+    console.log('[PUSH-TEST] ' + userId.slice(0, 8) + ' → ' + results.length + ' send(s), ' +
+      (anyOk ? 'accepted by ' + worked.join('/') : 'ALL REJECTED') +
+      ' [' + results.map(function(x) { return x.sentTo + ':' + (x.reason || x.status); }).join(' ') + ']');
+    res.json({
+      userId: userId,
+      devices: live.length,
+      environmentsTried: envs,
+      anyAccepted: anyOk,
+      // The one sentence worth reading first.
+      summary: anyOk
+        ? 'Apple accepted the push on: ' + Array.from(new Set(worked)).join(', ') +
+          '. If the device shows nothing, the problem is on the device (notification permission, Focus, or the app), not delivery.'
+        : 'Every send was rejected. See reason on each result — BadEnvironmentKeyInToken or BadDeviceToken against one environment usually means the token belongs to the other.',
+      wrotePushDeliveryRow: false,
+      results: results
+    });
+  } catch (e) {
+    console.error('[PUSH-TEST] failed:', e.message);
+    res.status(500).json({ error: 'Push test failed: ' + e.message });
+  }
+});
 
 // Mass text all active users
 app.post('/api/admin/mass-text', adminAuth, async function(req, res) {
