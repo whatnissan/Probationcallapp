@@ -320,7 +320,7 @@ select option { background: #1a1a2e; color: #fff; }
     <div class="logo-container" style="display:flex;align-items:center;gap:5px"><img src="/brand-emblem.png" alt="ProbationCall" class="logo-svg" width="34" height="34" style="height:34px;width:34px;display:block"><span style="font-size:1.2rem;font-weight:700;color:#cbd5e1;">ProbationCall.com</span></div>
     <div class="nav-right">
       
-      <a href="/admin" id="adminLink" style="display:none;background:#ef4444;color:#fff;padding:8px 14px;border-radius:6px;text-decoration:none;font-weight:600;font-size:0.85rem">Admin</a><span id="userEmail" style="color:#8892b0;font-size:0.85rem"></span>
+      <span id="wsStatus" style="display:none;color:#f59e0b;font-size:0.78rem;margin-right:8px"></span><a href="/admin" id="adminLink" style="display:none;background:#ef4444;color:#fff;padding:8px 14px;border-radius:6px;text-decoration:none;font-weight:600;font-size:0.85rem">Admin</a><span id="userEmail" style="color:#8892b0;font-size:0.85rem"></span>
       <button class="logout-btn" onclick="logout()">Sign Out</button><button class="btn btn-secondary" onclick="openSupport()" style="margin-left:8px">💬 Help</button>
     </div>
   </nav>
@@ -1842,8 +1842,63 @@ async function loadRecording(btn) {
 }
 
 var ws;
+
+// RECONNECT BUDGET. This loop used to retry every 5 seconds forever, with no
+// backoff and no cap. POST /api/ws-ticket is auth-protected, so every attempt
+// cost a Supabase auth call plus a profile read — 12 a minute, per open tab,
+// indefinitely, with nobody touching the page. On 2026-09-03 fourteen deploys
+// each dropped every open socket at once, every tab latched onto the retry
+// path, and the resulting load was a measurable share of the day's Supabase
+// egress. The loop is also self-reinforcing: the more it retries, the slower
+// auth gets, the more tickets fail.
+//
+// So: back off, cap the attempts, and cost nothing in a background tab.
+var WS_BACKOFF_MS = [5000, 10000, 20000, 60000];
+var wsAttempts = 0;
+var wsTimer = null;
+var wsStopped = false;
+var WS_MAX_ATTEMPTS = 8;   // ~4 minutes of backoff before we stop asking
+
+function wsRetryDelay() {
+  return WS_BACKOFF_MS[Math.min(wsAttempts, WS_BACKOFF_MS.length - 1)];
+}
+
+// Live updates are a nicety — the page works without them, and /api/user
+// still has the real state. Say so rather than retrying out of sight.
+function setWsStatus(text) {
+  var el = document.getElementById('wsStatus');
+  if (!el) return;
+  el.textContent = text || '';
+  el.style.display = text ? 'inline' : 'none';
+}
+
+function scheduleWsReconnect() {
+  if (wsStopped || wsTimer) return;
+  if (wsAttempts >= WS_MAX_ATTEMPTS) {
+    wsStopped = true;
+    setWsStatus('Live updates offline — reload to retry');
+    console.warn('[dashboard] websocket gave up after ' + wsAttempts + ' attempts');
+    return;
+  }
+  var delay = wsRetryDelay();
+  wsAttempts++;
+  setWsStatus('Live updates reconnecting…');
+  wsTimer = setTimeout(function() { wsTimer = null; connectWS(); }, delay);
+}
+
+// A backgrounded tab must cost nothing. Stop retrying while hidden, and take
+// one immediate attempt when the tab comes back.
+document.addEventListener('visibilitychange', function() {
+  if (document.hidden) {
+    if (wsTimer) { clearTimeout(wsTimer); wsTimer = null; }
+    return;
+  }
+  if (!wsStopped && (!ws || ws.readyState > 1)) { wsAttempts = 0; connectWS(); }
+});
+
 async function connectWS() {
-  if (!token) { setTimeout(connectWS, 2000); return; }
+  if (wsStopped || document.hidden) return;
+  if (!token) { scheduleWsReconnect(); return; }
   // A 60-second ticket, not the session JWT — a socket URL is logged in the
   // same places any other URL is.
   var ticket = null;
@@ -1851,7 +1906,7 @@ async function connectWS() {
     var tr = await fetch("/api/ws-ticket", { method: "POST", headers: { "Authorization": "Bearer " + token } });
     if (tr.ok) ticket = (await tr.json()).ticket;
   } catch (e) { /* fall through to retry */ }
-  if (!ticket) { setTimeout(connectWS, 5000); return; }
+  if (!ticket) { scheduleWsReconnect(); return; }
   ws = new WebSocket((location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws?ticket=' + encodeURIComponent(ticket));
   ws.onmessage = function(e) {
     var d = JSON.parse(e.data);
@@ -1866,7 +1921,13 @@ async function connectWS() {
       loadUser();
     }
   };
-  ws.onclose = function() { setTimeout(connectWS, 5000); };
+  ws.onopen = function() {
+    // A real connection resets the budget, so a later drop starts at 5s again
+    // rather than inheriting an exhausted one.
+    wsAttempts = 0;
+    setWsStatus('');
+  };
+  ws.onclose = function() { scheduleWsReconnect(); };
   ws.onerror = function() {};
 }
 

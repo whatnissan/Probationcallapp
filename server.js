@@ -1273,6 +1273,17 @@ function validateTwilio(req, res, next) {
   next();
 }
 
+// The columns auth() loads into req.profile. Kept as a named constant so the
+// test can assert it against what the code actually reads. See the comment
+// inside auth() for how the set is derived.
+var AUTH_PROFILE_COLUMNS = [
+  'id', 'email', 'credits', 'is_admin', 'is_disabled', 'is_demo', 'ftbend_access',
+  'referral_code', 'referred_by', 'affiliate_balance_cents', 'payout_email',
+  'onboarding_complete', 'probation_end_date', 'terms_accepted_at', 'user_color',
+  'subscription_status', 'subscription_cancel_at', 'subscription_cancel_at_period_end',
+  'stripe_customer_id', 'stripe_subscription_id', 'stripe_connect_id'
+].join(', ');
+
 async function auth(req, res, next) {
   var authHeader = req.headers.authorization;
   var token = authHeader ? authHeader.replace('Bearer ', '') : null;
@@ -1289,7 +1300,28 @@ async function auth(req, res, next) {
     // reload after a migration. maybeSingle separates them: data null with no
     // error means genuinely absent, and .error means WE DO NOT KNOW.
     // Guessing wrong here WRITES: the branch below inserts a profile.
-    var profileResult = await supabase.from('profiles').select('*').eq('id', user.id).maybeSingle();
+    //
+    // NAMED COLUMNS, NOT select('*'). This is the hottest query in the
+    // application — it runs on EVERY authenticated request — and on
+    // 2026-09-03 migration 048 added four jsonb columns to profiles
+    // (stripe_connect_requirements_* and disabled_reason), so every one of
+    // those requests silently got fatter that afternoon. They are needed by
+    // the payout batch and GET /referral, which load their own rows; nothing
+    // reached through req.profile reads them.
+    //
+    // The set below is the union of every consumer, and it is wide because
+    // GET /api/user returns req.profile VERBATIM to the web dashboard:
+    //   - auth() itself: credits, is_disabled, referral_code
+    //   - every req.profile.<field> in this file
+    //   - every d.profile.<field> in dashboard.html, plus what
+    //     getSubscriptionState() reads off it
+    //   - lib/billing.js openBillingPortal(req.profile, …)
+    //   - connectOnboardingUrl(…, req.profile)
+    // test/auth-profile-columns.test.js re-derives that union from the
+    // sources and fails if this list stops covering it — this path is far too
+    // hot for a missing column to be a judgment call.
+    var profileResult = await supabase.from('profiles')
+      .select(AUTH_PROFILE_COLUMNS).eq('id', user.id).maybeSingle();
     if (profileResult.error) {
       console.error('[AUTH] profile read failed for ' + user.id.slice(0, 8) + ' — refusing to treat this as a missing profile:', profileResult.error.message);
       return res.status(503).json({ error: 'Could not load your account. Please try again.' });
