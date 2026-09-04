@@ -62,3 +62,34 @@ test('the page rollup is switchable without a deploy and marked temporary', func
   assert.ok(/TEMPORARY \(2026-09-03\)/.test(server),
     'the block must say it is temporary and when it went in');
 });
+
+// The referral paths forked once and drifted for months: only one enforced
+// the first-purchase window, only one was idempotent, and they disagreed on
+// what a failed bonus grant does to the attribution. A referral decides who
+// gets paid, so the two entry points must not be able to fork again.
+test('both referral entry points go through the one shared applier', function() {
+  const v1 = server.slice(server.indexOf("app.post('/api/v1/referral/apply'"));
+  const v1Body = v1.slice(0, v1.indexOf('\n});'));
+  const web = server.slice(server.indexOf("app.post('/api/apply-referral'"));
+  const webBody = web.slice(0, web.indexOf('\n});'));
+
+  for (const [name, body] of [['v1', v1Body], ['web', webBody]]) {
+    assert.ok(/applyReferralForUser\(/.test(body), name + ' must call applyReferralForUser');
+    // No handler may claim, grant, or decide on its own again.
+    assert.ok(!/referred_by/.test(body), name + ' must not touch referred_by directly');
+    assert.ok(!/recordCreditAdd\(/.test(body), name + ' must not grant the bonus itself');
+    assert.ok(!/referralApplyDecision\(/.test(body), name + ' must not re-implement the decision');
+    assert.ok(!/from\('purchases'\)/.test(body), name + ' must not re-implement the window check');
+  }
+});
+
+test('the shared applier enforces the window and keeps attribution on grant failure', function() {
+  const f = server.slice(server.indexOf('async function applyReferralForUser'));
+  const body = f.slice(0, f.indexOf('\n}\n'));
+  assert.ok(/from\('purchases'\)/.test(body), 'the first-purchase window lives here');
+  assert.ok(/is\('referred_by', null\)/.test(body), 'the claim must stay atomic');
+  assert.ok(/AFFILIATE_ENABLED/.test(body), 'the bonus is gated on the program being live');
+  // Attribution must NOT be released when the grant fails — the old web
+  // path did that, and it silently frees the slot for a different code.
+  assert.ok(!/referred_by: null/.test(body), 'a failed grant must not release the attribution');
+});

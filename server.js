@@ -3864,88 +3864,31 @@ app.get('/api/v1/referral', authV1, async function(req, res) {
 //    call granted nothing). A DIFFERENT code is referral_already_applied.
 //    Being past the first purchase is referral_after_purchase.
 app.post('/api/v1/referral/apply', authV1, rateLimit('referral_apply', 10, 10 * 60 * 1000), async function(req, res) {
-  // Turn a decision from lib/affiliate.js into a response. Every refusal
-  // path goes through here so the two 409s cannot drift apart.
-  function settle(decision, existingCode, submitted) {
-    if (decision === 'idempotent') {
-      console.log('[V1-REFERRAL] ' + req.user.id.slice(0, 8) + ' re-submitted ' + submitted + ' — idempotent, nothing granted');
-      return res.json({ applied: true, code: existingCode, bonusCredits: 0 });
-    }
-    if (decision === 'conflict') {
-      return v1Error(res, 409, 'referral_already_applied', 'A referral code has already been applied to this account.');
-    }
-    console.log('[V1-REFERRAL] ' + req.user.id.slice(0, 8) + ' tried ' + submitted + ' after a purchase — refused');
-    return v1Error(res, 409, 'referral_after_purchase', 'You have already made a purchase, so a referral code can no longer be added.');
-  }
   try {
-    var code = String((req.body && req.body.code) || '').trim().toUpperCase();
-    if (!/^[A-Z0-9]{4,12}$/.test(code)) return v1Error(res, 400, 'validation_failed', 'Enter the referral code you were given.');
-    var referrer = await resolveAffiliateByCode(code);
-    if (!referrer) return v1Error(res, 404, 'not_found', 'That referral code is not valid.');
-    if (referrer.id === req.user.id) return v1Error(res, 400, 'validation_failed', 'You cannot use your own referral code.');
-
-    var cur = await supabase.from('profiles').select('referred_by').eq('id', req.user.id).maybeSingle();
-    if (cur.error) {
-      console.error('[V1-REFERRAL] referred_by read failed for ' + req.user.id.slice(0, 8) + ':', cur.error.message);
-      return v1Error(res, 500, 'internal', 'Could not apply that code. Please try again.', true);
-    }
-    var existingCode = cur.data && cur.data.referred_by ? String(cur.data.referred_by).toUpperCase() : null;
-
-    // THE WINDOW: open until the account's first successful purchase, then
-    // closed for good. No time limit — a code applied months after signup is
-    // valid, because a referral is an acquisition claim and an account that
-    // has never paid has not yet been acquired. One that has already paid
-    // was not acquired by anyone.
-    //
-    // Any purchases row counts: subscription, month pass, one-time bundle,
-    // and one later REFUNDED — the row survives a refund on purpose, because
-    // buy / refund / apply a code / buy again would otherwise be an open
-    // door. Free starter credits go through the trigger and
-    // credit_transactions, never purchases, so they do not close the window.
-    // Skipped entirely when a code is already present: the decision below
-    // never reads hasPurchase in that case, and an idempotent retry must not
-    // depend on a query that can fail.
-    var hasPurchase = false;
-    if (!existingCode) {
-      var paid = await supabase.from('purchases').select('id').eq('user_id', req.user.id).limit(1);
-      if (paid.error) {
-        console.error('[V1-REFERRAL] purchase check failed for ' + req.user.id.slice(0, 8) + ':', paid.error.message);
+    var r = await applyReferralForUser(req.user.id, req.body && req.body.code, { source: 'app' });
+    switch (r.outcome) {
+      case 'applied':
+      case 'idempotent':
+        // Both are 200. An idempotent retry reports the code that is on the
+        // account and bonusCredits 0 — THIS call granted nothing.
+        return res.json({ applied: true, code: r.code, bonusCredits: r.bonusCredits });
+      case 'validation_failed':
+        return v1Error(res, 400, 'validation_failed', 'Enter the referral code you were given.');
+      case 'invalid_code':
+        return v1Error(res, 404, 'not_found', 'That referral code is not valid.');
+      case 'self_referral':
+        return v1Error(res, 400, 'validation_failed', 'You cannot use your own referral code.');
+      // The two 409s are DIFFERENT failures and the client branches on code.
+      case 'conflict':
+        return v1Error(res, 409, 'referral_already_applied', 'A referral code has already been applied to this account.');
+      case 'after_purchase':
+        return v1Error(res, 409, 'referral_after_purchase', 'You have already made a purchase, so a referral code can no longer be added.');
+      default:
         return v1Error(res, 500, 'internal', 'Could not apply that code. Please try again.', true);
-      }
-      hasPurchase = !!(paid.data && paid.data.length);
     }
-
-    var decision = affiliate.referralApplyDecision(existingCode, code, hasPurchase);
-    if (decision !== 'apply') return settle(decision, existingCode, code);
-
-    var lock = await supabase.from('profiles').update({ referred_by: code }).eq('id', req.user.id).is('referred_by', null).select('id');
-    if (lock.error) {
-      console.error('[V1-REFERRAL] claim failed for ' + req.user.id.slice(0, 8) + ':', lock.error.message);
-      return v1Error(res, 500, 'internal', 'Could not apply that code. Please try again.', true);
-    }
-    if (!lock.data || !lock.data.length) {
-      // Raced with a concurrent apply between the read above and here. Re-read
-      // and settle on what actually landed, so the loser of the race still
-      // gets a truthful answer rather than a blanket conflict.
-      var after = await supabase.from('profiles').select('referred_by').eq('id', req.user.id).maybeSingle();
-      var existing = after.data && after.data.referred_by ? String(after.data.referred_by).toUpperCase() : null;
-      if (existing) return settle(affiliate.referralApplyDecision(existing, code, false), existing, code);
-      console.error('[V1-REFERRAL] claim matched no row and no code is present for ' + req.user.id.slice(0, 8));
-      return v1Error(res, 500, 'internal', 'Could not apply that code. Please try again.', true);
-    }
-    var refRow = await supabase.from('referrals').insert({ referrer_id: referrer.id, referred_id: req.user.id, referral_code: code, status: 'signed_up' });
-    if (refRow.error) console.error('[V1-REFERRAL] referrals row failed for ' + req.user.id.slice(0, 8) + ':', refRow.error.message);
-    var bonus = 0;
-    if (AFFILIATE_ENABLED) {
-      var granted = await recordCreditAdd({ userId: req.user.id, amount: REFERRED_BONUS_CREDITS, source: 'referral_bonus', note: 'Referral signup bonus (code ' + code + ', app)' });
-      if (granted !== null) bonus = REFERRED_BONUS_CREDITS;
-      else console.error('[V1-REFERRAL] bonus grant failed for ' + req.user.id.slice(0, 8) + ' (attribution kept)');
-    }
-    console.log('[V1-REFERRAL] ' + req.user.id.slice(0, 8) + ' applied code ' + code + (bonus ? ' (+' + bonus + ')' : ' (program off, no bonus)'));
-    res.json({ applied: true, code: code, bonusCredits: bonus });
   } catch (e) {
-    console.error('[V1-REFERRAL] apply error:', e.message);
-    return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+    console.error('[REFERRAL:app] unexpected failure:', e.message);
+    return v1Error(res, 500, 'internal', 'Could not apply that code. Please try again.', true);
   }
 });
 
@@ -4474,83 +4417,177 @@ app.get("/api/ftbend/analytics", auth, async function(req, res) {
   }
 });
 
-// Apply referral code (called during signup or first visit)
-app.post('/api/apply-referral', auth, requireAffiliateEnabled, async function(req, res) {
-  var code = req.body.code;
-  if (!code) return res.status(400).json({ error: 'No code provided' });
-  
-  // Check if user already used a referral
-  if (req.profile.referred_by) {
-    return res.status(400).json({ error: 'You already used a referral code' });
+// ---- ONE REFERRAL APPLICATION PATH ----
+// Both entry points (the app's POST /api/v1/referral/apply and the web's
+// POST /api/apply-referral) route through here. They had drifted badly:
+// only the v1 path enforced the first-purchase window, only v1 was
+// idempotent on a resubmitted code, and the two disagreed about what a
+// failed bonus grant does to the attribution. A referral decides who gets
+// paid; it cannot mean two different things depending on which client
+// asked.
+//
+// Returns a RESULT, never throws and never writes a response. Callers map
+// `outcome` to their own error shape (v1Error vs plain JSON), and a caller
+// that does not care about the outcome — a promo redemption that also
+// carries an attribution — can ignore it entirely. That is the shape the
+// ruling "attribution failure never fails the redemption" needs: a return
+// value the caller may discard, not an exception that unwinds their work.
+//
+// outcome:
+//   'applied'          — claimed now; bonusCredits may still be 0
+//   'idempotent'       — the same code was already applied; nothing granted
+//   'conflict'         — a DIFFERENT code is already applied
+//   'after_purchase'   — the window closed at the first purchase
+//   'invalid_code'     — no such code, or ambiguous
+//   'self_referral'    — their own code
+//   'validation_failed'— not a code-shaped string
+//   'internal'         — a read or write failed; nothing was decided
+async function applyReferralForUser(userId, rawCode, opts) {
+  var source = (opts && opts.source) || 'unknown';
+  var tag = '[REFERRAL:' + source + '] ' + String(userId).slice(0, 8) + ' ';
+  var code = String(rawCode || '').trim().toUpperCase();
+  if (!/^[A-Z0-9]{4,12}$/.test(code)) {
+    return { ok: false, outcome: 'validation_failed', code: null, bonusCredits: 0 };
   }
-  
-  // Find referrer — shared safe resolver handles uppercasing + dup detection.
+
   var referrer = await resolveAffiliateByCode(code);
-  if (!referrer) {
-    return res.status(404).json({ error: 'Invalid referral code' });
-  }
+  if (!referrer) return { ok: false, outcome: 'invalid_code', code: code, bonusCredits: 0 };
+  if (referrer.id === userId) return { ok: false, outcome: 'self_referral', code: code, bonusCredits: 0 };
 
-  // Can't refer yourself
-  if (referrer.id === req.user.id) {
-    return res.status(400).json({ error: 'Cannot use your own referral code' });
+  var cur = await supabase.from('profiles').select('referred_by').eq('id', userId).maybeSingle();
+  if (cur.error) {
+    console.error(tag + 'referred_by read failed:', briefErr(cur.error));
+    return { ok: false, outcome: 'internal', code: code, bonusCredits: 0 };
   }
-  
-  // ATOMIC CLAIM. The referred_by check above reads req.profile, which was
-  // loaded at auth time, so two concurrent requests both saw null and both
-  // proceeded — each granting REFERRED_BONUS_CREDITS. The `.is(referred_by,
-  // null)` predicate moves the check into the UPDATE itself: concurrent
-  // callers serialize on the row lock and exactly one matches. .select()
-  // makes PostgREST return the affected rows so we can tell whether we won.
+  var existingCode = cur.data && cur.data.referred_by ? String(cur.data.referred_by).toUpperCase() : null;
+
+  // THE WINDOW: open until the account's first successful purchase, then
+  // closed for good. No time limit — a code applied months after signup is
+  // valid, because a referral is an acquisition claim and an account that
+  // has never paid has not yet been acquired. One that has already paid was
+  // not acquired by anyone.
   //
-  // Same shape as the signup double-grant fix in ad3f059 and the promo
-  // claim in migration 012. This path was the one left behind.
-  var lockUpd = await supabase.from('profiles').update({
-    referred_by: code.toUpperCase()
-  }).eq('id', req.user.id).is('referred_by', null).select('id');
-  if (lockUpd.error) {
-    console.error('[AFFILIATE] Referral lock failed for ' + req.user.id.slice(0, 8) + ':', lockUpd.error.message);
-    return res.status(500).json({ error: 'Could not apply referral code — please try again' });
-  }
-  if (!lockUpd.data || lockUpd.data.length === 0) {
-    // Lost the race, or a code was applied between auth and here. Either
-    // way a bonus has already been granted — do NOT grant a second one.
-    console.log('[AFFILIATE] Referral claim lost for ' + req.user.id.slice(0, 8) + ' — already referred, no second bonus');
-    return res.status(400).json({ error: 'You already used a referral code' });
-  }
-
-  var refGranted = await recordCreditAdd({
-    userId: req.user.id,
-    amount: REFERRED_BONUS_CREDITS,
-    source: 'referral_bonus',
-    note: 'Referral signup bonus (code ' + code.toUpperCase() + ')'
-  });
-  if (refGranted === null) {
-    // The grant is the point of the operation. Releasing the lock keeps the
-    // user able to retry — leaving it set would burn their one referral
-    // forever in exchange for nothing, silently.
-    console.error('[AFFILIATE] Referral bonus grant FAILED for ' + req.user.id.slice(0, 8) + ' — releasing lock so it can be retried');
-    var unlock = await supabase.from('profiles').update({ referred_by: null }).eq('id', req.user.id);
-    if (unlock.error) {
-      console.error('[AFFILIATE] Lock release ALSO failed for ' + req.user.id.slice(0, 8) + ' — manual fix needed:', unlock.error.message);
+  // Any purchases row counts, including one later REFUNDED: the row
+  // survives a refund on purpose, or buy / refund / apply a code / buy
+  // again is an open door. Free starter credits go through the trigger and
+  // credit_transactions, never purchases, so they do not close the window.
+  //
+  // Skipped when a code is already present: the decision never reads
+  // hasPurchase in that case, and an idempotent retry must not be able to
+  // fail on a query it does not need.
+  var hasPurchase = false;
+  if (!existingCode) {
+    var paid = await supabase.from('purchases').select('id').eq('user_id', userId).limit(1);
+    if (paid.error) {
+      console.error(tag + 'purchase check failed:', briefErr(paid.error));
+      return { ok: false, outcome: 'internal', code: code, bonusCredits: 0 };
     }
-    return res.status(500).json({ error: 'Could not apply referral code — please try again' });
+    hasPurchase = !!(paid.data && paid.data.length);
   }
 
-  // Create referral record. Non-fatal: the user already has their bonus and
-  // the lock is set, so a failure here is a reporting gap, not a money bug.
+  var decision = affiliate.referralApplyDecision(existingCode, code, hasPurchase);
+  if (decision === 'idempotent') {
+    console.log(tag + 're-submitted ' + code + ' — idempotent, nothing granted');
+    return { ok: true, outcome: 'idempotent', code: existingCode, bonusCredits: 0 };
+  }
+  if (decision === 'conflict') return { ok: false, outcome: 'conflict', code: existingCode, bonusCredits: 0 };
+  if (decision === 'after_purchase') {
+    console.log(tag + 'tried ' + code + ' after a purchase — refused');
+    return { ok: false, outcome: 'after_purchase', code: null, bonusCredits: 0 };
+  }
+
+  // ATOMIC CLAIM. The read above cannot be trusted as a check: two
+  // concurrent applies both saw null and both granted a bonus. The
+  // .is('referred_by', null) predicate moves the check into the UPDATE, so
+  // concurrent callers serialize on the row lock and exactly one matches.
+  var lock = await supabase.from('profiles').update({ referred_by: code })
+    .eq('id', userId).is('referred_by', null).select('id');
+  if (lock.error) {
+    console.error(tag + 'claim failed:', briefErr(lock.error));
+    return { ok: false, outcome: 'internal', code: code, bonusCredits: 0 };
+  }
+  if (!lock.data || !lock.data.length) {
+    // Lost a race between the read and the write. Re-read and settle on
+    // what actually landed, so the loser still gets a truthful answer
+    // rather than a blanket refusal.
+    var after = await supabase.from('profiles').select('referred_by').eq('id', userId).maybeSingle();
+    var landed = after.data && after.data.referred_by ? String(after.data.referred_by).toUpperCase() : null;
+    if (landed === code) {
+      console.log(tag + 'lost the race to the SAME code — idempotent, nothing granted');
+      return { ok: true, outcome: 'idempotent', code: landed, bonusCredits: 0 };
+    }
+    if (landed) return { ok: false, outcome: 'conflict', code: landed, bonusCredits: 0 };
+    console.error(tag + 'claim matched no row and no code is present');
+    return { ok: false, outcome: 'internal', code: code, bonusCredits: 0 };
+  }
+
+  // Reporting row. Non-fatal by design: the attribution is already durable
+  // in profiles.referred_by, which is what the webhook pays on.
   var refRow = await supabase.from('referrals').insert({
-    referrer_id: referrer.id,
-    referred_id: req.user.id,
-    referral_code: code.toUpperCase(),
-    status: 'signed_up'
+    referrer_id: referrer.id, referred_id: userId, referral_code: code, status: 'signed_up'
   });
-  if (refRow.error) {
-    console.error('[AFFILIATE] referrals row insert failed for ' + req.user.id.slice(0, 8) + ' (bonus already granted):', refRow.error.message);
+  if (refRow.error) console.error(tag + 'referrals row failed (attribution stands):', briefErr(refRow.error));
+
+  // The bonus is gated on the program being live; the ATTRIBUTION is not.
+  // Links circulate while the program is off (§4.14) and a purchase made
+  // then still owes a commission, so the claim is recorded either way.
+  //
+  // A FAILED GRANT KEEPS THE ATTRIBUTION. This is a DELIBERATE REVERSAL of
+  // what /api/apply-referral used to do (2026-09-04) — please do not change
+  // it back without reading this.
+  //
+  // The old code nulled referred_by when the grant failed, and its comment
+  // argued: leaving it set burns the user's one referral forever in exchange
+  // for nothing. That is a real cost, and it is still the smaller one.
+  //
+  // Attribution is the durable, money-bearing fact — it is the affiliate's
+  // claim on EVERY future purchase, and it is what the Stripe webhook pays
+  // on. The bonus is credits, which an admin can add in ten seconds. Trading
+  // a permanent commission claim to avoid an ownable credit shortfall is the
+  // wrong way round.
+  //
+  // Worse, releasing the lock does not merely restore the status quo: it
+  // reopens the slot, and the next code applied wins. So a transient grant
+  // failure could silently move the commission to someone who did not make
+  // the referral. A user missing bonus credits complains and gets fixed; a
+  // commission quietly reassigned to the wrong affiliate never surfaces.
+  var bonus = 0;
+  if (AFFILIATE_ENABLED) {
+    var granted = await recordCreditAdd({
+      userId: userId, amount: REFERRED_BONUS_CREDITS, source: 'referral_bonus',
+      note: 'Referral signup bonus (code ' + code + ', ' + source + ')'
+    });
+    if (granted !== null) bonus = REFERRED_BONUS_CREDITS;
+    else console.error(tag + 'bonus grant failed — attribution KEPT, credits owed');
   }
+  console.log(tag + 'applied code ' + code + (bonus ? ' (+' + bonus + ')' : ' (no bonus: program off or grant failed)'));
+  return { ok: true, outcome: 'applied', code: code, bonusCredits: bonus };
+}
 
-  console.log('[AFFILIATE] User ' + req.user.email + ' signed up with code ' + code + ' (+' + REFERRED_BONUS_CREDITS + ' -> ' + refGranted + ')');
-
-  res.json({ success: true, bonusCredits: REFERRED_BONUS_CREDITS });
+// Apply referral code (called during signup or first visit)
+//
+// NOTE: no longer requireAffiliateEnabled. Attribution is recorded whether
+// or not the program is live — the same rule the app path has always
+// followed — and applyReferralForUser withholds the BONUS when it is off.
+app.post('/api/apply-referral', auth, async function(req, res) {
+  try {
+    var r = await applyReferralForUser(req.user.id, req.body && req.body.code, { source: 'web' });
+    if (r.outcome === 'validation_failed') return res.status(400).json({ error: 'No code provided' });
+    if (r.outcome === 'invalid_code') return res.status(404).json({ error: 'Invalid referral code' });
+    if (r.outcome === 'self_referral') return res.status(400).json({ error: 'Cannot use your own referral code' });
+    if (r.outcome === 'conflict') return res.status(400).json({ error: 'You already used a referral code' });
+    // NEW on this path: the window the app path has always enforced. A user
+    // who has already bought was not acquired by anyone.
+    if (r.outcome === 'after_purchase') return res.status(400).json({ error: 'You have already made a purchase, so a referral code can no longer be added.' });
+    if (r.outcome === 'internal') return res.status(500).json({ error: 'Could not apply referral code — please try again' });
+    // 'applied' and 'idempotent' are both success. Resubmitting the same
+    // code used to be a 400 here; it is a 200 granting nothing, which is
+    // what a retry of a request whose response was never seen deserves.
+    res.json({ success: true, bonusCredits: r.bonusCredits });
+  } catch (e) {
+    console.error('[REFERRAL:web] unexpected failure:', e.message);
+    res.status(500).json({ error: 'Could not apply referral code — please try again' });
+  }
 });
 
 // Set payout email
