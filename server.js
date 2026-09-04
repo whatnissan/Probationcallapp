@@ -1267,10 +1267,23 @@ function getStaggerDelay(userId) {
 
 // Simple per-user in-memory rate limit. Keyed on userId + bucket name.
 // Used to stop a signed-in user from burning Twilio/Stripe quota.
+//
+// keyFn is optional and exists for limiters that must run BEFORE auth(),
+// where req.user does not exist yet. Returning null from it means "do not
+// limit this request" — see bearerRateKey.
+//
+// NOTE on the default key: req.ip is NOT a client identity here. Railway
+// sits behind a proxy and trust-proxy is not set, so req.ip is the proxy for
+// EVERY caller (that is why clientIp() below reads x-forwarded-for by hand).
+// On an authenticated route the req.user branch always wins and this does
+// not matter; on an unauthenticated one it collapses into a single shared
+// bucket. Do not add an unauthenticated limiter without passing a keyFn.
 var _rateBuckets = new Map();
-function rateLimit(bucket, max, windowMs) {
+function rateLimit(bucket, max, windowMs, keyFn) {
   return function(req, res, next) {
-    var key = bucket + ':' + (req.user ? req.user.id : (req.ip || 'anon'));
+    var id = keyFn ? keyFn(req) : (req.user ? req.user.id : (req.ip || 'anon'));
+    if (id === null || id === undefined) return next();
+    var key = bucket + ':' + id;
     var now = Date.now();
     var entry = _rateBuckets.get(key);
     if (!entry || (now - entry.windowStart) > windowMs) {
@@ -1296,6 +1309,26 @@ setInterval(function() {
     if (entry.windowStart < cutoff) _rateBuckets.delete(key);
   });
 }, 60 * 60 * 1000);
+
+// A rate-limit key for limiters that run BEFORE auth(): the bearer token
+// itself, hashed. Never the raw token — this string is only ever a Map key,
+// but a credential that is written down anywhere tends to end up in a log.
+//
+// Keying on the token rather than the user id is what lets the limiter sit
+// in front of auth(), which is the entire point: auth() costs a Supabase
+// auth call plus a profile read, so a limiter placed after it still pays
+// full price for every request it rejects.
+//
+// No token means no limit, deliberately: auth() answers that with a 401
+// before it calls anything, so there is no cost to protect. An INVALID
+// token is still limited — same string, same bucket — which is the case
+// that would otherwise reach supabase.auth.getUser() on every iteration.
+function bearerRateKey(req) {
+  var h = req.headers.authorization;
+  var t = h ? String(h).replace('Bearer ', '').trim() : '';
+  if (!t) return null;
+  return require('crypto').createHash('sha256').update(t).digest('hex').slice(0, 16);
+}
 
 // Twilio webhook authenticity — checks X-Twilio-Signature against the
 // exact public URL (incl. query string) + posted params. Two-stage rollout
@@ -2417,7 +2450,25 @@ app.post('/api/recording-link', auth, async function(req, res) {
 
 // Short-lived WebSocket ticket, replacing the session JWT that used to be
 // passed in the socket URL.
-app.post('/api/ws-ticket', auth, function(req, res) {
+//
+// RATE LIMITED, AND THE LIMITER RUNS BEFORE auth() — that ordering is the
+// whole fix, not a detail. On 2026-09-03 a single client looped this
+// endpoint at ~170 requests a second sustained; every one of them was a
+// supabase.auth.getUser() plus a profile read, which is what the Supabase
+// egress incident actually was. A limiter placed after auth() (where every
+// other rateLimit in this file sits, because they key on req.user.id) would
+// have returned 429 to all of it and still paid both calls each time.
+// In front of auth() the rejected requests cost an HMAC and nothing else.
+//
+// 10 a minute per session: a working client needs about one ticket per
+// socket, and the dashboard's reconnect budget tops out at 8 attempts, so
+// this is far above anything legitimate — including several tabs
+// reconnecting together after a deploy — and far below any loop.
+//
+// It is keyed on the bearer token (bearerRateKey), not the user id, since
+// req.user does not exist this early. Same practical granularity: one
+// signed-in session, one bucket.
+app.post('/api/ws-ticket', rateLimit('ws_ticket', 10, 60 * 1000, bearerRateKey), auth, function(req, res) {
   if (!process.env.RECORDING_TOKEN_SECRET) {
     console.error('[WS] RECORDING_TOKEN_SECRET is not set — cannot mint tickets');
     return res.status(500).json({ error: 'Live updates are unavailable right now' });
@@ -7733,7 +7784,13 @@ async function adminAuth(req, res, next) {
     // exist. It fails CLOSED either way, so this is about being truthful,
     // not about access. maybeSingle keeps "no such profile" (still
     // NOT_ADMIN) separate from "the read failed" (say so, and retryable).
-    var pr = await supabase.from('profiles').select('*').eq('id', result.data.user.id).maybeSingle();
+    // NAMED COLUMNS, NOT select('*') — the same treatment auth() got, for
+    // the same reason. This sets req.profile just as auth() does, so it is
+    // the same object with the same consumers, and test/auth-profile-columns
+    // re-derives the list from every req.profile.<field> in this file, admin
+    // routes included. select('*') here also pulled the four jsonb columns
+    // migration 048 added, on every admin request.
+    var pr = await supabase.from('profiles').select(AUTH_PROFILE_COLUMNS).eq('id', result.data.user.id).maybeSingle();
     if (pr.error) {
       console.error('[ADMIN-AUTH] profile read failed for ' + String(result.data.user.id).slice(0, 8) + ':', pr.error.message);
       return res.status(503).json({ error: 'Could not check your admin access just now — try again in a moment.', code: 'ADMIN_CHECK_FAILED' });
@@ -7746,9 +7803,16 @@ async function adminAuth(req, res, next) {
     }
     req.user = result.data.user;
     req.profile = pr.data;
-    // Track last login (.then() required — lazy builder, see auth middleware)
-    supabase.from("profiles").update({ last_login: new Date().toISOString() }).eq("id", result.data.user.id)
-      .then(function() {}, function(e) { console.error('[ADMIN-AUTH] last_login update failed:', e.message); });
+    // Track last login, throttled exactly as auth() throttles it, and for
+    // the same reason: this wrote on EVERY admin request. The admin panel
+    // polls, so a left-open dashboard is itself a slow loop, and one stuck
+    // tab was enough to write the same row continuously. Shared throttle
+    // instance, keyed by user id, so an admin hitting both middlewares does
+    // not get two writes. (.then() required — lazy builder, see auth.)
+    if (lastLoginThrottle.take(result.data.user.id)) {
+      supabase.from("profiles").update({ last_login: new Date().toISOString() }).eq("id", result.data.user.id)
+        .then(function() {}, function(e) { console.error('[ADMIN-AUTH] last_login update failed:', briefErr(e)); });
+    }
     next();
   } catch(e) {
     res.status(500).json({ error: 'Auth error' });

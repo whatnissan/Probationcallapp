@@ -1924,6 +1924,22 @@ async function connectWS() {
   ws.onopen = function() {
     // A real connection resets the budget, so a later drop starts at 5s again
     // rather than inheriting an exhausted one.
+    //
+    // CAREFUL: this reset is the one thing that can defeat WS_MAX_ATTEMPTS
+    // entirely. onopen fires when the socket OPENS, which is not the same as
+    // the connection being good — the server accepts the upgrade first and
+    // only then closes 1008 if the ticket is missing, invalid or past its
+    // 60-second TTL (see wss.on('connection') in server.js). An open that is
+    // immediately closed therefore zeroes the counter on every pass, and the
+    // cap never accrues: mint a ticket, open, get closed, retry, forever, at
+    // one auth'd POST /api/ws-ticket each time.
+    //
+    // It is bounded today only because POST /api/ws-ticket is now rate
+    // limited server-side (10/min per session). That is the backstop, not
+    // the design. If you move the reset, widen that limit, or make the
+    // budget depend on this counter alone, gate the reset on the connection
+    // having actually LASTED — e.g. only reset after a few seconds open, or
+    // reset in onmessage instead — or you reintroduce the unbounded loop.
     wsAttempts = 0;
     setWsStatus('');
   };
