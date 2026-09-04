@@ -183,25 +183,96 @@ function reqRollupKey(req) {
   return String(req.method || '?').slice(0, 6) + ' ' + path + ' u=' + uid;
 }
 
-app.use(function(req, res, next) {
-  // Only the API surface. Static assets and pages are noise here, and the
-  // loop we are hunting is authenticated.
-  if (req.path && req.path.indexOf('/api/') === 0) {
-    res.on('finish', function() {
-      try {
-        var k = reqRollupKey(req) + ' ' + res.statusCode;
-        if (_reqCounts.size >= 200 && !_reqCounts.has(k)) { _reqDropped++; return; }
-        _reqCounts.set(k, (_reqCounts.get(k) || 0) + 1);
-      } catch (e) { /* logging must never break a request */ }
-    });
+// ---- TEMPORARY (2026-09-03): pages and static assets, bucketed by agent ----
+// Added to answer one question — is a crawler a meaningful share of our
+// egress? — without sitting and watching the Railway HTTP log. REMOVE THIS
+// once that question is answered: delete UA_BUCKETS, uaBucket, ROLLUP_PAGES
+// and the else-branch below, and the rollup goes back to the API surface.
+// Set REQ_ROLLUP_PAGES=false in Railway to switch it off without a deploy.
+//
+// It never logs a raw User-Agent. A UA is a fingerprinting surface and a
+// raw one is unbounded text from a stranger; every request here collapses
+// into one of a fixed list of buckets. The two open-ended buckets get a
+// 20-char slug of word characters only, which is enough to recognise an
+// unknown agent and is what makes an unidentified crawler identifiable at
+// all — the whole point of the exercise.
+var ROLLUP_PAGES = process.env.REQ_ROLLUP_PAGES !== 'false';
+var UA_BUCKETS = [
+  ['grok', /grok/i], ['xai', /xai|x-ai\b/i], ['gptbot', /gptbot/i],
+  ['oai-search', /oai-searchbot/i], ['chatgpt-user', /chatgpt-user/i],
+  ['claudebot', /claudebot|claude-web|anthropic-ai/i], ['ccbot', /ccbot/i],
+  ['bytespider', /bytespider/i], ['perplexity', /perplexity/i],
+  ['googlebot', /googlebot|google-extended/i], ['bingbot', /bingbot/i],
+  ['applebot', /applebot/i], ['amazonbot', /amazonbot/i],
+  ['meta', /meta-externalagent|facebookexternalhit|facebookbot/i],
+  ['semrush', /semrushbot/i], ['ahrefs', /ahrefsbot/i],
+  ['yandex', /yandexbot/i], ['baidu', /baiduspider/i],
+  ['uptime', /uptimerobot|pingdom|betteruptime|railway/i],
+  ['stripe', /^stripe\//i], ['twilio', /^twiliopro|^twilio/i],
+  ['curl', /^curl\//i], ['wget', /^wget/i],
+  ['script', /python-requests|scrapy|aiohttp|httpx|go-http-client|okhttp|java\//i],
+  ['headless', /headlesschrome|puppeteer|playwright|phantomjs/i]
+];
+function uaSlug(ua) {
+  var m = String(ua).match(/[A-Za-z0-9_.-]+/);
+  return m ? m[0].slice(0, 20) : 'x';
+}
+function uaBucket(req) {
+  var ua = String(req.headers['user-agent'] || '');
+  if (!ua) return 'none';
+  for (var i = 0; i < UA_BUCKETS.length; i++) {
+    if (UA_BUCKETS[i][1].test(ua)) return UA_BUCKETS[i][0];
   }
+  if (/bot|crawler|spider|scrape|fetch/i.test(ua)) return 'bot?:' + uaSlug(ua);
+  // A browser UA is the overwhelming majority and tells us nothing, so it
+  // stays a single bucket. Anything else keeps a slug — that is the bucket
+  // an unidentified crawler lands in.
+  if (/^mozilla\/5\.0/i.test(ua)) return 'browser';
+  return 'ua?:' + uaSlug(ua);
+}
+
+app.use(function(req, res, next) {
+  var isApi = req.path && req.path.indexOf('/api/') === 0;
+  if (!isApi && !(ROLLUP_PAGES && req.path)) return next();
+  res.on('finish', function() {
+    try {
+      // The API surface keeps the line it always had — the authenticated
+      // loop is diagnosed by user, not by agent, and that line is load
+      // bearing. Pages and assets key on the agent instead: they are mostly
+      // signed out, so a user id would be '-' on every one of them.
+      var k = isApi
+        ? reqRollupKey(req) + ' ' + res.statusCode
+        : String(req.method || '?').slice(0, 6) + ' ' + String(req.path || '').slice(0, 60)
+          + ' a=' + uaBucket(req) + ' ' + res.statusCode;
+      if (_reqCounts.size >= 200 && !_reqCounts.has(k)) { _reqDropped++; return; }
+      var e = _reqCounts.get(k);
+      // Bytes are the actual question for the crawler hunt — 200 requests
+      // for a 687 KB image is a different fact from 200 requests for a
+      // favicon. Content-Length is absent for streamed responses; those
+      // just contribute 0 rather than guessing.
+      var n = Number(res.getHeader('content-length')) || 0;
+      if (e) { e.n++; e.b += n; } else { _reqCounts.set(k, { n: 1, b: n }); }
+    } catch (e2) { /* logging must never break a request */ }
+  });
   next();
 });
 
+function fmtBytes(b) {
+  if (!b) return '';
+  if (b >= 1048576) return ' ' + (b / 1048576).toFixed(1) + 'MB';
+  if (b >= 1024) return ' ' + Math.round(b / 1024) + 'KB';
+  return ' ' + b + 'B';
+}
+
 setInterval(function() {
   if (!_reqCounts.size) return;
-  var top = Array.from(_reqCounts.entries()).sort(function(a, b) { return b[1] - a[1]; });
-  var shown = top.slice(0, 8).map(function(e) { return e[0] + ' x' + e[1]; });
+  // Sorted by BYTES once pages are counted, by request count otherwise. The
+  // top 8 by count would be all favicons while a crawler quietly pulled the
+  // hero image, and bytes are what the question is about.
+  var top = Array.from(_reqCounts.entries()).sort(function(a, b) {
+    return ROLLUP_PAGES ? (b[1].b - a[1].b) || (b[1].n - a[1].n) : b[1].n - a[1].n;
+  });
+  var shown = top.slice(0, 8).map(function(e) { return e[0] + ' x' + e[1].n + fmtBytes(e[1].b); });
   var rest = top.length - shown.length;
   console.log('[REQ] 10s | ' + shown.join(' | ')
     + (rest > 0 ? ' | +' + rest + ' more' : '')
@@ -10710,3 +10781,36 @@ cron.schedule('* * * * *', async function() {
     }
   }
 }, { timezone: 'America/Chicago' });
+
+// ========== 404 ==========
+// Registered last, after every route in this file, so it can only ever see
+// what nothing else matched. Express's default was an HTML error page
+// ("Cannot GET /robots.txt") for everything, including the API — a v1 client
+// asking for a mistyped path got a lump of HTML where the contract promises
+// an error object, and a stranger probing for /wp-admin got a stack-shaped
+// page telling them what framework this is.
+//
+// Three shapes, because three kinds of caller: v1 gets the contract error
+// object, the rest of /api/ gets the plain {error} the web dashboard reads,
+// and a human gets a small page.
+app.use(function(req, res) {
+  if (req.path.indexOf('/api/v1/') === 0) {
+    return v1Error(res, 404, 'not_found', 'That endpoint does not exist.');
+  }
+  if (req.path.indexOf('/api/') === 0) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  res.status(404).type('html').send(
+    '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<meta name="robots" content="noindex"><title>Page not found — ProbationCall</title>' +
+    '<style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;' +
+    'background:#0f1115;color:#e6e8eb;font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
+    'text-align:center;padding:24px}a{color:#5b9dff}h1{font-size:20px;margin:0 0 8px}' +
+    'p{margin:0 0 20px;color:#9aa3ad}</style></head><body><div>' +
+    '<h1>That page does not exist.</h1>' +
+    '<p>The link may be out of date, or the address mistyped.</p>' +
+    '<p><a href="/">Go to probationcall.com</a> &nbsp;·&nbsp; <a href="/dashboard">Your dashboard</a></p>' +
+    '</div></body></html>'
+  );
+});

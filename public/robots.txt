@@ -1,0 +1,27 @@
+# probationcall.com
+#
+# The marketing pages are meant to be found. Nothing behind a sign-in is,
+# and neither is the API or the Twilio/Stripe machinery.
+#
+# This file is a REQUEST, not a control. Well-behaved crawlers honour it and
+# the rest ignore it, so it is not a security boundary: /dashboard, /admin
+# and /api/ are protected by auth and would be with or without this file.
+# What it is good for is keeping polite bots off pages that cost us
+# bandwidth and can never be useful to them.
+
+User-agent: *
+Disallow: /dashboard
+Disallow: /admin
+Disallow: /api/
+Disallow: /connect/
+Disallow: /return
+Disallow: /webhook/
+Disallow: /twiml/
+Disallow: /recording/
+Disallow: /demo/
+Allow: /
+
+# Honoured by Bing, Yandex and most small crawlers; ignored by Google, which
+# is fine — Googlebot paces itself. Aimed at the aggressive long tail that
+# pulls brand-hero.png (687 KB) on every pass.
+Crawl-delay: 10
