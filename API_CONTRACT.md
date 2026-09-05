@@ -838,6 +838,82 @@ claim yet" — clients render the absence honestly, never a zeroed chart.
   `prediction-core.js`. The weekend phrasing "rare, not never" is retained
   ONLY in the pre-existing weekday-not-significant branch; it is a downward
   claim and must not be carried into new copy.
+
+  **Correction (2026-09-05): the weekday chi-square statistic.** The
+  amendment above reported the Mon-Fri test as **chi-square 10.804,
+  p = 0.0289**. That is the **event-only goodness-of-fit** statistic — it
+  sums deviations across the MUST_TEST counts alone, against expectations
+  `n_d * p_hat`, and ignores the complementary "not called" cell.
+
+  The correct statistic for this design is the **full 2x5 Pearson test** —
+  MUST_TEST vs not, across the five weekdays:
+
+  **chi-square = 11.535, df = 4, critical value 9.488, p = 0.0212.**
+
+  The two are related exactly, not approximately. In each day the "not
+  called" deviation is the negative of the "called" one, so every day
+  contributes `(m_d - n_d p_hat)^2 / (n_d p_hat) * [1 + p_hat/(1 - p_hat)]`,
+  and:
+
+  **X2_full = X2_event-only / (1 - p_hat)** — here 10.804 / 0.936659 = 11.535.
+
+  With p_hat = 80/1263 = 0.0633 the event-only form understates by 6.3%.
+  Degrees of freedom are unchanged at 4, since (2-1)(5-1) = 4.
+
+  **The conclusion is unchanged. Both statistics clear the 9.488 threshold,
+  and the corrected p-value is SMALLER, not larger — the weekday pattern is
+  slightly better evidenced than the amendment claimed, not worse.** Nothing
+  about the Thursday contrast, the Bonferroni result, the power caveat or
+  the copy constraints is affected: the Thursday two-proportion test was
+  already computed in its full form (z = 3.260, p = 0.00111), and the
+  per-day binomial test is `(m - n p_hat)/sqrt(n p_hat (1 - p_hat))`, which
+  is likewise already correct.
+
+  **Implementation note.** `countyElevatedDays()` in `prediction-core.js`
+  computes its whole-week gate in the event-only form as well — 39.659 where
+  the full 2x7 Pearson is 41.623, understated by 4.7%. That direction is
+  conservative: it makes the gate harder to pass, so it can only have
+  suppressed a real pattern, never manufactured one. It is corrected to the
+  full form for accuracy, not because any current outcome changes.
+
+  **The interval distribution is biased short (2026-09-05).** Wherever this
+  section quotes a median or a band over completed intervals, note that it
+  uses **completed intervals only**. Ongoing waits — a user whose next test
+  has not happened yet — are **right-censored and excluded**, and excluding
+  them systematically drops the longest-running observations, because a long
+  wait is precisely the one that has not completed.
+
+  Measured over 65 completed intervals plus 17 ongoing waits, Kaplan-Meier
+  against the naive completed-only quantiles:
+
+  | quantile | naive (completed only) | Kaplan-Meier |
+  |---|---|---|
+  | P10 | 6.4 d | 7 d |
+  | P25 | 10.0 d | 11 d |
+  | P50 | **18 d** | **21 d** |
+  | P75 | 28.0 d | 31 d |
+  | P90 | 47.4 d | 49 d |
+
+  **The median is 21 days, not 18** — a 17% understatement, and the largest
+  distortion of any quantile. Every quantile moves up; the band edges move
+  least (6-47 becomes 7-49) because the extremes are already anchored by
+  completed intervals, and only 4 of the 17 censored waits exceed the
+  completed median.
+
+  Two limits on that estimate. Kaplan-Meier assumes censoring is independent
+  of the interval process, and here it partly is not — several waits end
+  because the person stopped being called rather than because they are still
+  waiting, which mixes churn into apparent long waits. And the longest
+  censored wait (43 d) is shorter than the longest completed interval
+  (63 d), so the estimate carries no information beyond the observed range;
+  `S(63) = 0` is an artifact of the last event, not evidence the
+  distribution terminates.
+
+  **This is a caveat on the numbers, not a change to them.** No band or
+  median in this document has been recomputed on the censored-corrected
+  basis; doing so is a separate decision, because it would move a
+  user-facing band and the 88% walk-forward backtest was measured on the
+  naive basis.
 - **`notes`** `[string]` — user-presentable caveats. Clients show them
   verbatim; the server owns the epistemics.
 
