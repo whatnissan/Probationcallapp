@@ -2662,10 +2662,27 @@ async function tryPushFirst(opts) {
       return false;
     }
 
+    // FRESHEST FIRST. The loop below stops at the first token Apple accepts,
+    // so the ORDER decides which device gets the morning's notification —
+    // and this query had no ORDER BY, i.e. whatever PostgREST returned.
+    //
+    // On 2026-09-05 that picked a token last seen 2026-09-04T15:38 over one
+    // last seen 2026-09-05T00:35, for an account holding three live
+    // production tokens. Apple ACCEPTED it — a 200 and an apns-id — because
+    // APNs only reports Unregistered once it knows a token is dead, which
+    // can take days after an app is deleted or replaced. So "accepted" is
+    // not evidence the app is still installed behind that token, and the
+    // notification can be delivered to a device that no longer exists while
+    // the one in the person's hand gets nothing.
+    //
+    // last_seen_at is written on every device registration, so it is the
+    // best available proxy for "which handset is actually running the app".
+    // nullsFirst:false puts a never-seen token last rather than first.
     var devices = await supabase.from('device_tokens')
-      .select('token, environment')
+      .select('token, environment, last_seen_at')
       .eq('user_id', opts.userId)
-      .is('unregistered_at', null);
+      .is('unregistered_at', null)
+      .order('last_seen_at', { ascending: false, nullsFirst: false });
     var live = (devices.data || []);
 
     // One delivery row per user per morning (unique index). If a row already
@@ -7688,59 +7705,107 @@ wss.on('connection', function(ws) {
 });
 
 
-// Fire a test push at one user's devices and report EXACTLY what Apple said.
+// Admin push test — SELF ONLY.
 //
-// This exists because on 2026-09-04 push was broken for every device in the
+// It exists because on 2026-09-04 push was broken for every device in the
 // fleet and the only way to find out was to wait for the 5 AM run and read
 // the logs afterwards. A notification product whose delivery can only be
 // tested once a day, in retrospect, is a product nobody can debug.
 //
-// Two things it deliberately does NOT do:
+// THE ROUTE TAKES NO USER ID. The earlier version was
+// POST /api/admin/push-test/:userId and could target anyone. This one reads
+// req.user.id from adminAuth, so an admin cannot send to another person's
+// device — not because a check forbids it, but because the route has no way
+// to express it. That is deliberately stronger than validating
+// :userId === req.user.id, which is a guard the next person can "generalise"
+// without noticing what it was for. Someone else's handset is not a test rig.
 //
-//   1. It NEVER writes a push_deliveries row. UNIQUE (user_id, local_date)
-//      is what makes a morning's notification singular — a test row would
-//      take that slot and SUPPRESS the real 5 AM delivery, turning a
-//      diagnostic into an outage. Testing must not be able to cost someone
-//      their MUST_TEST.
-//   2. It never prunes a token or corrects a stored environment. A probe
-//      reports state; it does not edit it. That also means firing at the
-//      "wrong" environment on purpose is free.
+// GET  /api/admin/push-test  — list my live tokens, send nothing.
+// POST /api/admin/push-test  — send to one token, or to all of them.
 //
-// ?environment=production|sandbox|both (default both) — 'both' fires the
-// SAME token at each host and reports both answers, which is the definitive
-// way to find out where a token actually lives.
-app.post('/api/admin/push-test/:userId', adminAuth, async function(req, res) {
+// It writes NOTHING. No push_deliveries row (UNIQUE (user_id, local_date) is
+// what makes a morning's notification singular — a test row would take that
+// slot and SUPPRESS the real 5 AM delivery, so testing must not be able to
+// cost anyone their MUST_TEST), no call_history, no credit, no token prune,
+// no environment correction, and no SMS or email: with no delivery row there
+// is nothing for runPushFallbackSweep to find.
+app.get('/api/admin/push-test', adminAuth, async function(req, res) {
+  try {
+    var devices = await supabase.from('device_tokens')
+      .select('token, environment, platform, app_version, os_version, created_at, last_seen_at')
+      .eq('user_id', req.user.id).is('unregistered_at', null)
+      .order('last_seen_at', { ascending: false, nullsFirst: false });
+    if (devices.error) return res.status(503).json({ error: 'Could not read device tokens: ' + devices.error.message });
+    var live = devices.data || [];
+    res.json({
+      devices: live.length,
+      // Freshest first, same order tryPushFirst now uses — so this listing
+      // doubles as a check on which device the morning would actually reach.
+      tokens: live.map(function(d, i) {
+        return {
+          token: '…' + String(d.token).slice(-8),
+          environment: d.environment,
+          platform: d.platform || null,
+          appVersion: d.app_version || null,
+          osVersion: d.os_version || null,
+          createdAt: d.created_at || null,
+          lastSeenAt: d.last_seen_at || null,
+          freshest: i === 0
+        };
+      })
+    });
+  } catch (e) {
+    console.error('[PUSH-TEST] list failed:', e.message);
+    res.status(500).json({ error: 'Could not list devices: ' + e.message });
+  }
+});
+
+app.post('/api/admin/push-test', adminAuth, async function(req, res) {
   try {
     if (!apns.apnsConfigured()) {
       return res.status(503).json({ error: 'APNs is not configured on this instance (APNS_KEY_ID / APNS_TEAM_ID / APNS_BUNDLE_ID / APNS_PRIVATE_KEY).' });
     }
-    var userId = String(req.params.userId || '');
-    if (!/^[0-9a-f-]{36}$/i.test(userId)) return res.status(400).json({ error: 'Not a user id.' });
-
-    var which = String((req.body && req.body.environment) || req.query.environment || 'both').toLowerCase();
+    var body = req.body || {};
+    var which = String(body.environment || 'both').toLowerCase();
     if (['production', 'sandbox', 'both'].indexOf(which) < 0) {
       return res.status(400).json({ error: "environment must be 'production', 'sandbox' or 'both'." });
     }
     var envs = which === 'both' ? ['production', 'sandbox'] : [which];
+    // Which token(s): a last-8 suffix picks one, absent means all live ones.
+    var pick = body.token ? String(body.token).replace(/[^0-9a-fA-F]/g, '').slice(-8).toLowerCase() : null;
 
     var devices = await supabase.from('device_tokens')
-      .select('token, environment, platform, app_version, os_version, created_at, last_seen_at')
-      .eq('user_id', userId).is('unregistered_at', null);
+      .select('token, environment, app_version, os_version, created_at, last_seen_at')
+      .eq('user_id', req.user.id).is('unregistered_at', null)
+      .order('last_seen_at', { ascending: false, nullsFirst: false });
     if (devices.error) return res.status(503).json({ error: 'Could not read device tokens: ' + devices.error.message });
-    var live = devices.data || [];
+    var live = (devices.data || []).filter(function(d) {
+      return !pick || String(d.token).slice(-8).toLowerCase() === pick;
+    });
     if (!live.length) {
-      return res.json({ userId: userId, devices: 0, results: [],
-        note: 'No live device tokens for this user. Nothing to send to — this is what the morning path records as no_device.' });
+      return res.json({ devices: 0, results: [], wrotePushDeliveryRow: false,
+        note: pick ? 'No live token ending ' + pick + ' on your account.'
+                   : 'No live device tokens on your account. Nothing to send to — this is what the morning path records as no_device.' });
     }
 
+    // UNMISTAKABLY NOT A VERDICT. Never the MUST_TEST or NO_TEST payload:
+    //  - result 'ADMIN_TEST' matches neither, so a client switching on
+    //    result falls to its default branch instead of rendering a verdict.
+    //  - the body says so in words, because a lock-screen glance reads the
+    //    first line and nothing else.
+    //  - interruption-level 'active', NOT time-sensitive: breaking through
+    //    Focus is for a 5 AM MUST_TEST, not for a diagnostic.
+    //  - relevance-score 0 keeps it at the bottom of a notification summary.
+    //  - no deliveryId (no row to ack) and NO collapse-id, so a test can
+    //    never coalesce with or replace the morning's real notification,
+    //    which collapses on localDate:userId.
     var payload = apns.buildPayload({
-      title: 'ProbationCall test',
-      body: 'Test push — ' + new Date().toISOString().slice(11, 19) + 'Z. Not a real result.',
-      mustTest: false,
-      // NO deliveryId: there is no push_deliveries row to ack, and handing
-      // the app an id that does not exist would have it ack into nothing.
+      title: 'ProbationCall — test only',
+      body: 'Admin test push, ' + new Date().toISOString().slice(11, 19) + 'Z. This is NOT a testing result. Ignore it.',
+      interruptionLevel: 'active',
+      relevanceScore: 0,
       deliveryId: null,
-      result: 'TEST',
+      result: 'ADMIN_TEST',
       date: null,
       resultAvailable: false
     });
@@ -7750,48 +7815,30 @@ app.post('/api/admin/push-test/:userId', adminAuth, async function(req, res) {
       var d = live[i];
       for (var j = 0; j < envs.length; j++) {
         var r = await apns.sendPush({
-          token: d.token,
-          environment: envs[j],
-          payload: payload,
-          // No collapse id: a test must never coalesce with the morning's
-          // real notification, which collapses on localDate:userId.
+          token: d.token, environment: envs[j], payload: payload,
           expirationEpochSeconds: Math.floor(Date.now() / 1000) + 300
         });
         results.push({
           token: '…' + String(d.token).slice(-8),
           storedEnvironment: d.environment,
           sentTo: envs[j],
-          // The host actually dialled, from inside the sender — not derived
-          // from the value we passed in. Whether the routing matches the
-          // intent is the whole question in any environment dispute, and
-          // restating the input would not answer it.
           gateway: r.host || null,
-          ok: !!r.ok,
-          status: r.status,
-          reason: r.reason || null,
-          apnsId: r.apnsId || null,
-          unregistered: !!r.unregistered,
-          appVersion: d.app_version || null,
-          osVersion: d.os_version || null,
-          // Freshness, so a stale registration is distinguishable from a
-          // current one at a glance — "which of these three tokens is the
-          // one my phone actually holds" is the question being asked.
-          registeredAt: d.created_at || null,
+          ok: !!r.ok, status: r.status, reason: r.reason || null,
+          apnsId: r.apnsId || null, unregistered: !!r.unregistered,
+          appVersion: d.app_version || null, osVersion: d.os_version || null,
           lastSeenAt: d.last_seen_at || null
         });
       }
     }
     var anyOk = results.some(function(x) { return x.ok; });
     var worked = results.filter(function(x) { return x.ok; }).map(function(x) { return x.sentTo; });
-    console.log('[PUSH-TEST] ' + userId.slice(0, 8) + ' → ' + results.length + ' send(s), ' +
+    console.log('[PUSH-TEST] self ' + String(req.user.id).slice(0, 8) + ' → ' + results.length + ' send(s), ' +
       (anyOk ? 'accepted by ' + worked.join('/') : 'ALL REJECTED') +
       ' [' + results.map(function(x) { return x.sentTo + ':' + (x.reason || x.status); }).join(' ') + ']');
     res.json({
-      userId: userId,
       devices: live.length,
       environmentsTried: envs,
       anyAccepted: anyOk,
-      // The one sentence worth reading first.
       summary: anyOk
         ? 'Apple accepted the push on: ' + Array.from(new Set(worked)).join(', ') +
           '. If the device shows nothing, the problem is on the device (notification permission, Focus, or the app), not delivery.'
@@ -7805,7 +7852,7 @@ app.post('/api/admin/push-test/:userId', adminAuth, async function(req, res) {
   }
 });
 
-// Mass text all active users
+// Mass text all active users// Mass text all active users
 app.post('/api/admin/mass-text', adminAuth, async function(req, res) {
   try {
     var message = req.body.message;
