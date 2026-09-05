@@ -2743,8 +2743,63 @@ function calculateTestStats() {
             "</div>";
         }
 
-        // Test Days — takeaway + the weekday proportion SHOWN.
-        if (county && county.fullWeekSignificant && !county.weekdaySignificant) {
+        // Test Days.
+        //
+        // BOTH TESTS SIGNIFICANT (2026-09-04). The weekday-only chi-square
+        // used to fail, so this case did not exist and the page fell through
+        // to "Testing looks random" — which became wrong the day the test
+        // crossed. Mon-Fri chi-square is now 10.804 (df=4, crit 9.488,
+        // p=0.029) and Thursday survives Bonferroni across the five weekdays
+        // at p=0.0011.
+        //
+        // NO MULTIPLIER IN THE COPY, deliberately. The contrast ran at 65%
+        // power, its 95% CI is +1.5 to +9.7 points, and an underpowered test
+        // that clears tends to overstate the effect — so "about twice as
+        // often" is the honest ceiling on precision here. Do not replace it
+        // with the computed lift.
+        //
+        // NO WEEKDAY GRID in this branch, also deliberately: buildWeekdayVisual
+        // renders all seven days, and showing Sunday's zero beside words
+        // naming Thursday as heaviest hands the reader the "safe day"
+        // inference the copy is written to refuse. The named day IS the
+        // finding; the gradient would only add the half we do not say.
+        //
+        // INTERIM SHAPE. The day is picked from countyDayCounts, which the
+        // server already sends. It deliberately does NOT call
+        // countyElevatedDays() yet: that function and its countyDayCalls
+        // denominator are still unreleased, and calling a function the
+        // deployed prediction-core.js does not have throws inside this
+        // .then(), where the .catch() hides the WHOLE card. Wrong copy is bad;
+        // a missing card is worse. Swap to countyElevatedDays() in the same
+        // commit that ships it, not before.
+        //
+        // Safe as an interim because the branch is already gated on
+        // weekdaySignificant, so we only name a day when the weekday pattern
+        // itself is real, and because call volume is near-flat across
+        // weekdays (248-262), so the unweighted count and the rate agree on
+        // which day leads. If that stops being true, the rate is right and
+        // this is wrong — which is the reason the real version is coming.
+        var wdCounts = p.countyDayCounts || [];
+        var hotIdx = null;
+        if (wdCounts.length === 7) {
+          for (var wi = 1; wi <= 5; wi++) {
+            if (hotIdx === null || wdCounts[wi] > wdCounts[hotIdx]) hotIdx = wi;
+          }
+        }
+        if (county && county.fullWeekSignificant && county.weekdaySignificant && hotIdx !== null) {
+          var DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+          // No escaping: hotDay is an element of the DAY_NAMES literal above,
+          // never user input. dashboard.html has no esc() helper — calling one
+          // here throws a ReferenceError inside this .then(), and the .catch()
+          // would hide the entire card.
+          var hotDay = DAY_NAMES[hotIdx];
+          html += "<div style='border-top:1px solid rgba(255,255,255,0.06);padding-top:12px;margin-bottom:16px'>" +
+            "<div style='color:#f59e0b;font-weight:700;font-size:1.02rem;margin-bottom:4px'>" + hotDay + "s run heaviest.</div>" +
+            "<div style='color:#8892b0;line-height:1.55'>Across Montgomery County, " + hotDay +
+            " has come back with a test about twice as often as an average weekday. Treat it as a day to be extra ready. " +
+            "Every other day still carries a real chance \u2014 testing is possible any day.</div>" +
+            "</div>";
+        } else if (county && county.fullWeekSignificant && !county.weekdaySignificant) {
           html += "<div style='border-top:1px solid rgba(255,255,255,0.06);padding-top:12px;margin-bottom:16px'>" +
             "<div style='color:#f59e0b;font-weight:700;font-size:1.02rem;margin-bottom:4px'>Stay ready every weekday.</div>" +
             "<div style='color:#8892b0;line-height:1.55'>Montgomery County overall: " +
