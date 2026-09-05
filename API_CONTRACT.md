@@ -957,6 +957,15 @@ claim yet" — clients render the absence honestly, never a zeroed chart.
     `window.intervalsUsed`: there is no confidence score in this API and
     these are what a client shows instead. Render them wherever a rate is
     rendered.
+
+    **`basedOnUsers` here counts everyone whose subscriber-days were
+    OBSERVED — every person the county was watched on behalf of, whether or
+    not they were ever called.** That is the correct denominator population
+    for a rate: a rate's honesty depends on how many people were watched,
+    not how many were picked. It is therefore a DIFFERENT POPULATION from
+    `gapBand.basedOnUsers`, which counts only people who have completed an
+    interval, and the two will not agree — currently 22 against 15. A reader
+    comparing them is seeing a real difference, not a bug.
   - **`elevatedDays`** `[{day, percent, count, opportunities}]` — weekdays
     whose own rate is **above** `baselinePercent` AND which clear a per-day
     significance test corrected across the five weekdays. Rates pool. `day`
@@ -1003,6 +1012,16 @@ claim yet" — clients render the absence honestly, never a zeroed chart.
 
     Built by the same interval rules as the personal model (`intervalsOf`).
     Cached an hour per county, with the requester removed per request.
+
+    **`gapBand.basedOnUsers` counts only people who have COMPLETED AT LEAST
+    ONE INTERVAL — two MUST_TESTs with a measurable gap between them — and
+    excludes the requesting user.** It is not `countyDaily.basedOnUsers`
+    minus one: that field counts a different population entirely, everyone
+    whose subscriber-days were observed, which includes people who have
+    never been called or have been called only once. Both numbers are
+    surfaced unreconciled because both are true of the thing they describe;
+    do not derive one from the other, and do not present them as the same
+    quantity measured two ways.
 
     **SHORTEST CONTIGUOUS BAND, not the central one.** `lowDays`/`highDays`
     are the NARROWEST contiguous day range containing at least 80% of the
