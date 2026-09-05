@@ -914,6 +914,143 @@ claim yet" — clients render the absence honestly, never a zeroed chart.
   basis; doing so is a separate decision, because it would move a
   user-facing band and the 88% walk-forward backtest was measured on the
   naive basis.
+- **`countyDaily`** `{baselinePercent, todayPercent, todayBasis,
+  basedOnTests, basedOnUsers, elevatedDays, elevatedSignificant,
+  elevatedSuppressed, gapBand} | null` — the county's daily behaviour, as
+  rates. `null` when the county pool is below the gate; an unmeasurable
+  county fact is not a small one, and nothing is shown.
+
+  **This object contains TWO DIFFERENT POOLS. Read the note on whichever
+  field you are using — they are stated at both, and they do not agree.**
+
+  - **`baselinePercent`** `number` — the pooled chance that any given
+    subscriber-day is a MUST_TEST, across the whole week. A rate, 0-100, one
+    decimal. Every other rate here is compared against it.
+
+    **POOL — RATES.** Every subscriber in the county **excluding internal
+    accounts** (admins, dev emails, `INTERNAL_ACCOUNT_EMAILS`) and
+    **INCLUDING the requesting user**. A hazard rate describes how often the
+    county calls, and removing one person from a denominator of
+    subscriber-days would misstate it. This is **not** the pool `gapBand`
+    uses — see there.
+  - **`todayPercent`** `number` and **`todayBasis`** `"elevated" |
+    "baseline"` — what to say about today. Same pool as `baselinePercent`.
+    - `"elevated"`: today's weekday cleared the elevation test;
+      `todayPercent` is **that weekday's own rate**.
+    - `"baseline"`: it did not; `todayPercent` **equals `baselinePercent`**.
+
+    **The server NEVER emits a weekday's own rate when that rate is at or
+    below baseline.** On a Sunday — 0 of 247 observed — the response carries
+    `todayBasis: "baseline"` and `todayPercent: baselinePercent`. The quiet
+    day's real rate is not in the payload.
+
+    Enforcement is by ABSENCE, not instruction. A client cannot render
+    "Sunday is quiet" because a client is never told it. "Not yet observed"
+    is not "safe": a person who reads that Sunday is quiet, relaxes, and is
+    called on a Sunday was failed by this API. Do not add a field restoring
+    the suppressed value, and do not infer it — subtracting the elevated
+    days from `baselinePercent` does not reconstruct it, and attempting that
+    arithmetic is a bug.
+  - **`basedOnTests`** `int`, **`basedOnUsers`** `int` — MUST_TEST events
+    and distinct users behind every **rate** in this object (rates pool).
+    Sample size is the honesty signal, the role it plays in
+    `window.intervalsUsed`: there is no confidence score in this API and
+    these are what a client shows instead. Render them wherever a rate is
+    rendered.
+  - **`elevatedDays`** `[{day, percent, count, opportunities}]` — weekdays
+    whose own rate is **above** `baselinePercent` AND which clear a per-day
+    significance test corrected across the five weekdays. Rates pool. `day`
+    is `"monday"`..`"sunday"`, lowercase. `count / opportunities` reproduces
+    `percent`, and both are on **every** entry so a rate can never be shown
+    without its denominator.
+
+    Typically one entry. Frequently zero. **Never seven.**
+
+    **Clients MUST NOT reconstruct a seven-element series.** Do not pad
+    absent days with zeroes, do not order Sunday-to-Saturday, do not build a
+    heat grid, bar chart, or any control whose shape implies a value for
+    every weekday. **Absence means "not elevated" — never "zero", never
+    "quiet".** A grid built from this field displays the days we
+    deliberately declined to send. If a design needs a seven-day visual, the
+    answer is that the data does not support one.
+
+    **No multiplier anywhere in this object.** No `lift`, no
+    `timesAverage`, no ratio field, and clients must not compute one for
+    display. A multiplier from an underpowered contrast overstates the
+    effect and reads as more precise than the evidence — see the power
+    caveat above.
+  - **`elevatedSignificant`** `bool` — whether the weekday test cleared.
+    When `false`, `elevatedDays` is `[]` and `todayBasis` is always
+    `"baseline"`.
+  - **`elevatedSuppressed`** `string | null` — a presentable reason when
+    `elevatedSignificant` is `false` ("no significant weekday pattern in 83
+    tests"); `null` otherwise. Same convention as `dayOfWeekSuppressed`:
+    render the reason, so a missing chart never looks like a broken one.
+  - **`gapBand`** `{lowDays:int, highDays:int, mass:0.8,
+    basedOnIntervals:int, basedOnUsers:int}` — a band over completed
+    intervals across the county. Same field names and same `mass` as
+    `window.countyRange`, so the replacement is a drop-in and no client can
+    end up holding two differently-shaped county bands.
+
+    **POOL — GAP BAND. Different from the rates above.** Internal accounts
+    excluded **and the requesting user excluded**, exactly as
+    `window.countyRange` does it. Their own intervals are removed so the
+    band cannot drift toward their pattern, and so the approved copy —
+    *"That's the county, not you"* — stays literally true for the users it
+    is shown to, who are by definition the ones with the thinnest history.
+    **This is not the pool `baselinePercent`, `todayPercent` and
+    `elevatedDays` use**; those include the requesting user.
+
+    Built by the same interval rules as the personal model (`intervalsOf`).
+    Cached an hour per county, with the requester removed per request.
+
+    **SHORTEST CONTIGUOUS BAND, not the central one.** `lowDays`/`highDays`
+    are the NARROWEST contiguous day range containing at least 80% of the
+    pooled intervals — not the 10th-to-90th percentile. On a right-skewed
+    distribution these differ substantially: on current data the shortest
+    80% band is **4-32 days (width 28)** against a central **6-47 (width
+    41)**, a **32% width reduction at the same nominal mass**. The long
+    right tail is what the central band spends its width on, and trimming
+    symmetrically is the wrong shape for a distribution that is not
+    symmetric.
+
+    **NAIVE (completed-intervals-only) BASIS, deliberately, not
+    censoring-corrected.** Ongoing waits are right-censored and excluded,
+    which biases the distribution short — see the censoring caveat above.
+    Two reasons that bias is accepted here: the correction moves band EDGES
+    barely (measured on the central band, naive 6-47 becomes
+    Kaplan-Meier 7-49) while it moves the MEDIAN a great deal (18 to 21
+    days, 17%), and the 88% walk-forward backtest that justified a county
+    band at all was measured on the naive basis. Recomputing the band on a
+    censored-corrected basis is a separate decision requiring its own
+    validation.
+
+    **NO COVERAGE FIGURE IS EMITTED, AND NONE MAY BE DISPLAYED.** There is
+    deliberately no `coverage` field. `mass` is 0.8 as the **nominal
+    construction parameter** — the fraction of pooled observations the band
+    was built to contain — and **clients MUST NOT present it as measured
+    coverage, as an accuracy figure, or as a probability that a given user's
+    next interval falls inside**. Leave-one-out validates the PROCEDURE
+    (build a shortest-80% band on n-1, test the held-out one), not these
+    particular endpoints; it estimates roughly 3 points of optimism at this
+    sample size, with a bootstrap range wide enough that no figure finer
+    than "mid-70s" is defensible. That is why none is shipped.
+
+    Note also that the 88% figure quoted for `window.countyRange` was
+    measured on the CENTRAL kernel-density band, a different estimator from
+    this one. It does not transfer to `gapBand` and must not be quoted
+    alongside it.
+
+    **This supersedes `window.countyRange`.** A client adopting `gapBand`
+    MUST stop rendering `countyRange`. They must never appear together, in
+    any state, at any size: **two county bands disagreeing on one screen is
+    the failure mode this replacement removes.**
+
+    **The numbers move as data accrues — never hardcode them.** The
+    **"9 to 42" quoted in the `countyRange` copy above is a 2026-09-02
+    snapshot and is already stale** — production computes 5-45 today on the
+    live pool under the central construction. Example copy in this document
+    illustrates shape, not current values.
 - **`notes`** `[string]` — user-presentable caveats. Clients show them
   verbatim; the server owns the epistemics.
 
