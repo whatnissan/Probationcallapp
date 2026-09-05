@@ -614,7 +614,7 @@ output for all 15 production users.)
   "dayOfWeek": null,
   "dayOfWeekSuppressed": "needs 35+ tests (15 so far)",
   "weekOfMonth": null,
-  "countyDayPattern": { "total": 72, "weekendCount": 2, "fullWeekSignificant": true, "weekdaySignificant": false },
+  "countyDayPattern": { "total": 83, "weekendCount": 3, "fullWeekSignificant": true, "weekdaySignificant": true },
   "basedOn": "your history",
   "notes": ["Rapid retests are included in interval math — a quick re-call is the county's escalation signal.",
             "The window is a range, not a promise: testing is possible any day."]
@@ -787,10 +787,57 @@ claim yet" — clients render the absence honestly, never a zeroed chart.
   weekends low — never absent, never green.
 - **`countyDayPattern`** `{total, weekendCount, fullWeekSignificant,
   weekdaySignificant} | null` — pooled county-level facts, two-stage tested.
-  Production reality: the full-week chi-square clears (p<0.01) ENTIRELY on
-  weekends (2 of 72 tests ever); the weekday-only test does not clear. Label
-  as "Montgomery County overall", never as the user's own pattern, and
-  phrase weekends as "rare, not never".
+  Label as "Montgomery County overall", never as the user's own pattern.
+
+  **Weekday pattern (amended 2026-09-04).** The earlier record — that the
+  full-week chi-square clears entirely on weekends and the weekday-only test
+  does not clear at n=72 — is SUPERSEDED. The weekday-only test now clears.
+
+  *The test.* Mon–Fri only, Saturday and Sunday excluded entirely, MUST_TEST
+  against total answered calls per weekday. Canonical pool: Montgomery, with
+  demo accounts, dmlafortune, cajuncowboy and the whatnissan+ aliases
+  excluded; the primary whatnissan account is genuine county data and stays
+  in.
+
+  | day | n | MUST_TEST | rate |
+  |---|---|---|---|
+  | Mon | 252 | 13 | 5.16% |
+  | Tue | 252 | 12 | 4.76% |
+  | Wed | 248 | 16 | 6.45% |
+  | Thu | 249 | 27 | 10.84% |
+  | Fri | 262 | 12 | 4.58% |
+  | **Mon–Fri** | **1263** | **80** | **6.33%** |
+
+  *Statistic.* chi-square = 10.804, df = 4, critical value 9.488,
+  **p = 0.0289**. It clears, but marginally.
+
+  *Thursday contrast.* Thursday 10.84% (27/249) against the other four
+  weekdays pooled 5.23% (53/1014). Difference **+5.62 pp, 95% CI
+  [1.52, 9.71]**, z = 3.260, two-sided **p = 0.00111**.
+
+  *Bonferroni across the five weekdays* (alpha = 0.05/5 = 0.01): Thursday
+  **survives** at p = 0.00111. No other day is close — Mon 0.392, Tue 0.252,
+  **Wed 0.933**, Fri 0.190. Wednesday's apparent elevation in the full-week
+  table was the weekend depressing the baseline; against weekdays alone it is
+  indistinguishable from average.
+
+  *Power caveat, and it constrains the copy.* The Thursday contrast has
+  **65% power** at the Bonferroni threshold — it reached significance while
+  underpowered, which is the condition under which an observed effect tends
+  to overstate the true one. The 2.3x lift should be read as an upper-ish
+  estimate, not a central one; the CI is consistent with anything from about
+  1.3x to 2.9x. **User-facing copy must therefore not state a multiplier.**
+  80% power needs ~345 Thursdays against 249 today; at the current accrual of
+  0.89 Thursday subscriber-days per day that is roughly **21 December 2026**.
+  Re-run this test then before any copy hardens.
+
+  *Direction remains one-way.* Thursday is named because naming it raises
+  readiness. The quiet days are not named, ranked or quantified anywhere:
+  Sunday is 0 of 247 and that must never reach a user, because "not yet
+  observed" is not "safe". See `countyElevatedDays()` in
+  `prediction-core.js`. The weekend phrasing "rare, not never" is retained
+  ONLY in the pre-existing weekday-not-significant branch; it is a downward
+  claim and must not be carried into new copy.
 - **`notes`** `[string]` — user-presentable caveats. Clients show them
   verbatim; the server owns the epistemics.
 
