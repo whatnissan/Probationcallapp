@@ -1820,6 +1820,7 @@ async function computeSystemStats() {
     // weekday, the rate stays correct and the raw count would have silently
     // stopped being.
     var dayCalls = [0,0,0,0,0,0,0];
+    var observedUsers = {};
     var answered = await supabase.from('call_history')
       .select('user_id, created_at, result, county')
       .in('result', ['MUST_TEST', 'NO_TEST']);
@@ -1832,6 +1833,7 @@ async function computeSystemStats() {
         var c = r.county || 'montgomery';
         if (!(c === 'montgomery' || c.indexOf('montgomery') === 0)) return;
         dayCalls[new Date(r.created_at).getDay()]++;
+        observedUsers[r.user_id] = true;
       });
     }
     var data = {
@@ -1842,6 +1844,12 @@ async function computeSystemStats() {
       retestCount: retestIntervals.length,
       totalMustTestEvents: tests.length,
       totalUsersWithTests: Object.keys(userTests).length,
+      // Distinct users contributing OBSERVED SUBSCRIBER-DAYS — the
+      // denominator population, not the users who happen to have been
+      // called. §4.10 countyDaily.basedOnUsers is the sample size behind a
+      // RATE, and a rate's honesty depends on how many people were watched,
+      // not how many were picked.
+      totalUsersObserved: dayCalls ? Object.keys(observedUsers).length : null,
       confirmedTestingDays: confirmedTestingDays.slice(-60),
       dayOfWeekCounts: dayCount,
       dayOfWeekCalls: dayCalls,
@@ -4283,6 +4291,102 @@ async function countyIntervalPool(county) {
   return byUser;
 }
 
+// §4.10 countyDaily — the county's daily behaviour, as rates.
+//
+// TWO POOLS IN ONE OBJECT, and they are not interchangeable:
+//
+//   RATES (baselinePercent, todayPercent, elevatedDays) INCLUDE the
+//   requesting user. A hazard rate describes how often the county calls;
+//   removing one person from a denominator of subscriber-days would
+//   misstate it. Source: computeSystemStats, cached an hour.
+//
+//   gapBand EXCLUDES the requesting user, exactly as window.countyRange
+//   does, so the band cannot drift toward the pattern of the person reading
+//   it — and so the approved copy "That's the county, not you" stays
+//   literally true for the users it is shown to, who by definition have the
+//   thinnest history. Source: countyIntervalPool, requester removed.
+//
+// The two basedOnUsers counts therefore differ, and they are BOTH surfaced
+// rather than reconciled. They also measure different populations: the
+// rates count everyone whose days were observed, the band counts everyone
+// who has completed an interval. A reader comparing them is seeing a real
+// difference, not a bug.
+//
+// Never throws: a failure means the county fact is unavailable, which is
+// null, not a broken request.
+async function buildCountyDaily(county, requestingUserId, timezone) {
+  try {
+    if (county === 'ftbend') return null;   // colour-based; a weekday rate is not its shape
+    var st = await computeSystemStats();
+    if (!st || !st.dayOfWeekCounts || !st.dayOfWeekCalls) return null;
+
+    var musts = st.dayOfWeekCounts, calls = st.dayOfWeekCalls;
+    var totalM = 0, totalC = 0;
+    for (var i = 0; i < 7; i++) { totalM += musts[i] || 0; totalC += calls[i] || 0; }
+    if (!totalC) return null;
+    var baseline = totalM / totalC;
+
+    var elev = PredictionCoreV1.countyElevatedDays(musts, calls);
+
+    // TODAY IN THE USER'S TIMEZONE, not UTC. A 5 AM CST reader is on the
+    // previous UTC day for most of the morning, and naming the wrong
+    // weekday is worse than naming none.
+    var todayIdx;
+    try {
+      todayIdx = new Date(new Date().toLocaleString('en-US', { timeZone: timezone || 'America/Chicago' })).getDay();
+    } catch (e) {
+      todayIdx = new Date().getDay();
+    }
+    var hot = elev.show ? elev.days.filter(function(d) { return d.day === todayIdx; })[0] : null;
+
+    // THE SUPPRESSION. A weekday's own rate is emitted ONLY when it is
+    // elevated. On a quiet day todayPercent IS baselinePercent and the real
+    // rate is not in the payload — a client cannot render "Sunday is quiet"
+    // because it is never told it. Sunday is 0 of 247, and "not yet
+    // observed" is not "safe".
+    var todayBasis = hot ? 'elevated' : 'baseline';
+    var todayPercent = hot ? hot.rate * 100 : baseline * 100;
+
+    var DAY_NAMES = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+
+    var band = null;
+    try {
+      var byUser = await countyIntervalPool(county);
+      var arrays = Object.keys(byUser)
+        .filter(function(uid) { return uid !== requestingUserId; })
+        .map(function(uid) { return byUser[uid]; });
+      band = PredictionCoreV1.shortestBandOf(arrays, 0.8);
+    } catch (e) {
+      console.error('[COUNTY-DAILY] gap band unavailable (' + county + '):', briefErr(e));
+    }
+
+    return {
+      baselinePercent: Math.round(baseline * 1000) / 10,
+      todayPercent: Math.round(todayPercent * 10) / 10,
+      todayBasis: todayBasis,
+      basedOnTests: totalM,
+      basedOnUsers: st.totalUsersObserved !== null && st.totalUsersObserved !== undefined ? st.totalUsersObserved : null,
+      // Elevated days only. Never seven, frequently zero. count and
+      // opportunities travel with every entry so a rate can never be shown
+      // without its denominator, and no multiplier is emitted.
+      elevatedDays: elev.show ? elev.days.map(function(d) {
+        return {
+          day: DAY_NAMES[d.day],
+          percent: Math.round(d.rate * 1000) / 10,
+          count: d.count,
+          opportunities: d.opportunities
+        };
+      }) : [],
+      elevatedSignificant: !!elev.show,
+      elevatedSuppressed: elev.show ? null : (elev.reason || 'no significant weekday pattern'),
+      gapBand: band
+    };
+  } catch (e) {
+    console.error('[COUNTY-DAILY] failed for ' + county + ':', briefErr(e));
+    return null;
+  }
+}
+
 // Never throws: a pool failure means "no county range", not a failed request.
 async function countyRangeFor(county, excludeUserId) {
   try {
@@ -4398,6 +4502,10 @@ app.get('/api/v1/prediction', authV1, async function(req, res) {
           })
         : null,
       dayOfWeekSuppressed: p.dayGrid.show ? null : p.dayGrid.reason,
+      // §4.10 countyDaily. Two pools inside one object — see
+      // buildCountyDaily. Never throws; null means the county fact is not
+      // measurable, which clients render as nothing rather than a zero.
+      countyDaily: await buildCountyDaily(county, req.user.id, (sched.data && sched.data.timezone) || null),
       weekOfMonth: p.dayGrid.show
         ? p.weekOfMonthCounts.map(function(c, i) {
             return { week: i + 1, percent: Math.round((c / p.tests) * 1000) / 10 };

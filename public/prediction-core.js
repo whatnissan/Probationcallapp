@@ -380,7 +380,12 @@
       var expK = c * p;
       var z = (m - expK) / Math.sqrt(expK * (1 - p));
       if (z < Z_DAY_BONFERRONI) continue;
-      out.push({ day: k, rate: Math.round(rate * 1000) / 1000, lift: Math.round((rate / p) * 100) / 100, tests: m, calls: c });
+      // count + opportunities on EVERY entry: a rate can never be shown
+      // without its denominator. NO lift/timesAverage — §4.10 bans a
+      // multiplier by name, because one computed from an underpowered
+      // contrast overstates the effect and reads as more precise than the
+      // evidence supports.
+      out.push({ day: k, rate: Math.round(rate * 1000) / 1000, count: m, opportunities: c });
     }
     out.sort(function(a, b) { return b.rate - a.rate; });
     // Belt and braces: nothing at or below the overall rate may leave here,
@@ -391,6 +396,54 @@
       days: out,
       overallRate: Math.round(p * 1000) / 1000,
       reason: out.length ? null : 'no single day clears the per-day test'
+    };
+  }
+
+  // The NARROWEST contiguous day range containing at least `mass` of the
+  // pooled intervals — §4.10 `countyDaily.gapBand`.
+  //
+  // Not the central band. On a right-skewed distribution the two differ
+  // substantially: on the canonical pool the shortest 80% band is 4-32 days
+  // (width 28) against a central 6-47 (width 41), a 32% reduction at the
+  // same nominal mass. Trimming 10% off each tail is the wrong shape for a
+  // distribution that is not symmetric — the long right tail is what the
+  // central band spends its width on.
+  //
+  // Endpoints are OBSERVED values, so the band is always a range the county
+  // has actually produced. Ties at the upper edge are absorbed for free:
+  // extending through equal values adds coverage without adding width.
+  //
+  // `mass` is the NOMINAL CONSTRUCTION PARAMETER and nothing here measures
+  // coverage. Leave-one-out validates the PROCEDURE (build on n-1, test the
+  // held-out one) at roughly 3 points of optimism, with a bootstrap range
+  // too wide for any figure finer than "mid-70s" — which is why no coverage
+  // number is returned and why §4.10 forbids presenting `mass` as one.
+  function shortestBandOf(intervalsByUser, mass) {
+    var users = (intervalsByUser || []).filter(function(iv) { return iv && iv.length; });
+    var pool = [];
+    users.forEach(function(iv) { iv.forEach(function(d) { if (d > 0) pool.push(d); }); });
+    if (pool.length < COUNTY_POOL_MIN_INTERVALS || users.length < COUNTY_POOL_MIN_USERS) return null;
+    pool.sort(function(a, b) { return a - b; });
+    var n = pool.length;
+    var need = Math.ceil((mass || COUNTY_RANGE_MASS) * n);
+    if (need > n) need = n;
+    var best = null;
+    for (var i = 0; i + need - 1 < n; i++) {
+      var lo = pool[i], hi = pool[i + need - 1];
+      var j = i + need - 1;
+      while (j + 1 < n && pool[j + 1] === hi) j++;   // free coverage from ties
+      var w = hi - lo;
+      if (best === null || w < best.w || (w === best.w && (j - i + 1) > best.contained)) {
+        best = { lo: lo, hi: hi, w: w, contained: j - i + 1 };
+      }
+    }
+    if (!best) return null;
+    return {
+      lowDays: best.lo,
+      highDays: best.hi,
+      mass: mass || COUNTY_RANGE_MASS,
+      basedOnIntervals: n,
+      basedOnUsers: users.length
     };
   }
 
@@ -588,6 +641,7 @@
     countyDayPattern: countyDayPattern,
     intervalsOf: intervalsOf,
     countyElevatedDays: countyElevatedDays,
+    shortestBandOf: shortestBandOf,
     countyRangeOf: countyRangeOf,
     DAY_GRID_MIN_TESTS: DAY_GRID_MIN_TESTS,
     COUNTY_POOL_MIN_INTERVALS: COUNTY_POOL_MIN_INTERVALS,
