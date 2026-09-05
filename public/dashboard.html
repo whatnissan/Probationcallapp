@@ -2707,7 +2707,24 @@ function calculateTestStats() {
       var extras = [];
       if (p.rapidRetestsIncluded > 0) extras.push(p.rapidRetestsIncluded + " rapid retest" + (p.rapidRetestsIncluded > 1 ? "s" : "") + " included");
       if (p.unobservedGapsExcluded > 0) extras.push(p.unobservedGapsExcluded + " unobserved gap" + (p.unobservedGapsExcluded > 1 ? "s" : "") + " excluded");
-      if (p.escalation) extras.push("\u26A0 tested again " + p.escalation.lastGapDays + "d after the previous test — frequency may be increasing");
+      // DESCRIPTIVE, NOT PREDICTIVE. This used to end "frequency may be
+      // increasing" — a forecast the data does not support: lag-1
+      // correlation between consecutive gaps is r = +0.063 on the canonical
+      // set, r^2 = 0.004, i.e. 0.4% of variance (see the findings header in
+      // prediction-core.js). A short gap says nothing about the next one.
+      //
+      // What IS true is what the trigger measures: this gap came in at or
+      // under half the running median of the prior ones. So the copy states
+      // the two numbers and stops. No trend, no multiplier, no "may be".
+      // The trigger itself is unchanged — see the escalation block in
+      // prediction-core.js.
+      //
+      // medianDays is rounded HERE rather than at source: the API field is
+      // contract-documented unrounded (§4.10 shows 14.5) and changing the
+      // payload would be a contract change needing the iOS mirror. Any other
+      // client rendering this field needs the same rounding to agree with us.
+      if (p.escalation) extras.push("\u26A0 tested again after " + p.escalation.lastGapDays +
+        "d — shorter than your " + Math.round(p.escalation.medianDays) + "d median");
       if (extras.length) confEl.textContent += " · " + extras.join(" · ");
       var titleEl = document.getElementById("patternTitle");
       var legendEl = document.getElementById("patternLegend");
