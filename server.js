@@ -1810,6 +1810,30 @@ async function computeSystemStats() {
     var confirmedTestingDays = Object.keys(dateCounts).filter(function(d){return dateCounts[d].length >= 2;}).sort();
     var dayCount = [0,0,0,0,0,0,0];
     tests.forEach(function(t) { dayCount[new Date(t.created_at).getDay()]++; });
+
+    // THE DENOMINATOR. dayOfWeekCounts alone is MUST_TESTs per weekday, and
+    // a raw count only means something if we dial the same number of times
+    // on every day of the week. We do today (207-214 each), so the old counts
+    // happened to be honest — by luck, not by construction. A weekday claim
+    // is a RATE, so the total answered calls per weekday are collected here
+    // and countyElevatedDays() divides by them. If scheduling ever skews by
+    // weekday, the rate stays correct and the raw count would have silently
+    // stopped being.
+    var dayCalls = [0,0,0,0,0,0,0];
+    var answered = await supabase.from('call_history')
+      .select('user_id, created_at, result, county')
+      .in('result', ['MUST_TEST', 'NO_TEST']);
+    if (answered.error) {
+      console.error('[STATS] weekday denominator read failed:', briefErr(answered.error));
+      dayCalls = null;   // null, not zeros — "unknown" must not read as "no calls"
+    } else {
+      (answered.data || []).forEach(function(r) {
+        if (demoIds[r.user_id]) return;
+        var c = r.county || 'montgomery';
+        if (!(c === 'montgomery' || c.indexOf('montgomery') === 0)) return;
+        dayCalls[new Date(r.created_at).getDay()]++;
+      });
+    }
     var data = {
       scheduledAvg: parseFloat(scheduledAvg.toFixed(1)),
       scheduledMedian: scheduledMedian,
@@ -1820,6 +1844,7 @@ async function computeSystemStats() {
       totalUsersWithTests: Object.keys(userTests).length,
       confirmedTestingDays: confirmedTestingDays.slice(-60),
       dayOfWeekCounts: dayCount,
+      dayOfWeekCalls: dayCalls,
       generatedAt: new Date().toISOString()
     };
     global.systemStatsCache = { timestamp: now, data: data };
@@ -4314,6 +4339,10 @@ app.get('/api/v1/prediction', authV1, async function(req, res) {
         dayOfWeek: null,
         countyDayPattern: countyPattern,
         countyDayCounts: sysStats && sysStats.dayOfWeekCounts ? sysStats.dayOfWeekCounts : null,
+        // Denominator for the weekday RATE. Without it a client can only
+        // compare raw counts, which is honest only while call volume stays
+        // flat across weekdays — true today, not guaranteed.
+        countyDayCalls: sysStats && sysStats.dayOfWeekCalls ? sysStats.dayOfWeekCalls : null,
         basedOn: null,
         notes: zeroNotes
       });
@@ -4376,6 +4405,7 @@ app.get('/api/v1/prediction', authV1, async function(req, res) {
         : null,
       countyDayPattern: countyPattern,
       countyDayCounts: sysStats && sysStats.dayOfWeekCounts ? sysStats.dayOfWeekCounts : null,
+      countyDayCalls: sysStats && sysStats.dayOfWeekCalls ? sysStats.dayOfWeekCalls : null,
       basedOn: p.sourceLabel,
       notes: notes
     });
