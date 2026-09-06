@@ -1455,11 +1455,25 @@ handle.
 Refused with `403 forbidden` while `programEnabled` is `false`.
 
 **`POST /referral/apply`** `{ "code": "DAVE30" }` →
-`{ "applied": true, "code": "DAVE30", "bonusCredits": 0 }`. The app's
-attribution path (2026-09-02): the app captures `ref` from the share link
-(universal link or clipboard) at signup and submits it here, so someone who
-taps a link, installs the app and signs up in it is attributed exactly like a
-web signup.
+`{ "applied": true, "code": "DAVE30", "bonusCredits": 0, "alreadyAttributed": false }`.
+The bare-attribution endpoint: a code, and nothing else happens.
+
+**CORRECTION (2026-09-05).** This section previously stated that "the app
+captures `ref` from the share link (universal link or clipboard) at signup
+and submits it here". **The app has never implemented this endpoint.** That
+was a contract claiming behaviour of a client that did not exist — the same
+class of error as the `weekdaySignificant` staleness in §4.10, and worth
+naming as such: a contract may specify what a client MUST do, but it must
+never assert that a client already does it. The intended flow is unbuilt and
+remains the intended flow.
+
+**`alreadyAttributed` (added 2026-09-05) answers what `bonusCredits` cannot.**
+`bonusCredits` counts what THIS call granted, and `0` is AMBIGUOUS on its
+own: it means both "an idempotent retry, the attribution already existed" and
+"the attribution was created just now, but `programEnabled` is false so no
+bonus was granted". A client could not tell those apart, and the second case
+goes live the moment the program is switched off. `alreadyAttributed` is
+`true` only when the code was already on the account before this call.
 
 Rules: one code per account, ever; not your own (`400`); unknown code `404`.
 
@@ -1484,6 +1498,97 @@ distinct conditions and clients branch on `code`, never on the status.
 circulate while the program is off — but the referred-signup bonus
 (`bonusCredits`, 5 today) is granted only while it is on, so a code cannot be
 used to farm credits from an inactive program.
+
+### 4.14a `POST /redeem`
+
+Redeem a promo code. Body `{ "code": "BAILBONDS" }`, 4-24 chars,
+case-insensitive, uppercased server-side. **Rate limited to 5 per hour per
+account** — deliberately tighter than `/referral/apply`, because a legitimate
+user redeems once and the threat is code ENUMERATION: promo codes are short
+and human. It is NOT a constraint on office volume; the limiter keys on the
+account, and every walk-in is a new account.
+
+A code may name an affiliate (`promo_codes.affiliate_id`, migration 050).
+When it does, a successful redemption ALSO attempts referral attribution —
+the office enters one code, the person gets credits, the office gets the
+commission. Bail bonds offices sign people up in person; the free credits are
+the pitch that makes a walk-in type the code.
+
+**ONE RULE SET, NOT TWO.** Attribution goes through the same applier as
+`POST /referral/apply`, so the first-purchase window, one-code-ever,
+self-referral, the daily cap and the review flag live in one function. There
+is no office bypass. Presence at signup does not change who acquired an
+account, and the window is the only defence against retroactive attribution.
+The web and app referral paths forked once before and the web path paid
+commission on already-purchased customers for months; the rules stay in the
+function, never in the route.
+
+**THE REDEMPTION AND THE ATTRIBUTION ARE SEPARATE OUTCOMES.** A `200` means
+the credits landed. It does NOT mean the referral was attributed, and a
+client must not infer one from the other.
+
+```jsonc
+// credits granted, affiliate credited
+{ "credits": 5,
+  "attribution": { "state": "attributed", "affiliateCode": "BAILBONDS", "alreadyAttributed": false } }
+
+// credits granted, the code names no affiliate (FREETRIAL, BETA10)
+{ "credits": 5, "attribution": { "state": "no_affiliate" } }
+
+// credits granted, attribution refused — STILL 200
+{ "credits": 5,
+  "attribution": { "state": "not_attributed", "reason": "after_purchase",
+    "message": "Credits added. This account has already made a purchase, so the referral could not be credited." } }
+```
+
+- **`state`** — `"attributed" | "no_affiliate" | "not_attributed"`. Three
+  values, not a boolean: `no_affiliate` is an ordinary promo code and MUST
+  NOT render as a failure.
+- **`alreadyAttributed`** — `true` when this affiliate's code was already on
+  the account. The commission is intact and was credited earlier; do NOT
+  present this as a problem. Same meaning as on `/referral/apply`.
+- **`reason`** — the applier's outcome verbatim: `after_purchase`,
+  `conflict`, `self_referral`, `daily_cap`, `invalid_code`, `internal`.
+  Machine-readable and stable, and the same string the server logs, so a
+  support question and a log line share one vocabulary.
+- **`message`** — human, office-facing, presentable verbatim. Every one
+  begins by confirming the credits landed, because that is the fact the
+  person at the counter cares about.
+
+**Attribution failure NEVER fails the redemption.** Credits are granted
+BEFORE attribution is attempted, so a refusal cannot strand someone without
+what they were promised.
+
+**`daily_cap`** — `app_settings.affiliate_max_attributions_per_day` (25,
+`0` disables) counted per AFFILIATE per calendar day in America/Chicago, not
+per code, so an office holding three codes cannot multiply past it. It does
+not model a busy day; it bounds a bad one to a single day and surfaces it in
+the integrity digest rather than a month later in a payout run.
+
+Errors (redemption itself failing), `{error:{code,message,retryable}}`:
+
+| code | when |
+|---|---|
+| `validation_failed` | missing or malformed code |
+| `promo_not_found` | no such code |
+| `promo_exhausted` | `times_used >= max_uses` |
+| `promo_expired` | past `expires_at` |
+| `promo_already_used` | this account already redeemed this code |
+| `internal` | grant failed; the redemption claim and use counter are unwound |
+
+**`promo_exhausted` and `promo_expired` are distinct, and both were broken
+before 2026-09-05.** The web `/api/redeem` returned "Code expired" for an
+EXHAUSTED code and never read `expires_at` at all — the product reported
+expiry for the one condition that was not expiry, and stayed silent about
+the one that was. An expired code redeemed fine. Fixed on both paths.
+
+**An unresolved `account_review_flags` row HOLDS the affiliate's payout**
+(added 2026-09-05, `payoutPreScreen`). Deliberately broad — any open flag,
+not only promo ones — because a payout is the last reversible moment. It
+HOLDS rather than cancels: the earnings rows are untouched and the next
+monthly run pays them once the flag is resolved in the admin panel. Promo
+attribution raises a `promo_attribution` flag, deduped to one open flag per
+affiliate.
 
 ### 4.15 `DELETE /account`
 

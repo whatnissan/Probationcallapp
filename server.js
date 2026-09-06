@@ -1257,6 +1257,35 @@ async function getAppSetting(key, fallback) {
 // a family member's account is legitimate, and being unable to sign up is
 // worse than someone farming. Recorded for the daily digest; an open flag
 // withholds only the earned extension. List query, never single-row.
+// Record a review flag, DEDUPED on (user_id, reason) while one is open.
+//
+// One open flag per affiliate per reason is enough, because a flag's job
+// since 2026-09-05 is to HOLD the payout (payoutPreScreen) — a second open
+// flag holds nothing further, and an office doing twenty signups in an
+// afternoon would otherwise bury the daily digest under twenty identical
+// rows. `details` therefore describes the FIRST occurrence; the referrals
+// table carries the full list for whoever reviews it.
+//
+// Never throws: a flag that cannot be written must not fail the operation
+// that triggered it.
+async function recordReviewFlag(flag) {
+  try {
+    if (!flag || !flag.user_id || !flag.reason) return;
+    var open = await supabase.from('account_review_flags')
+      .select('id').eq('user_id', flag.user_id).eq('reason', flag.reason)
+      .is('resolved_at', null).limit(1);
+    if (open.error) throw new Error(open.error.message);
+    if (open.data && open.data.length) return;   // already held
+    var ins = await supabase.from('account_review_flags').insert({
+      user_id: flag.user_id, reason: flag.reason, details: flag.details || {}
+    });
+    if (ins.error) throw new Error(ins.error.message);
+    console.log('[REVIEW-FLAG] ' + flag.reason + ' for ' + String(flag.user_id).slice(0, 8));
+  } catch (e) {
+    console.error('[REVIEW-FLAG] could not record ' + (flag && flag.reason) + ':', briefErr(e));
+  }
+}
+
 async function flagSharedPhone(userId, phone) {
   try {
     if (!phone) return;
@@ -3913,15 +3942,138 @@ app.get('/api/v1/referral', authV1, async function(req, res) {
 //    Resubmitting the SAME code is a success (200, bonusCredits 0 — this
 //    call granted nothing). A DIFFERENT code is referral_already_applied.
 //    Being past the first purchase is referral_after_purchase.
+// §4.x POST /redeem — redeem a promo code, and attribute the referral when
+// the code names an affiliate. Bail bonds offices sign people up in person;
+// the free credits are the pitch that makes a walk-in type the code, and the
+// same keystroke credits the office.
+//
+// ONE ENDPOINT, NOT A SECOND RULE SET. The attribution goes through
+// applyReferralForUser — the same function POST /referral/apply calls — so
+// the first-purchase window, the one-code-ever rule, self-referral, the
+// daily cap and the review flag all live in ONE place. There is no office
+// bypass and no promo branch inside the applier. The web and app referral
+// paths already forked once and the web path paid commission on
+// already-purchased customers for months; the rules stay in the function,
+// never in the route.
+//
+// THE REDEMPTION AND THE ATTRIBUTION ARE SEPARATE OUTCOMES. A 200 means the
+// credits landed. It does NOT mean the referral was attributed. Attribution
+// failure NEVER fails the redemption — a person standing at a counter must
+// not lose their credits because a commission rule declined — which is
+// exactly why applyReferralForUser returns a result instead of throwing.
+//
+// RATE LIMIT — 5 per hour, and DELIBERATELY TIGHTER than
+// referral_apply's 10/10min, not looser. The office-volume worry does not
+// apply: the limiter keys on req.user.id and every walk-in is a NEW account,
+// so an office signing up ten people in an afternoon touches ten separate
+// buckets and never approaches this. What the limit actually defends is code
+// ENUMERATION — promo codes are short and human ("CORY", "BETA10"), one
+// account guessing is the real threat, and a legitimate user redeems once.
+app.post('/api/v1/redeem', authV1, rateLimit('redeem', 5, 60 * 60 * 1000), async function(req, res) {
+  try {
+    var code = String((req.body && req.body.code) || '').trim().toUpperCase();
+    if (!/^[A-Z0-9]{4,24}$/.test(code)) {
+      return v1Error(res, 400, 'validation_failed', 'Enter the code exactly as it was given to you.');
+    }
+
+    var pr = await supabase.from('promo_codes').select('*').eq('code', code).maybeSingle();
+    if (pr.error) {
+      console.error('[PROMO] lookup failed for ' + code + ':', briefErr(pr.error));
+      return v1Error(res, 500, 'internal', 'Could not check that code. Please try again.', true);
+    }
+    var promo = pr.data;
+    if (!promo) return v1Error(res, 404, 'promo_not_found', 'That code is not valid.');
+    // Expiry and exhaustion are DIFFERENT conditions with different messages.
+    if (promo.expires_at && Date.parse(promo.expires_at) <= Date.now()) {
+      return v1Error(res, 400, 'promo_expired', 'That code has expired.');
+    }
+    if (promo.times_used >= promo.max_uses) {
+      return v1Error(res, 400, 'promo_exhausted', 'That code has been fully used.');
+    }
+
+    // The insert is the real gate: migration 012's unique index on
+    // (user_id, promo_code_id) means a concurrent double-redeem loses here
+    // and never reaches the grant.
+    var claim = await supabase.from('promo_redemptions')
+      .insert({ user_id: req.user.id, promo_code_id: promo.id });
+    if (claim.error) {
+      return v1Error(res, 400, 'promo_already_used', 'You have already used that code.');
+    }
+    await supabase.from('promo_codes').update({ times_used: promo.times_used + 1 }).eq('id', promo.id);
+
+    var granted = await recordCreditAdd({
+      userId: req.user.id, amount: promo.credits, source: 'promo',
+      note: 'Promo code: ' + code
+    });
+    if (granted === null) {
+      // Both claims are committed. Unwind, or the user has burned a
+      // single-use code and received nothing with no way to retry.
+      console.error('[PROMO] grant FAILED for ' + req.user.id.slice(0, 8) + ' code=' + code + ' — unwinding');
+      await supabase.from('promo_redemptions').delete()
+        .eq('user_id', req.user.id).eq('promo_code_id', promo.id);
+      await supabase.from('promo_codes').update({ times_used: promo.times_used }).eq('id', promo.id);
+      return v1Error(res, 500, 'internal', 'Could not apply that code. Please try again.', true);
+    }
+
+    // ATTRIBUTION, only after the credits are safely granted. Its result is
+    // reported, never allowed to fail the redemption.
+    var attribution = { state: 'no_affiliate' };
+    if (promo.affiliate_id) {
+      var aff = await supabase.from('profiles').select('referral_code').eq('id', promo.affiliate_id).maybeSingle();
+      var affCode = aff.data && aff.data.referral_code ? String(aff.data.referral_code).toUpperCase() : null;
+      if (!affCode) {
+        attribution = { state: 'not_attributed', reason: 'invalid_code',
+          message: 'Credits added. The referral could not be credited — that code is not linked to an active account.' };
+      } else {
+        var r = await applyReferralForUser(req.user.id, affCode, { source: 'promo:' + code });
+        if (r.outcome === 'applied' || r.outcome === 'idempotent') {
+          attribution = { state: 'attributed', affiliateCode: r.code, alreadyAttributed: !!r.alreadyAttributed };
+        } else {
+          attribution = { state: 'not_attributed', reason: r.outcome, message: PROMO_ATTRIBUTION_MESSAGES[r.outcome] || PROMO_ATTRIBUTION_MESSAGES.internal };
+        }
+      }
+    }
+    console.log('[PROMO] ' + req.user.id.slice(0, 8) + ' redeemed ' + code + ' (+' + promo.credits + ' -> ' + granted + ') attribution=' + attribution.state + (attribution.reason ? ':' + attribution.reason : ''));
+    res.json({ credits: promo.credits, attribution: attribution });
+  } catch (e) {
+    console.error('[PROMO] redeem failed:', e.message);
+    return v1Error(res, 500, 'internal', 'Could not apply that code. Please try again.', true);
+  }
+});
+
+// Office-facing wording for every way attribution can be refused. The
+// machine-readable `reason` is the applier's own outcome verbatim, so a
+// support question and a log line share one vocabulary; this is only the
+// human half.
+var PROMO_ATTRIBUTION_MESSAGES = {
+  after_purchase: 'Credits added. This account has already made a purchase, so the referral could not be credited.',
+  conflict: 'Credits added. A different referral code is already on this account, so this one could not be credited.',
+  self_referral: 'Credits added. A code cannot be credited to the account that issued it.',
+  daily_cap: 'Credits added. That code has reached its limit for today — the referral was not credited.',
+  invalid_code: 'Credits added. The referral could not be credited — that code is not linked to an active account.',
+  validation_failed: 'Credits added. The referral could not be credited.',
+  internal: 'Credits added. The referral could not be credited just now.'
+};
+
 app.post('/api/v1/referral/apply', authV1, rateLimit('referral_apply', 10, 10 * 60 * 1000), async function(req, res) {
   try {
     var r = await applyReferralForUser(req.user.id, req.body && req.body.code, { source: 'app' });
     switch (r.outcome) {
       case 'applied':
       case 'idempotent':
-        // Both are 200. An idempotent retry reports the code that is on the
-        // account and bonusCredits 0 — THIS call granted nothing.
-        return res.json({ applied: true, code: r.code, bonusCredits: r.bonusCredits });
+        // Both are 200. bonusCredits counts only what THIS call granted.
+        //
+        // alreadyAttributed is the field that was missing: bonusCredits 0 is
+        // AMBIGUOUS on its own — it means "idempotent retry, the attribution
+        // already existed" AND "the attribution was created just now but the
+        // program is off so no bonus was granted". A client could not tell
+        // those apart, and the second becomes live the moment
+        // AFFILIATE_ENABLED goes false. alreadyAttributed answers the
+        // question bonusCredits cannot: did THIS call create the attribution?
+        return res.json({
+          applied: true, code: r.code, bonusCredits: r.bonusCredits,
+          alreadyAttributed: !!r.alreadyAttributed
+        });
       case 'validation_failed':
         return v1Error(res, 400, 'validation_failed', 'Enter the referral code you were given.');
       case 'invalid_code':
@@ -4606,13 +4758,44 @@ async function applyReferralForUser(userId, rawCode, opts) {
   }
 
   var referrer = await resolveAffiliateByCode(code);
-  if (!referrer) return { ok: false, outcome: 'invalid_code', code: code, bonusCredits: 0 };
-  if (referrer.id === userId) return { ok: false, outcome: 'self_referral', code: code, bonusCredits: 0 };
+  if (!referrer) return { ok: false, outcome: 'invalid_code', code: code, bonusCredits: 0, alreadyAttributed: false };
+  if (referrer.id === userId) return { ok: false, outcome: 'self_referral', code: code, bonusCredits: 0, alreadyAttributed: false };
+
+  // SELF-REFERRAL BY SHARED HANDSET. The id check above catches only the
+  // affiliate redeeming their own code. An office employee on a SEPARATE
+  // account passes it cleanly, and an office is a business with volume,
+  // which is a different incentive from one person sharing a link.
+  //
+  // profiles.verified_phone is the strongest identity signal we hold (§4.17
+  // verification), so a shared verified phone is treated as the same person.
+  // Compared through normalizePhoneE164 because one side may predate
+  // normalisation.
+  //
+  // THIS IS NOT A GUARANTEE and the comment should not pretend otherwise:
+  // two phones defeat it. It catches the lazy version, and the daily cap
+  // plus the review flag below cover what it cannot. Preventing the rest
+  // needs an identity model this product does not have.
+  try {
+    var mePhone = await supabase.from('profiles').select('verified_phone').eq('id', userId).maybeSingle();
+    var themPhone = referrer.verified_phone !== undefined
+      ? { data: { verified_phone: referrer.verified_phone } }
+      : await supabase.from('profiles').select('verified_phone').eq('id', referrer.id).maybeSingle();
+    var a = mePhone.data && mePhone.data.verified_phone ? normalizePhoneE164(mePhone.data.verified_phone) : null;
+    var b = themPhone.data && themPhone.data.verified_phone ? normalizePhoneE164(themPhone.data.verified_phone) : null;
+    if (a && b && a === b) {
+      console.log(tag + 'refused ' + code + ' — shares a verified phone with the affiliate');
+      return { ok: false, outcome: 'self_referral', code: code, bonusCredits: 0, alreadyAttributed: false };
+    }
+  } catch (e) {
+    // Fails OPEN: an identity check that cannot run must not block a
+    // legitimate attribution. The flag below still records it.
+    console.error(tag + 'shared-phone check failed (allowing):', briefErr(e));
+  }
 
   var cur = await supabase.from('profiles').select('referred_by').eq('id', userId).maybeSingle();
   if (cur.error) {
     console.error(tag + 'referred_by read failed:', briefErr(cur.error));
-    return { ok: false, outcome: 'internal', code: code, bonusCredits: 0 };
+    return { ok: false, outcome: 'internal', code: code, bonusCredits: 0, alreadyAttributed: false };
   }
   var existingCode = cur.data && cur.data.referred_by ? String(cur.data.referred_by).toUpperCase() : null;
 
@@ -4635,7 +4818,7 @@ async function applyReferralForUser(userId, rawCode, opts) {
     var paid = await supabase.from('purchases').select('id').eq('user_id', userId).limit(1);
     if (paid.error) {
       console.error(tag + 'purchase check failed:', briefErr(paid.error));
-      return { ok: false, outcome: 'internal', code: code, bonusCredits: 0 };
+      return { ok: false, outcome: 'internal', code: code, bonusCredits: 0, alreadyAttributed: false };
     }
     hasPurchase = !!(paid.data && paid.data.length);
   }
@@ -4643,12 +4826,42 @@ async function applyReferralForUser(userId, rawCode, opts) {
   var decision = affiliate.referralApplyDecision(existingCode, code, hasPurchase);
   if (decision === 'idempotent') {
     console.log(tag + 're-submitted ' + code + ' — idempotent, nothing granted');
-    return { ok: true, outcome: 'idempotent', code: existingCode, bonusCredits: 0 };
+    // alreadyAttributed TRUE: the attribution exists and the commission is
+    // intact; this call simply created nothing. Distinct from bonusCredits 0,
+    // which only says what THIS call granted and is also 0 when the program
+    // is off and the attribution WAS created just now.
+    return { ok: true, outcome: 'idempotent', code: existingCode, bonusCredits: 0, alreadyAttributed: true };
   }
-  if (decision === 'conflict') return { ok: false, outcome: 'conflict', code: existingCode, bonusCredits: 0 };
+  if (decision === 'conflict') return { ok: false, outcome: 'conflict', code: existingCode, bonusCredits: 0, alreadyAttributed: false };
   if (decision === 'after_purchase') {
     console.log(tag + 'tried ' + code + ' after a purchase — refused');
-    return { ok: false, outcome: 'after_purchase', code: null, bonusCredits: 0 };
+    return { ok: false, outcome: 'after_purchase', code: null, bonusCredits: 0, alreadyAttributed: false };
+  }
+
+  // PER-AFFILIATE DAILY CAP. Per affiliate, not per code — an office holding
+  // three codes must not be able to multiply its way past it. Deliberately
+  // generous: it does not model a busy day, it bounds the damage of a bad one
+  // to a single day and surfaces it in the integrity digest instead of a
+  // month later in a payout run. 0 disables it.
+  try {
+    var capRaw = await getAppSetting('affiliate_max_attributions_per_day', 25);
+    var cap = parseInt(capRaw, 10);
+    if (Number.isFinite(cap) && cap > 0) {
+      var since = formatLocalDay(new Date(), 'America/Chicago') + 'T00:00:00';
+      var todayCount = await supabase.from('referrals')
+        .select('id', { count: 'exact', head: true })
+        .eq('referrer_id', referrer.id).gte('created_at', since);
+      if (todayCount.error) {
+        // Fails OPEN — a counter that cannot be read must not refuse a
+        // legitimate referral.
+        console.error(tag + 'daily cap read failed (allowing):', briefErr(todayCount.error));
+      } else if ((todayCount.count || 0) >= cap) {
+        console.log(tag + 'refused ' + code + ' — affiliate ' + referrer.id.slice(0, 8) + ' at the daily cap (' + todayCount.count + '/' + cap + ')');
+        return { ok: false, outcome: 'daily_cap', code: null, bonusCredits: 0, alreadyAttributed: false };
+      }
+    }
+  } catch (e) {
+    console.error(tag + 'daily cap check failed (allowing):', briefErr(e));
   }
 
   // ATOMIC CLAIM. The read above cannot be trusted as a check: two
@@ -4659,7 +4872,7 @@ async function applyReferralForUser(userId, rawCode, opts) {
     .eq('id', userId).is('referred_by', null).select('id');
   if (lock.error) {
     console.error(tag + 'claim failed:', briefErr(lock.error));
-    return { ok: false, outcome: 'internal', code: code, bonusCredits: 0 };
+    return { ok: false, outcome: 'internal', code: code, bonusCredits: 0, alreadyAttributed: false };
   }
   if (!lock.data || !lock.data.length) {
     // Lost a race between the read and the write. Re-read and settle on
@@ -4669,11 +4882,11 @@ async function applyReferralForUser(userId, rawCode, opts) {
     var landed = after.data && after.data.referred_by ? String(after.data.referred_by).toUpperCase() : null;
     if (landed === code) {
       console.log(tag + 'lost the race to the SAME code — idempotent, nothing granted');
-      return { ok: true, outcome: 'idempotent', code: landed, bonusCredits: 0 };
+      return { ok: true, outcome: 'idempotent', code: landed, bonusCredits: 0, alreadyAttributed: true };
     }
-    if (landed) return { ok: false, outcome: 'conflict', code: landed, bonusCredits: 0 };
+    if (landed) return { ok: false, outcome: 'conflict', code: landed, bonusCredits: 0, alreadyAttributed: false };
     console.error(tag + 'claim matched no row and no code is present');
-    return { ok: false, outcome: 'internal', code: code, bonusCredits: 0 };
+    return { ok: false, outcome: 'internal', code: code, bonusCredits: 0, alreadyAttributed: false };
   }
 
   // Reporting row. Non-fatal by design: the attribution is already durable
@@ -4715,8 +4928,25 @@ async function applyReferralForUser(userId, rawCode, opts) {
     if (granted !== null) bonus = REFERRED_BONUS_CREDITS;
     else console.error(tag + 'bonus grant failed — attribution KEPT, credits owed');
   }
+  // PROMO-SOURCED ATTRIBUTION IS FLAGGED FOR REVIEW. Not a block — a record.
+  // An office is present at signup and holds codes in volume, which is a
+  // different trust shape from a link, and the shared-phone check above
+  // cannot see an employee on a second handset. The flag is what
+  // payoutPreScreen now holds the money on, so this is the detection half of
+  // a control rather than a note in a digest.
+  if (String(source).indexOf('promo') === 0) {
+    try {
+      await recordReviewFlag({
+        user_id: referrer.id,
+        reason: 'promo_attribution',
+        details: { referred_id: userId, code: code, source: source }
+      });
+    } catch (e) {
+      console.error(tag + 'review flag failed (attribution stands):', briefErr(e));
+    }
+  }
   console.log(tag + 'applied code ' + code + (bonus ? ' (+' + bonus + ')' : ' (no bonus: program off or grant failed)'));
-  return { ok: true, outcome: 'applied', code: code, bonusCredits: bonus };
+  return { ok: true, outcome: 'applied', code: code, bonusCredits: bonus, alreadyAttributed: false };
 }
 
 // Apply referral code (called during signup or first visit)
@@ -4864,7 +5094,15 @@ app.post('/api/redeem', auth, async function(req, res) {
   var promoResult = await supabase.from('promo_codes').select('*').eq('code', code.toUpperCase()).single();
   var promo = promoResult.data;
   if (!promo) return res.status(404).json({ error: 'Invalid code' });
-  if (promo.times_used >= promo.max_uses) return res.status(400).json({ error: 'Code expired' });
+  // EXPIRY AND EXHAUSTION ARE DIFFERENT, and until 2026-09-05 this endpoint
+  // conflated them: expires_at was never read at all, so an expired code
+  // redeemed fine, and the exhausted-uses branch said "Code expired" — the
+  // product reported expiry for the one condition that was not expiry and
+  // stayed silent about the one that was.
+  if (promo.expires_at && Date.parse(promo.expires_at) <= Date.now()) {
+    return res.status(400).json({ error: 'This code has expired' });
+  }
+  if (promo.times_used >= promo.max_uses) return res.status(400).json({ error: 'This code has been fully used' });
   
   var existingResult = await supabase.from('promo_redemptions').select('*').eq('user_id', req.user.id).eq('promo_code_id', promo.id).single();
   if (existingResult.data) return res.status(400).json({ error: 'Already used' });
@@ -7182,7 +7420,18 @@ async function runAffiliatePayoutBatch() {
       // the $20 minimum, or a recently-synced account Stripe has told us is
       // not payouts-enabled). Most affiliates in a given month are under the
       // minimum, so this is where the API calls are saved.
-      var screen = affiliate.payoutPreScreen(prof.data, byAff[affId], Date.now(), MIN_PAYOUT_CENTS);
+      // An unresolved review flag HOLDS the payout (§4.14). Counted here so
+      // payoutPreScreen stays pure. A read failure counts as 0 — it FAILS
+      // OPEN, because a Supabase hiccup must not silently withhold money an
+      // affiliate has earned; the integrity digest still surfaces the flag.
+      var openFlags = 0;
+      var flagRead = await supabase.from('account_review_flags')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', affId).is('resolved_at', null);
+      if (flagRead.error) console.error('[AFFILIATE-PAYOUT] flag read failed for ' + affId.slice(0, 8) + ' (treating as none):', briefErr(flagRead.error));
+      else openFlags = flagRead.count || 0;
+
+      var screen = affiliate.payoutPreScreen(prof.data, byAff[affId], Date.now(), MIN_PAYOUT_CENTS, openFlags);
       if (!screen.attempt) { console.log('[AFFILIATE-PAYOUT] ' + affId.slice(0, 8) + ' skipped: ' + screen.reason + ' (' + screen.amountCents + ' cents)'); continue; }
 
       // FINAL GATE — live, immediately before the transfer. The pre-screen
@@ -9892,17 +10141,130 @@ app.post('/api/admin/payout/:id', adminAuth, async function(req, res) {
   }
 });
 
+// Review flags for one account, and the control that clears them.
+//
+// SHIPPED WITH THE payoutPreScreen CHECK, not after it. An unresolved flag
+// now HOLDS an affiliate's payout, so without a way to resolve one a flagged
+// affiliate is stuck behind manual SQL — which would make that check
+// unshippable. Resolving RELEASES: the earnings rows were never touched, so
+// the next monthly run pays them normally.
+app.get('/api/admin/review-flags/:userId', adminAuth, async function(req, res) {
+  try {
+    var userId = String(req.params.userId || '');
+    if (!/^[0-9a-f-]{36}$/i.test(userId)) return res.status(400).json({ error: 'Not a user id.' });
+    var r = await supabase.from('account_review_flags')
+      .select('id, reason, details, created_at, resolved_at, resolution, resolved_by')
+      .eq('user_id', userId).order('created_at', { ascending: false }).limit(50);
+    if (r.error) return res.status(503).json({ error: 'Could not read flags: ' + r.error.message });
+    var rows = r.data || [];
+    res.json({
+      open: rows.filter(function(x) { return !x.resolved_at; }).length,
+      // Stated so the panel can say WHY it matters, rather than showing a
+      // list whose consequence is invisible.
+      holdsPayout: rows.some(function(x) { return !x.resolved_at; }),
+      flags: rows
+    });
+  } catch (e) {
+    console.error('[REVIEW-FLAG] list failed:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/admin/review-flags/:id/resolve', adminAuth, async function(req, res) {
+  try {
+    var id = String(req.params.id || '');
+    if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'Not a flag id.' });
+    var note = req.body && req.body.resolution ? String(req.body.resolution).slice(0, 500) : null;
+    if (!note || !note.trim()) return res.status(400).json({ error: 'A resolution note is required — a flag cleared without a reason is a flag nobody can audit.' });
+    // .is('resolved_at', null) makes this a TRANSITION, not a rewrite: a
+    // second resolver cannot overwrite the first one's note and timestamp.
+    var upd = await supabase.from('account_review_flags')
+      .update({ resolved_at: new Date().toISOString(), resolution: note.trim(), resolved_by: req.user.email || req.user.id })
+      .eq('id', id).is('resolved_at', null).select('id, user_id, reason');
+    if (upd.error) return res.status(503).json({ error: 'Could not resolve: ' + upd.error.message });
+    if (!upd.data || !upd.data.length) return res.status(409).json({ error: 'That flag is already resolved.' });
+    console.log('[REVIEW-FLAG] resolved ' + upd.data[0].reason + ' for ' + String(upd.data[0].user_id).slice(0, 8) + ' by ' + (req.user.email || 'admin'));
+    res.json({ resolved: true, reason: upd.data[0].reason });
+  } catch (e) {
+    console.error('[REVIEW-FLAG] resolve failed:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Create a promo code. Everything a bail bonds code needs is set here —
+// affiliate, credits, max uses, expiry — so making one never requires SQL.
+//
+// THE INSERT ERROR IS CHECKED, which it was not before 2026-09-06. The old
+// version ignored the result, so a DUPLICATE code (promo_codes.code is
+// UNIQUE) returned {success:true} having created nothing, and the panel then
+// said "Created!" because it did not read the response either. Both ends are
+// fixed; a code that already exists now says so.
 app.post('/api/admin/promo', adminAuth, async function(req, res) {
   try {
-    await supabase.from('promo_codes').insert({
-      code: req.body.code.toUpperCase(),
-      credits: req.body.credits,
-      max_uses: req.body.maxUses,
-      times_used: 0
-    });
-    console.log('[ADMIN] Promo created: ' + req.body.code);
-    res.json({ success: true });
+    var b = req.body || {};
+    var code = String(b.code || '').trim().toUpperCase();
+    if (!/^[A-Z0-9]{4,24}$/.test(code)) {
+      return res.status(400).json({ error: 'Code must be 4-24 letters or digits.' });
+    }
+    var credits = parseInt(b.credits, 10);
+    if (!Number.isFinite(credits) || credits < 1 || credits > 1000) {
+      return res.status(400).json({ error: 'Credits must be between 1 and 1000.' });
+    }
+    var maxUses = parseInt(b.maxUses, 10);
+    if (!Number.isFinite(maxUses) || maxUses < 1) {
+      return res.status(400).json({ error: 'Max uses must be at least 1.' });
+    }
+
+    // Expiry is optional. A date that is already past would create a code
+    // nobody can redeem, which is a mistake worth catching at creation
+    // rather than at a counter.
+    var expiresAt = null;
+    if (b.expiresAt) {
+      var t = Date.parse(b.expiresAt);
+      if (isNaN(t)) return res.status(400).json({ error: 'Expiry is not a valid date.' });
+      if (t <= Date.now()) return res.status(400).json({ error: 'That expiry is already in the past.' });
+      expiresAt = new Date(t).toISOString();
+    }
+
+    // Affiliate is optional — a null affiliate_id is an ordinary promo code
+    // with no attribution (FREETRIAL, BETA10). When set it must resolve to a
+    // profile that HAS a referral code, because redemption attributes by
+    // code: an affiliate without one would silently attribute nothing.
+    var affiliateId = null;
+    if (b.affiliateId) {
+      if (!/^[0-9a-f-]{36}$/i.test(String(b.affiliateId))) {
+        return res.status(400).json({ error: 'Affiliate is not a valid account id.' });
+      }
+      var aff = await supabase.from('profiles').select('id, email, referral_code').eq('id', b.affiliateId).maybeSingle();
+      if (aff.error) return res.status(503).json({ error: 'Could not check that affiliate — try again.' });
+      if (!aff.data) return res.status(400).json({ error: 'No account with that id.' });
+      if (!aff.data.referral_code) return res.status(400).json({ error: 'That account has no referral code, so a redemption could not credit it.' });
+      affiliateId = aff.data.id;
+    }
+
+    var row = { code: code, credits: credits, max_uses: maxUses, times_used: 0 };
+    if (expiresAt) row.expires_at = expiresAt;
+    if (affiliateId) row.affiliate_id = affiliateId;
+
+    var ins = await supabase.from('promo_codes').insert(row).select('id, code, credits, max_uses, expires_at, affiliate_id').single();
+    if (ins.error) {
+      if (ins.error.code === '23505' || /duplicate key|unique/i.test(ins.error.message || '')) {
+        return res.status(409).json({ error: 'A code named ' + code + ' already exists.' });
+      }
+      // affiliate_id lands only after migration 050. Say so plainly rather
+      // than surfacing a PostgREST schema error.
+      if (/affiliate_id/.test(ins.error.message || '')) {
+        return res.status(503).json({ error: 'Linking a code to an affiliate needs migration 050 to be applied first.' });
+      }
+      console.error('[ADMIN] promo create failed:', briefErr(ins.error));
+      return res.status(500).json({ error: 'Could not create that code: ' + ins.error.message });
+    }
+    console.log('[ADMIN] Promo created: ' + code + ' (' + credits + ' credits, max ' + maxUses +
+      (expiresAt ? ', expires ' + expiresAt.slice(0, 10) : '') +
+      (affiliateId ? ', affiliate ' + affiliateId.slice(0, 8) : '') + ')');
+    res.json({ success: true, promo: ins.data });
   } catch(e) {
+    console.error('[ADMIN] promo create threw:', e.message);
     res.status(500).json({ error: e.message });
   }
 });
