@@ -1371,6 +1371,7 @@ hardcode.
 ```json
 {
   "code": "DAVE30", "signups": 14, "commissionRate": 0.20,
+  "commissionWindowMonths": 12,
   "shareUrl": "https://www.probationcall.com/?ref=DAVE30",
   "programEnabled": false,
   "lifetimeEarnedCents": 31200, "availableCents": 12750,
