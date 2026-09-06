@@ -544,7 +544,7 @@ select option { background: #1a1a2e; color: #fff; }
            rate moves, and with the program off a page promising money is
            exactly what we don't want on screen. -->
       <div class="info-box green" id="commissionBox" hidden>
-        <strong>Earn <span id="commissionPercent"></span>% commission</strong> on every purchase made by people you refer!
+        <strong>Earn <span id="commissionPercent"></span>% commission</strong> on what people you refer pay &mdash; credit bundles, the month pass and every monthly renewal &mdash; for their first <span id="commissionWindow"></span> months.
       </div>
       
       <div class="affiliate-balance">
@@ -1290,6 +1290,11 @@ function loadUser() {
         document.getElementById('referralLink').value = 'https://www.probationcall.com/r/' + d.affiliate.referralCode; document.getElementById('qrCode').src = 'https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=' + encodeURIComponent('https://www.probationcall.com/r/' + d.affiliate.referralCode); document.getElementById('refCodeDisplay').textContent = d.affiliate.referralCode;
         if (typeof d.affiliate.commissionPercent === 'number') {
           document.getElementById('commissionPercent').textContent = d.affiliate.commissionPercent;
+          // Both numbers come from the server. The window is rendered the
+          // same way the rate is, and for the same reason: hardcoding either
+          // drifts the day it moves.
+          var winEl = document.getElementById('commissionWindow');
+          if (winEl && d.affiliate && d.affiliate.commissionWindowMonths) winEl.textContent = d.affiliate.commissionWindowMonths;
           document.getElementById('commissionBox').hidden = false;
         }
         document.getElementById('affiliateBalance').textContent = '$' + (d.affiliate.balance / 100).toFixed(2);

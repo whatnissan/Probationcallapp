@@ -138,3 +138,55 @@ test('next payout date is the first of next month, Central time', function() {
   assert.strictEqual(a.nextPayoutDate(Date.parse('2026-09-02T21:00:00Z')), '2026-10-01');
   assert.strictEqual(a.nextPayoutDate(Date.parse('2026-12-31T23:00:00Z')), '2027-01-01'); // still Dec 31 in Chicago
 });
+
+test('commission window: 12 months from the FIRST earning, then it closes', function() {
+  var w = a.commissionWindowOpen;
+  assert.strictEqual(a.COMMISSION_WINDOW_MONTHS, 12);
+  var first = '2026-01-15T00:00:00Z';
+  // No prior earning: this pair has never been paid, so the window has not
+  // started. Fail open — never refuse the first commission.
+  assert.strictEqual(w(null, Date.parse('2030-01-01T00:00:00Z')), true);
+  assert.strictEqual(w(undefined, Date.now()), true);
+  assert.strictEqual(w('not a date', Date.now()), true);
+  // Inside.
+  assert.strictEqual(w(first, Date.parse('2026-01-15T00:00:01Z')), true);
+  assert.strictEqual(w(first, Date.parse('2026-10-15T00:00:00Z')), true);
+  assert.strictEqual(w(first, Date.parse('2027-01-14T23:59:59Z')), true);
+  // The boundary is exclusive: the anniversary instant is month 13, not the
+  // last moment of month 12.
+  assert.strictEqual(w(first, Date.parse('2027-01-15T00:00:00Z')), false);
+  assert.strictEqual(w(first, Date.parse('2027-02-01T00:00:00Z')), false);
+});
+
+test('commission window: the anchor is immutable, so a reversal cannot extend it', function() {
+  var w = a.commissionWindowOpen;
+  // The caller anchors on the earliest row for the pair whatever became of
+  // it. If a refund reversed January's earning and the anchor moved to
+  // February's, the window would slide a month every time money came back —
+  // a refund would BUY the affiliate more time. Same anchor, same answer,
+  // regardless of that row's status.
+  var reversed = '2026-01-15T00:00:00Z';
+  var now = Date.parse('2027-01-20T00:00:00Z');
+  assert.strictEqual(w(reversed, now), false);
+  assert.strictEqual(w('2026-02-15T00:00:00Z', now), true); // what sliding would have given
+});
+
+test('commission window: the month count is a parameter, not a constant read', function() {
+  var w = a.commissionWindowOpen;
+  var first = '2026-01-15T00:00:00Z';
+  assert.strictEqual(w(first, Date.parse('2026-04-14T00:00:00Z'), 3), true);
+  assert.strictEqual(w(first, Date.parse('2026-04-15T00:00:00Z'), 3), false);
+  // 0 is a real answer (pay nothing), not a falsy "use the default".
+  assert.strictEqual(w(first, Date.parse('2026-01-15T00:00:01Z'), 0), false);
+});
+
+test('commission window: month arithmetic survives a short month', function() {
+  var w = a.commissionWindowOpen;
+  // Aug 31 + 12 months is Aug 31 — but +6 lands on Feb 31, which JS rolls
+  // into March. Assert what it actually does rather than pretending the
+  // clamp exists; a day of slack at the boundary is not worth carrying a
+  // calendar library for.
+  assert.strictEqual(w('2026-08-31T00:00:00Z', Date.parse('2027-08-30T00:00:00Z')), true);
+  assert.strictEqual(w('2026-08-31T00:00:00Z', Date.parse('2027-08-31T00:00:00Z')), false);
+  assert.strictEqual(w('2026-08-31T00:00:00Z', Date.parse('2027-03-03T00:00:00Z'), 6), false);
+});

@@ -423,7 +423,17 @@ function getCountyConfig(countyId) {
 
 
 // Affiliate settings
-const AFFILIATE_COMMISSION_PERCENT = 20;
+// TWO RATES, SEPARATE KNOBS, same value today. Split 2026-09-06 BEFORE the
+// rate became load bearing on two very different products: 20% of a $39.99
+// one-time bundle and 20% recurring on a $14.99 subscription are the same
+// number against completely different economics. One constant meant changing
+// either would silently change both.
+const AFFILIATE_COMMISSION_PERCENT_ONETIME = 20;    // credit bundles
+const AFFILIATE_COMMISSION_PERCENT_RECURRING = 20;  // subscription renewals + month pass
+// Retained as the HEADLINE rate reported by GET /referral. Meaningful only
+// while the two above are equal; if they ever diverge, this must become two
+// fields in the contract rather than silently reporting one of them.
+const AFFILIATE_COMMISSION_PERCENT = AFFILIATE_COMMISSION_PERCENT_ONETIME;
 
 // Format phone to E.164 (+1XXXXXXXXXX)
 // formatPhone removed — its last caller (/api/schedule) moved to
@@ -1693,6 +1703,7 @@ app.get('/api/user', auth, async function(req, res) {
       totalEarned: _webBal.lifetimeCents,
       minPayout: MIN_PAYOUT_CENTS,
       commissionPercent: AFFILIATE_COMMISSION_PERCENT,
+      commissionWindowMonths: affiliate.COMMISSION_WINDOW_MONTHS,
       referrals: referrals,
       earnings: earningsResult.data || [],
       payouts: payoutsResult.data || [],
@@ -2856,6 +2867,59 @@ async function tryPushFirst(opts) {
   }
 }
 
+// Accrue one commission, subject to the 12-month window. ONE implementation
+// for both the one-time path (checkout.session.completed) and the recurring
+// path (invoice.paid), so the cap cannot apply to one and not the other.
+//
+// Returns { accrued, reason }. Never throws: a commission failure must never
+// disturb the credit grant that precedes it.
+async function accrueCommission(opts) {
+  var affiliateId = opts.affiliateId, referredId = opts.referredId;
+  var amountCents = opts.amountCents, purchaseAmountCents = opts.purchaseAmountCents;
+  var purchaseId = opts.purchaseId || null, kind = opts.kind || 'purchase';
+  try {
+    // THE WINDOW. Anchored on the earliest earning row for this pair,
+    // whatever later became of it — see commissionWindowOpen for why the
+    // anchor must be immutable.
+    var first = await supabase.from('affiliate_earnings')
+      .select('created_at').eq('affiliate_id', affiliateId).eq('referred_id', referredId)
+      .order('created_at', { ascending: true }).limit(1).maybeSingle();
+    if (first.error) {
+      // FAILS OPEN. Withholding a commission somebody earned because a read
+      // hiccuped is worse than one month past the cap, and the row is
+      // reviewable either way.
+      console.error('[AFFILIATE] window read failed for ' + String(affiliateId).slice(0, 8) + ' (accruing anyway):', briefErr(first.error));
+    } else if (!affiliate.commissionWindowOpen(first.data && first.data.created_at, Date.now())) {
+      console.log('[AFFILIATE] ' + String(affiliateId).slice(0, 8) + ' past the ' +
+        affiliate.COMMISSION_WINDOW_MONTHS + '-month window for referred ' + String(referredId).slice(0, 8) +
+        ' (first earning ' + String(first.data.created_at).slice(0, 10) + ') — no commission on this ' + kind);
+      return { accrued: false, reason: 'window_closed' };
+    }
+
+    var ins = await supabase.from('affiliate_earnings').insert({
+      affiliate_id: affiliateId,
+      referred_id: referredId,
+      purchase_id: purchaseId,
+      amount_cents: amountCents,
+      purchase_amount_cents: purchaseAmountCents,
+      status: 'held',
+      available_at: affiliate.availableAt(Date.now()),
+      stripe_transfer_id: null,
+      error_message: null
+    });
+    if (ins.error) {
+      console.error('[AFFILIATE] earning insert failed for ' + String(affiliateId).slice(0, 8) + ':', briefErr(ins.error));
+      return { accrued: false, reason: 'insert_failed' };
+    }
+    console.log('[AFFILIATE] Commission $' + (amountCents / 100).toFixed(2) + ' (' + kind + ') accrued for ' +
+      String(affiliateId).slice(0, 8) + ' on referred ' + String(referredId).slice(0, 8) + ' status=held');
+    return { accrued: true, reason: null };
+  } catch (e) {
+    console.error('[AFFILIATE] accrual threw (credit grant unaffected):', e.message);
+    return { accrued: false, reason: 'threw' };
+  }
+}
+
 // §4.17 phone verification — the most abusable surface in the API, because
 // it sends SMS. Every limit lives in lib/verify.js and is counted from
 // phone_verifications rows (durable), with the in-memory limiter as a cheap
@@ -3902,6 +3966,9 @@ app.get('/api/v1/referral', authV1, async function(req, res) {
       // A fraction, not a percent — §4.14's example is 0.20. The client
       // renders THIS value; it never hardcodes a rate.
       commissionRate: AFFILIATE_COMMISSION_PERCENT / 100,
+      // The window is served for the same reason the rate is: a client that
+      // hardcodes "12 months" drifts the day it moves.
+      commissionWindowMonths: affiliate.COMMISSION_WINDOW_MONTHS,
       shareUrl: code ? (process.env.BASE_URL + '/?ref=' + code) : null,
       programEnabled: AFFILIATE_ENABLED,
       lifetimeEarnedCents: bal.lifetimeCents,
@@ -5911,10 +5978,53 @@ async function handleSubscriptionInvoicePaid(invoice, res) {
       package_name: 'subscription',
       credits_purchased: SUBSCRIPTION_CREDITS_PER_PAYMENT,
       amount_cents: invoice.amount_paid
-    });
+    }).select('id').maybeSingle();
     if (purchaseInsert.error) {
       // Credits already granted; log loudly. A retry would hit the idempotency check above.
       console.error('[STRIPE WEBHOOK] Purchases insert failed for invoice', invoice.id, '(credits granted):', purchaseInsert.error);
+    }
+
+    // AFFILIATE COMMISSION ON SUBSCRIPTION PAYMENTS (2026-09-06).
+    //
+    // Subscriptions used to pay nothing. That was a SCOPING decision from
+    // 2026-05-19, when the affiliate program was dormant ("policy decision:
+    // affiliate program is off for now" — 7e9c56e), not a judgment about
+    // recurring revenue. It excluded the majority of revenue: 7 of the 9
+    // purchases in the product's history are subscription payments.
+    //
+    // BOTH billing reasons pay — subscription_create AND subscription_cycle.
+    // billing_reason is logged rather than branched on, so the two remain
+    // separable later without a schema change.
+    //
+    // IDEMPOTENCY IS ALREADY SOLVED and is not re-implemented here: the
+    // purchases insert above is guarded by stripe_invoice_id UNIQUE, and the
+    // handler returns early on a duplicate invoice before reaching this
+    // point, so a webhook retry cannot accrue twice.
+    //
+    // Failures here NEVER disturb the credit grant above.
+    try {
+      if (profile.referred_by) {
+        var subRef = await resolveAffiliateByCode(profile.referred_by);
+        if (!subRef) {
+          console.error('[AFFILIATE] invoice.paid could not safely resolve referred_by="' + profile.referred_by + '" for ' + profile.id.slice(0, 8) + ' (invoice ' + invoice.id + ') — commission NOT paid');
+        } else if (subRef.id === profile.id) {
+          console.log('[AFFILIATE] invoice.paid: self-referral on ' + profile.id.slice(0, 8) + ' — no commission');
+        } else {
+          var subCommission = Math.floor((invoice.amount_paid || 0) * AFFILIATE_COMMISSION_PERCENT_RECURRING / 100);
+          if (subCommission > 0) {
+            await accrueCommission({
+              affiliateId: subRef.id,
+              referredId: profile.id,
+              purchaseId: purchaseInsert.data ? purchaseInsert.data.id : null,
+              amountCents: subCommission,
+              purchaseAmountCents: invoice.amount_paid,
+              kind: 'subscription:' + (invoice.billing_reason || 'unknown')
+            });
+          }
+        }
+      }
+    } catch (ae) {
+      console.error('[AFFILIATE] subscription commission failed (credits unaffected):', ae.message);
     }
     return res.json({ received: true });
   } catch (e) {
@@ -6461,13 +6571,11 @@ async function dispatchStripeEvent(event, res) {
     // next 1st-of-month batch. Total the outstanding liability BEFORE
     // flipping it.
 
-    // month_pass is the $14.99 subscription's one-time twin — commission-free
-    // for parity, so affiliates have no incentive to steer signups away from
-    // recurring revenue (subscriptions pay no commission per policy).
-    if (s.metadata.package_id === 'month_pass') {
-      console.log('[STRIPE WEBHOOK] month_pass purchase — affiliate commission skipped (subscription parity) for session ' + s.id);
-      return res.json({ received: true });
-    }
+    // month_pass USED to be skipped here for parity with subscriptions, which
+    // paid no commission. Subscriptions now pay (2026-09-06), so the parity
+    // argument removed its own basis: skipping the month pass while paying on
+    // the subscription would invert the old incentive and steer affiliates
+    // toward recurring. Both pay, at AFFILIATE_COMMISSION_PERCENT_RECURRING.
 
     var affiliateId = s.metadata.affiliate_id || null;
     var affiliateCode = s.metadata.affiliate_code || null;
@@ -6495,7 +6603,12 @@ async function dispatchStripeEvent(event, res) {
           .single();
 
         if (referrerResult.data) {
-          var commission = Math.floor(s.amount_total * AFFILIATE_COMMISSION_PERCENT / 100);
+          // month_pass is the subscription's one-time twin and pays the
+          // RECURRING rate; credit bundles pay the one-time rate.
+          var rate = s.metadata.package_id === 'month_pass'
+            ? AFFILIATE_COMMISSION_PERCENT_RECURRING
+            : AFFILIATE_COMMISSION_PERCENT_ONETIME;
+          var commission = Math.floor(s.amount_total * rate / 100);
           // ACCRUE, HOLD, PAY (2026-09-02, lib/affiliate.js). No transfer at
           // the sale: the commission is a ledger row held for HOLD_DAYS —
           // a refund in that window moves no money — then paid by the
@@ -6506,26 +6619,23 @@ async function dispatchStripeEvent(event, res) {
           var newTotal = (referrerResult.data.affiliate_total_earned_cents || 0) + commission;
           await supabase.from('profiles').update({ affiliate_total_earned_cents: newTotal }).eq('id', referrerResult.data.id);
 
-          var earningStatus = 'held';
-          var heldIns = await supabase.from('affiliate_earnings').insert({
-            affiliate_id: referrerResult.data.id,
-            referred_id: userId,
-            purchase_id: purchaseResult.data ? purchaseResult.data.id : null,
-            amount_cents: commission,
-            purchase_amount_cents: s.amount_total,
-            status: earningStatus,
-            available_at: affiliate.availableAt(Date.now()),
-            stripe_transfer_id: null,
-            error_message: null
+          // Shared accrual — applies the 12-month window identically on both
+          // the one-time and recurring paths.
+          var acc = await accrueCommission({
+            affiliateId: referrerResult.data.id,
+            referredId: userId,
+            purchaseId: purchaseResult.data ? purchaseResult.data.id : null,
+            amountCents: commission,
+            purchaseAmountCents: s.amount_total,
+            kind: s.metadata.package_id === 'month_pass' ? 'month_pass' : 'one-time'
           });
-          if (heldIns.error) console.error('[AFFILIATE] earning insert failed for ' + referrerResult.data.id.slice(0, 8) + ':', heldIns.error.message);
 
-          await supabase.from('referrals')
-            .update({ status: 'converted' })
-            .eq('referred_id', userId)
-            .eq('status', 'signed_up');
-
-          console.log('[AFFILIATE] Commission $' + (commission / 100).toFixed(2) + ' for referrer of ' + profile.email + ' status=' + earningStatus);
+          if (acc.accrued) {
+            await supabase.from('referrals')
+              .update({ status: 'converted' })
+              .eq('referred_id', userId)
+              .eq('status', 'signed_up');
+          }
         }
       } catch (ae) {
         console.error('[AFFILIATE] Commission processing failed (credit grant unaffected):', ae.message);

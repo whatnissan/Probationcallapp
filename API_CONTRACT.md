@@ -1388,8 +1388,68 @@ picture is confirmed and onboarding has been tested end to end with a real
 connected account.
 
 **Money model: accrue, hold, pay — not split at checkout.** A commission is
-`commissionRate` of a one-time bundle (subscriptions and the month pass pay
-none). **The server is the only source of the rate: clients render the value
+`commissionRate` of **every payment a referred person makes** — credit
+bundles, the month pass, and every subscription renewal.
+
+**Subscriptions and the month pass began paying commission on 2026-09-06.**
+They previously paid none. That exclusion was a SCOPING decision from
+2026-05-19, when the affiliate program was dormant ("policy decision:
+affiliate program is off for now"), not a judgment about recurring revenue —
+and it excluded the majority of it: 7 of the 9 purchases in the product's
+history to that date were subscription payments. The month pass was excluded
+separately for PARITY with subscriptions, so paying on subscriptions removed
+that reason automatically; leaving the month pass out would have inverted the
+old incentive and steered affiliates toward recurring.
+
+**`commissionWindowMonths` — commission runs for 12 months per referred
+person, then stops.** An affiliate is paid for ACQUISITION, and the
+acquisition happens once; without a bound a subscription is an open-ended
+annuity accruing while the affiliate does nothing further. The window is
+TIME-based, not count-based: counting twelve earnings would let a referred
+person who buys three bundles in one month burn the allowance in weeks, which
+penalises exactly the referral that worked. It is anchored on the FIRST
+earning row for that affiliate/referred pair, **whatever later became of that
+row** — anchoring on the first surviving one would make a refund move the
+anchor forward and silently extend the window. At month 13 no earning is
+written; the referred person's subscription and credits are untouched, because
+nothing about their product changes. **Clients render this value from the
+server and never hardcode it**, exactly as with `commissionRate`.
+
+**Two rates exist internally** (one-time vs recurring), equal today.
+`commissionRate` is the headline and is meaningful only while they are equal;
+if they ever diverge this becomes two fields rather than silently reporting
+one.
+
+**CLAWBACK — properties of the deal, not implementation details.** A
+subscription generates a chargeable event every month, so a referred
+subscriber carries roughly twelve clawback opportunities a year rather than
+one. Each renewal is its own `purchases` row with its own earning, so a
+refund of March's renewal reverses March's commission only. What follows is
+true of the arrangement and an affiliate is entitled to know it:
+
+- **A commission is not final when it is paid.** A held or available earning
+  reverses as a ledger entry with no money moved. One already transferred is
+  reversed on the connected account, and if the affiliate has withdrawn the
+  funds the account can go negative — the platform is liable, and the row is
+  marked `reversal_failed`.
+- **The 30-day hold no longer covers the exposure.** For a one-time purchase
+  refunds essentially always arrive inside it. Card-network chargebacks
+  arrive up to 120 days out and sometimes far longer, so a dispute on month 3
+  can land in month 7, after that commission was paid and possibly withdrawn.
+  HOLD_DAYS stays at 30 because it is a TAX control (a held commission is
+  "restricted", not yet income); the 12-month window is what bounds the tail
+  instead.
+- **PARTIAL REFUNDS DO NOT CLAW BACK AT ALL.** The threshold is a FULL refund
+  (`charge.refunded === true`). Prorated subscription cancellations are
+  partial by nature, so a prorated refund leaves the entire commission
+  standing. This was always the policy; subscriptions make it fire far more
+  often, and it is recorded here rather than left in a webhook comment.
+- **A correlated dispute is the real exposure.** Someone disputing six months
+  at once fires six independent clawbacks, several of which may fail if the
+  money is gone.
+- **`reversal_failed` has no recovery mechanism.** It surfaces in the admin
+  Transfers tab and in `/api/admin/affiliate-earnings/failed`. It is a record
+  of a loss, not a queue that resolves itself. **The server is the only source of the rate: clients render the value
 from `GET /referral` and never hardcode it**, so the rate can move without a
 contract change or a client release. It is written as a ledger row the
 moment the sale settles, **held for 30 days**,
