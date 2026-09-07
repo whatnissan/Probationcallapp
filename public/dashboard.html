@@ -376,6 +376,17 @@ select option { background: #1a1a2e; color: #fff; }
       <div class="test-stat"><div class="value" id="statTestRate">--</div><div class="label">Tests Per Month</div><div class="context" id="statRateCtx"></div></div>
     </div>
     <div class="test-prediction" id="testPrediction">
+      <!-- County odds hero (§4.10 countyDaily). The county's call rate is the
+           number this card actually has for most users; the personal line
+           below it is a fact about their own gap count, never a forecast. -->
+      <div id="countyOdds" style="display:none;margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid rgba(255,255,255,0.08)">
+        <div id="oddsFigure" style="font-size:1.9rem;font-weight:700;color:#e2e8f0;line-height:1.1"></div>
+        <div id="oddsLabel" style="font-size:0.65rem;letter-spacing:0.08em;color:#8892b0;margin-top:4px"></div>
+        <div id="oddsLine" style="font-size:0.85rem;color:#c7d0e0;margin-top:6px"></div>
+        <div id="oddsSample" style="font-size:0.7rem;color:#8892b0;margin-top:3px"></div>
+        <div id="oddsBand" style="font-size:0.85rem;color:#c7d0e0;margin-top:10px"></div>
+        <div id="oddsBandSample" style="font-size:0.7rem;color:#8892b0;margin-top:3px"></div>
+      </div>
       <div class="predict-text" id="predictText">Gathering data...</div>
       <div class="confidence" id="predictConfidence"></div>
     </div>
@@ -2674,16 +2685,67 @@ function calculateTestStats() {
       var predictEl = document.getElementById("predictText");
       var confEl = document.getElementById("predictConfidence");
       var win = p.window || { state: 'insufficient', intervalsUsed: 0, needed: 5 };
-      // Three window states (2026-08-25 backtest). The irregular and
-      // not-enough-history states are the PRIMARY experience -- 14 of 15
-      // current users see one of them -- so they are full, calm sentences,
-      // not error styling. No probabilistic wording anywhere: the old
-      // always-on envelope measured 35% prospective misses.
+      var countyName = p.county === 'ftbend' ? 'Fort Bend County' : 'Montgomery County';
+
+      // ---- County odds hero (§4.10 countyDaily), 2026-09-07 ----
+      // Same sentences as the iOS Predict screen (CountyRangeCopy / the
+      // odds card) so the two clients agree word for word. Banned in the
+      // band line: "your", "usual", "likely", "expected", "most". Null
+      // countyDaily means the county fact is not measurable: the block
+      // hides, never a zero.
+      var oddsBox = document.getElementById("countyOdds");
+      var cd = p.countyDaily || null;
+      if (cd && typeof cd.todayPercent === 'number') {
+        var pct = function(v) { return (Math.round(v * 10) / 10).toFixed(1) + "%"; };
+        var people = cd.basedOnTests + " tests across " + cd.basedOnUsers + " people";
+        var dayNamesLong = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+        var todayName = dayNamesLong[new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' })).getDay()];
+        var label, line, sample;
+        if (cd.todayBasis === 'elevated') {
+          // The SERVER decided today is elevated; the weekday here only
+          // names the day and quotes its denominator.
+          var todayRow = (cd.elevatedDays || []).filter(function(d) { return d.day === todayName; })[0];
+          if (todayRow) {
+            var cap = todayName.charAt(0).toUpperCase() + todayName.slice(1);
+            label = cap.toUpperCase() + " · " + countyName.toUpperCase() + " CALL RATE";
+            line = cap + "s run higher than the county's " + pct(cd.baselinePercent) + " baseline. Testing is possible any day.";
+            sample = todayRow.count + " of " + todayRow.opportunities + " " + cap + "s · " + people;
+          } else {
+            label = "TODAY · " + countyName.toUpperCase() + " CALL RATE";
+            line = "Today runs higher than the county's " + pct(cd.baselinePercent) + " baseline. Testing is possible any day.";
+            sample = people;
+          }
+        } else {
+          label = "TODAY · " + countyName.toUpperCase() + " CALL RATE";
+          line = "That is the county's rate. Testing is possible any day.";
+          sample = people;
+        }
+        document.getElementById("oddsFigure").textContent = pct(cd.todayPercent) + " today";
+        document.getElementById("oddsLabel").textContent = label;
+        document.getElementById("oddsLine").textContent = line;
+        document.getElementById("oddsSample").textContent = sample;
+        var bandEl = document.getElementById("oddsBand");
+        var bandSampleEl = document.getElementById("oddsBandSample");
+        if (cd.gapBand) {
+          bandEl.textContent = "People in " + countyName + " typically go " + cd.gapBand.lowDays + " to " + cd.gapBand.highDays + " days between tests.";
+          bandSampleEl.textContent = "Based on " + cd.gapBand.basedOnIntervals + " county intervals from " + cd.gapBand.basedOnUsers + " people.";
+        } else {
+          bandEl.textContent = ""; bandSampleEl.textContent = "";
+        }
+        oddsBox.style.display = "block";
+      } else {
+        oddsBox.style.display = "none";
+      }
+
+      // ---- Personal line ----
+      // Three window states (2026-08-25 backtest). irregular and
+      // insufficient are the PRIMARY experience, so they are calm
+      // statements of fact, not error styling. No min-max anywhere: a
+      // min-max is two outlier observations. No "too irregular": that is
+      // the contract's internal state name, and it tells the reader they
+      // failed a test they never sat. No window.countyRange: a client that
+      // renders gapBand must not render countyRange in any state (§4.10).
       if (win.state === 'two_number' && p.nextWindow) {
-        // ONE unit on this card: interval lengths (days BETWEEN tests) for
-        // both bands, so inner and outer compare apples-to-apples; elapsed
-        // time is its own plain fact. Mixing a days-from-now band with an
-        // interval-length band read as the inner escaping the outer.
         if (p.nextWindow.endDays <= 0) {
           predictEl.textContent = "Test possible any day now — stay ready";
           predictEl.style.color = "#ef4444";
@@ -2691,24 +2753,22 @@ function calculateTestStats() {
           predictEl.textContent = "Recent historical range: " + win.innerDays[0] + "\u2013" + win.innerDays[1] + " days between tests — possible any day";
           predictEl.style.color = "#00d9ff";
         }
-        confEl.textContent = "It's been " + p.daysSinceLastTest + " day" + (p.daysSinceLastTest === 1 ? "" : "s") + " since your last test · all-time gaps " + win.outerDays[0] + "\u2013" + win.outerDays[1] + " days · " + win.intervalsUsed + " completed intervals";
+        confEl.textContent = "It's been " + p.daysSinceLastTest + " day" + (p.daysSinceLastTest === 1 ? "" : "s") + " since your last test · " + win.intervalsUsed + " completed intervals";
       } else if (win.state === 'irregular') {
-        predictEl.textContent = "Your history is too irregular to narrow — possible any day, stay ready";
-        predictEl.style.color = "#f59e0b";
-        confEl.textContent = "Tests have ranged " + win.outerDays[0] + "\u2013" + win.outerDays[1] + " days apart (" + win.intervalsUsed + " completed intervals) — a fact about the past, not a forecast";
-      } else if (win.countyRange) {
-        // County range (§4.10, 2026-09-02). Two things kept distinct: what
-        // the county does, and what this person does — the second is
-        // unknown until 5 intervals exist. Banned words for this band:
-        // "your", "usual", "likely", "expected", "most".
-        var countyName = p.county === 'ftbend' ? 'Fort Bend County' : 'Montgomery County';
-        predictEl.textContent = "Not enough of your own history yet (" + (win.intervalsUsed || 0) + " of " + (win.needed || 5) + " intervals)";
-        predictEl.style.color = "#f59e0b";
-        confEl.textContent = "People in " + countyName + " typically go " + win.countyRange.lowDays + "\u2013" + win.countyRange.highDays + " days between tests. That's the county, not you. You don't have enough of your own history yet to say whether you differ. Testing is possible any day.";
+        predictEl.textContent = "Your own history hasn't settled into a pattern yet";
+        predictEl.style.color = "#c7d0e0";
+        confEl.textContent = "Your own gaps · " + win.intervalsUsed + " recorded";
       } else {
-        predictEl.textContent = "Not enough history yet to estimate timing — stay ready any day";
-        predictEl.style.color = "#f59e0b";
-        confEl.textContent = (win.intervalsUsed || 0) + " of " + (win.needed || 5) + " completed intervals recorded";
+        var used = win.intervalsUsed || 0, needed = win.needed || 5;
+        predictEl.textContent = used === 0
+          ? "No history of your own yet (0 of " + needed + " intervals)"
+          : "Not enough of your own history yet (" + used + " of " + needed + " intervals)";
+        predictEl.style.color = "#c7d0e0";
+        confEl.textContent = cd && cd.gapBand
+          ? (used === 0
+              ? "That's the county, not you. Nothing of your own is on record yet to compare against. Testing is possible any day."
+              : "That's the county, not you. You don't have enough of your own history yet to say whether you differ. Testing is possible any day.")
+          : "Your rhythm unlocks as gaps accumulate. Testing is possible any day.";
       }
       var extras = [];
       if (p.rapidRetestsIncluded > 0) extras.push(p.rapidRetestsIncluded + " rapid retest" + (p.rapidRetestsIncluded > 1 ? "s" : "") + " included");
