@@ -3989,8 +3989,32 @@ app.post('/api/v1/schedule/resume', authV1, async function(req, res) {
     if (credits <= 0) {
       return v1Error(res, 400, 'insufficient_credits', 'Add credits before resuming — a schedule with no credits pauses again straight away.');
     }
+    // sms_opted_out (§2): paused because the number replied STOP and no
+    // email was on file. Clients render no Resume button for it, but the
+    // endpoint refuses too — resuming with no deliverable channel just
+    // re-breaks it. It resumes once an email exists (switched to email
+    // here, so the channel is real) or the number has texted START.
+    var resumeFields = { enabled: true, paused_reason: null };
+    var cur = await supabase.from('user_schedules')
+      .select('paused_reason, notify_method, notify_number, notify_email')
+      .eq('user_id', req.user.id).maybeSingle();
+    if (cur.data && cur.data.paused_reason === 'sms_opted_out') {
+      var stillOptedOut = cur.data.notify_number ? await isSmsOptedOut(cur.data.notify_number) : true;
+      if (stillOptedOut) {
+        var em = cur.data.notify_email || null;
+        if (!em) {
+          var pe = await supabase.from('profiles').select('email').eq('id', req.user.id).maybeSingle();
+          em = pe.data ? (pe.data.email || null) : null;
+        }
+        if (!em) {
+          return v1Error(res, 409, 'sms_opted_out', 'This number has opted out of texts and there is no email on file, so there is no way to deliver results. Add an email address, or reply START to our last text, then resume.');
+        }
+        resumeFields.notify_method = 'email';
+        resumeFields.notify_email = em;
+      }
+    }
     var upd = await supabase.from('user_schedules')
-      .update({ enabled: true, paused_reason: null })
+      .update(resumeFields)
       .eq('user_id', req.user.id).select('*');
     if (upd.error) {
       console.error('[V1-RESUME] failed:', upd.error.message);
@@ -7991,21 +8015,92 @@ async function isSmsOptedOut(phone) {
 }
 
 // Record an opt-out. Idempotent via upsert on the phone primary key.
+//
+// Returns EVERY user whose schedule notifies this number. A number can be on
+// more than one schedule (one is, today: two users, one handset), and the
+// old .maybeSingle() errored on that, left the row unattributed, and sent
+// neither user a confirmation. Twilio blocks the handset for both of them,
+// so both need telling. The table's single user_id column keeps the first.
 async function recordSmsOptOut(phone, source, keyword) {
   var e164 = normalizePhoneE164(phone) || phone;
-  if (!e164) return;
-  var userId = null;
+  if (!e164) return [];
+  var userIds = [];
   try {
-    var sch = await supabase.from('user_schedules').select('user_id').eq('notify_number', e164).maybeSingle();
-    if (sch.data) userId = sch.data.user_id;
+    var sch = await supabase.from('user_schedules').select('user_id').eq('notify_number', e164);
+    if (sch.error) console.error('[SMS-OPTOUT] schedule lookup failed for ' + String(e164).slice(-4) + ':', sch.error.message);
+    (sch.data || []).forEach(function(r) { if (r.user_id && userIds.indexOf(r.user_id) < 0) userIds.push(r.user_id); });
   } catch (e) { /* best effort — an opt-out from an unknown number still counts */ }
   var up = await supabase.from('sms_opt_outs').upsert({
-    phone: e164, user_id: userId, opted_out_at: new Date().toISOString(),
+    phone: e164, user_id: userIds[0] || null, opted_out_at: new Date().toISOString(),
     source: source || 'stop_keyword', last_keyword: keyword || null
   }, { onConflict: 'phone' });
   if (up.error) console.error('[SMS-OPTOUT] could not record opt-out for ' + String(e164).slice(-4) + ':', up.error.message);
-  else console.log('[SMS-OPTOUT] ' + String(e164).slice(-4) + ' opted OUT (source=' + source + ')');
-  return userId;
+  else console.log('[SMS-OPTOUT] ' + String(e164).slice(-4) + ' opted OUT (source=' + source + ', users=' + userIds.length + ')');
+  return userIds;
+}
+
+// What a STOP means for one user's schedule. The number can no longer
+// receive, so SMS is not a channel any more:
+//   - an email is on file  -> switch notify_method to email and say so. The
+//     result still arrives, billing is unchanged, nothing is paused.
+//   - no email anywhere    -> pause with paused_reason 'sms_opted_out'. There
+//     is no channel left to deliver on, so billing for the call would be
+//     billing for nothing. No Resume button (§2): resuming a schedule with
+//     no deliverable channel just re-breaks it. Remedy is "switch to email"
+//     or START.
+// A schedule already on email-only keeps working; the opt-out row alone is
+// enough to stop the low-credit and welcome texts to that number.
+async function applySmsOptOutToUser(userId, e164) {
+  var sch = await supabase.from('user_schedules')
+    .select('notify_email, notify_method, enabled, paused_reason')
+    .eq('user_id', userId).maybeSingle();
+  if (sch.error || !sch.data) return;
+  var s = sch.data;
+  var email = s.notify_email || null;
+  if (!email) {
+    var pr = await supabase.from('profiles').select('email').eq('id', userId).maybeSingle();
+    email = pr.data ? (pr.data.email || null) : null;
+  }
+  var method = s.notify_method || 'sms';
+  var usedSms = (method === 'sms' || method === 'both');
+  var tail = String(e164).slice(-4);
+
+  if (!usedSms) {
+    if (email) {
+      await sendEmail(email,
+        'Text messages stopped.\n\n' +
+        'You replied STOP, so we won\'t text that number again.\n\n' +
+        'Your daily check-in result already goes to this email address — nothing else changes.\n\n' +
+        'Changed your mind? Reply START to the same number and texts resume.\n\n- ProbationCall.com',
+        'sms_opt_out').catch(function(e) { console.error('[SMS-IN] opt-out email failed:', e.message); });
+    }
+    return;
+  }
+
+  if (email) {
+    var upd = await supabase.from('user_schedules')
+      .update({ notify_method: 'email', notify_email: email })
+      .eq('user_id', userId);
+    if (upd.error) console.error('[SMS-OPTOUT] could not switch ' + userId.slice(0, 8) + ' to email:', upd.error.message);
+    else console.log('[SMS-OPTOUT] ' + userId.slice(0, 8) + ' (' + tail + ') switched ' + method + ' -> email');
+    await sendEmail(email,
+      'Text messages stopped — your results now come by email.\n\n' +
+      'You replied STOP, so we won\'t text you again. We\'ve switched your daily check-in result to this email address instead, so you won\'t miss a test day. Your schedule is still running and nothing else changes.\n\n' +
+      'Check this inbox each morning. If you\'d rather get texts again, reply START to the same number and then turn SMS back on at probationcall.com.\n\n- ProbationCall.com',
+      'sms_opt_out').catch(function(e) { console.error('[SMS-IN] opt-out email failed:', e.message); });
+    return;
+  }
+
+  // No channel left. Pause rather than bill for a result nobody can receive.
+  if (s.enabled !== false) {
+    var pause = await supabase.from('user_schedules')
+      .update({ enabled: false, paused_reason: 'sms_opted_out' })
+      .eq('user_id', userId);
+    if (pause.error) console.error('[SMS-OPTOUT] could not pause ' + userId.slice(0, 8) + ':', pause.error.message);
+    else console.log('[SMS-OPTOUT] ' + userId.slice(0, 8) + ' (' + tail + ') PAUSED — no email on file, no channel left');
+  } else {
+    console.log('[SMS-OPTOUT] ' + userId.slice(0, 8) + ' (' + tail + ') already paused (' + (s.paused_reason || 'unrecorded') + '), no email on file');
+  }
 }
 
 // Central write point for the notification log. Deliberately inside sendSMS /
@@ -8077,7 +8172,17 @@ async function sendSMS(to, message, callId) {
     // (Advanced Opt-Out can absorb the STOP before it reaches us).
     if (e && (e.code === 21610 || e.code === '21610')) {
       log(callId, 'SMS blocked: recipient opted out (Twilio 21610)', 'error');
-      await recordSmsOptOut(to, 'twilio_21610', null).catch(function() {});
+      // Same consequences as an inbound STOP (switch to email, or pause
+      // when there is no channel), because this IS a STOP we never saw.
+      // Fire-and-forget: the caller is mid-notification and notify() will
+      // fall back to email for THIS message on opted_out below.
+      recordSmsOptOut(to, 'twilio_21610', null).then(function(ids) {
+        return Promise.all((ids || []).map(function(id) {
+          return applySmsOptOutToUser(id, to).catch(function(err) {
+            console.error('[SMS-OPTOUT] 21610 apply failed for ' + id.slice(0, 8) + ':', err.message);
+          });
+        }));
+      }).catch(function() {});
       await logNotification({ channel: 'sms', kind: callId || 'sms', destination: to,
         body: message, status: 'suppressed', error: 'Twilio 21610 — opted out' });
       return { success: false, error: 'opted_out', opted_out: true };
@@ -9438,6 +9543,7 @@ async function alertAdminNewSupportMessage(msg) {
         no_credits: 'paused (no credits)',
         unknown_streak: 'auto-paused (no-result streak)',
         pin_expired: 'auto-paused (PIN expired)',
+        sms_opted_out: 'auto-paused (texted STOP, no email on file)',
         user: 'paused (by user)'
       };
       ctx.schedule = sc.data.enabled ? 'active'
@@ -9862,7 +9968,12 @@ app.post('/api/admin/mass-send', adminAuth, async function(req, res) {
 // shows the truth. We deliberately do NOT reply with our own SMS — Twilio has
 // already sent one, and a second would be both redundant and a compliance
 // smell. Empty TwiML is the correct response.
-var SMS_STOP_WORDS = ['STOP', 'STOPALL', 'UNSUBSCRIBE', 'CANCEL', 'END', 'QUIT'];
+// Must be a SUPERSET of what Twilio's Advanced Opt-Out treats as a stop
+// word. Anything Twilio honours that we don't leaves the handset blocked at
+// their end while we write no row and send no confirmation — it self-heals
+// on the next 21610, but the user never gets the "you'll miss test days"
+// warning. OPTOUT and REVOKE were missing until 2026-09-07.
+var SMS_STOP_WORDS = ['STOP', 'STOPALL', 'UNSUBSCRIBE', 'CANCEL', 'END', 'QUIT', 'OPTOUT', 'REVOKE'];
 var SMS_START_WORDS = ['START', 'UNSTOP', 'YES'];
 
 app.post('/webhook/sms-incoming', validateTwilio, async function(req, res) {
@@ -9879,28 +9990,13 @@ app.post('/webhook/sms-incoming', validateTwilio, async function(req, res) {
     console.log('[SMS-IN] from ' + String(e164).slice(-4) + ' keyword="' + keyword + '"');
 
     if (SMS_STOP_WORDS.indexOf(keyword) >= 0) {
-      var userId = await recordSmsOptOut(e164, 'stop_keyword', keyword);
+      var userIds = await recordSmsOptOut(e164, 'stop_keyword', keyword);
       // Confirm by EMAIL, not SMS — we can no longer text them, and this is
-      // the only channel left to explain what just changed.
-      if (userId) {
-        var sch = await supabase.from('user_schedules').select('notify_email, notify_method').eq('user_id', userId).maybeSingle();
-        var email = (sch.data && sch.data.notify_email) || null;
-        if (!email) {
-          var pr = await supabase.from('profiles').select('email').eq('id', userId).maybeSingle();
-          email = pr.data ? pr.data.email : null;
-        }
-        if (email) {
-          var method = (sch.data && sch.data.notify_method) || 'sms';
-          var stillEmailed = (method === 'email' || method === 'both');
-          await sendEmail(email,
-            'Text messages stopped.\n\n' +
-            'You replied STOP, so we won\'t text you again.\n\n' +
-            (stillEmailed
-              ? 'You\'ll still get your daily check-in result by email — nothing else changes.'
-              : 'Heads up: SMS was your only way of getting results. Open probationcall.com and switch to email so you don\'t miss a test day.') +
-            '\n\nChanged your mind? Reply START to the same number and texts resume.\n\n- ProbationCall.com',
-            'sms_opt_out').catch(function(e) { console.error('[SMS-IN] opt-out email failed:', e.message); });
-        }
+      // the only channel left to explain what just changed. Every user on
+      // the number: Twilio blocked the handset for all of them.
+      for (var u = 0; u < userIds.length; u++) {
+        try { await applySmsOptOutToUser(userIds[u], e164); }
+        catch (e) { console.error('[SMS-IN] opt-out apply failed for ' + userIds[u].slice(0, 8) + ':', e.message); }
       }
       return;
     }
@@ -9910,6 +10006,16 @@ app.post('/webhook/sms-incoming', validateTwilio, async function(req, res) {
       if (del.error) { console.error('[SMS-IN] could not clear opt-out for ' + String(e164).slice(-4) + ':', del.error.message); return; }
       if (del.data && del.data.length) console.log('[SMS-OPTOUT] ' + String(e164).slice(-4) + ' opted back IN (keyword=' + keyword + ')');
       else console.log('[SMS-IN] START from ' + String(e164).slice(-4) + ' but no opt-out on file — nothing to clear');
+      // A schedule we paused for having no channel has one again. Resume
+      // it — scoped to that reason only, the same discipline as the
+      // no_credits auto-resume. A schedule we switched to email is left on
+      // email: that is a working channel, and turning SMS back on is the
+      // user's choice on the settings page.
+      var back = await supabase.from('user_schedules')
+        .update({ enabled: true, paused_reason: null })
+        .eq('notify_number', e164).eq('paused_reason', 'sms_opted_out').select('user_id');
+      if (back.error) console.error('[SMS-IN] could not resume sms_opted_out schedules for ' + String(e164).slice(-4) + ':', back.error.message);
+      else if (back.data && back.data.length) console.log('[SMS-OPTOUT] resumed ' + back.data.length + ' schedule(s) paused for sms_opted_out on ' + String(e164).slice(-4));
       return;
     }
 

@@ -128,9 +128,31 @@ outcome exists yet (`SCHEDULED` / `IN_PROGRESS` / `NOT_CALLED`).
 | `no_credits` | **Yes** | Buy credits. No Resume button — it'd be dead. |
 | `unknown_streak` | No | Call the hotline yourself; check whether the PIN changed |
 | `pin_expired` | No | Contact your officer for a new PIN |
+| `sms_opted_out` | No (resumes on START) | Switch to email. **No Resume button** — see below |
 | `user` | No | Resume |
 
 Auto-resume is scoped `.eq('paused_reason','no_credits')` server-side. Do not widen.
+
+**`sms_opted_out` (added 2026-09-07).** Set when the notify number texts a
+stop word (STOP, STOPALL, UNSUBSCRIBE, CANCEL, END, QUIT, OPTOUT, REVOKE —
+a superset of Twilio's list) or Twilio returns 21610, AND the user has no
+email anywhere (schedule or profile). There is no channel left to deliver
+on, so the schedule pauses rather than bill for a result nobody can receive.
+A Resume affordance would re-break it: `POST /schedule/resume` rejects with
+`409 sms_opted_out` while the number is still opted out and no email exists.
+Remedy copy: "switch to email", or reply START. START clears the opt-out and
+resumes schedules paused for this reason only, the same discipline as the
+`no_credits` auto-resume.
+
+**When the user DOES have an email, STOP does not pause anything.** The
+server switches `notify_method` to `email` (filling `notify_email` from the
+profile if the schedule had none), keeps the schedule running, keeps
+billing, and emails a confirmation that says results now arrive by email.
+A schedule on `both` becomes `email`. A schedule already on `email` is
+untouched beyond the opt-out row. Every user whose schedule notifies the
+number is treated this way — one handset can be on two schedules, and
+Twilio blocks it for both. Clients should expect `notifyMethods` to change
+underneath them after a STOP and re-read `/me`.
 
 ### `notify_method`
 `push`, `sms`, `email`. Multiple allowed — see §4.7. (`whatsapp` removed
@@ -575,6 +597,12 @@ Pause takes `{"reason":"vacation until 9/2"}` and writes `enabled=false`,
 
 Resume must **reject with `insufficient_credits`** when balance is zero rather
 than enabling a schedule that will immediately re-pause.
+
+Resume must also **reject with `409 sms_opted_out`** when `pause_reason` is
+`sms_opted_out`, the number is still opted out, and no email exists on the
+schedule or profile (§2). If an email does exist, resume succeeds and the
+server switches `notify_method` to `email` in the same write, so the
+resumed schedule has a channel that actually delivers.
 
 ### 4.9 Test tools — `POST /test/call` · `/test/sms` · `/test/email`
 
