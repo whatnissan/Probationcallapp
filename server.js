@@ -4733,6 +4733,11 @@ app.get('/api/v1/prediction', authV1, async function(req, res) {
         daysSinceLastTest: null,
         testsCounted: 0,
         observationDays: 0,
+        // §4.10 types this as a plain number, and the app decodes it
+        // non-optional: omitting it here failed the whole decode for every
+        // new Montgomery account until its first MUST_TEST (iOS audit,
+        // 2026-09-07). Zero tests in zero days is 0 per month, not unknown.
+        testsPerMonth: 0,
         recentTests: [],
         rapidRetestsIncluded: 0,
         unobservedGapsExcluded: 0,

@@ -753,6 +753,14 @@ claim yet" — clients render the absence honestly, never a zeroed chart.
 - **`daysSinceLastTest`** `int | null`, **`testsCounted`** `int`,
   **`observationDays`** `int`, **`testsPerMonth`** `number` — plain counts.
   Sample size IS the honesty signal; display it wherever the interval shows.
+  **`testsPerMonth` is ALWAYS present**, `0` on the zero-history response
+  (fixed 2026-09-07: it was omitted there, which failed the whole decode for
+  every new Montgomery account until its first MUST_TEST).
+- **`basedOn`** `string | null` — names the mix behind `yourIntervalDays`:
+  `"your history"`, `"your history + county"`, `"county + your history"`,
+  `"county average"`, or `"not enough data"`. `null` ONLY on the
+  zero-history response, where there is no estimate for it to describe.
+  Display copy, not an enum — clients must not switch on it.
 - **`recentTests`** `["YYYY-MM-DD"]` — the user's last ≤6 MUST_TEST dates.
   Real history for display; no inference.
 - **`rapidRetestsIncluded`** `int` — count of sub-7-day gaps, which are
