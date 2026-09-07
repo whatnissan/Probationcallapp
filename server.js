@@ -1939,6 +1939,13 @@ var FTBEND_OFFICE_META = {
   rosenberg:  { program: 'Pretrial',   code: '3669', name: 'Rosenberg' },
   rosenberg2: { program: 'Drug Court', code: '3671', name: 'Rosenberg 2' }
 };
+// §4.1 board + §4.11 `recent` share one announcement classifier — see
+// lib/ftbend.js for why it classifies by the VALUE rather than by the office,
+// and for the combined colour-and-phase limitation §4.11 documents.
+// FTBEND_OFFICES (a map, declared far above) is the DIALLING config;
+// ftbend.OFFICES is the wire order, and the two are deliberately separate.
+var ftbend = require('./lib/ftbend');
+var V1_FTBEND_OFFICES = ftbend.OFFICES;
 function v1Time(h, m) { return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0'); }
 function v1NotifyMethods(m) {
   if (m === 'both') return ['email', 'sms'];
@@ -2176,23 +2183,15 @@ app.get('/api/v1/today', authV1, async function(req, res) {
       payload.fortBend = {
         yourOffice: row.ftbend_office || 'missouri',
         yourColor: null, // filled from profile below
-        offices: ['missouri', 'rosenberg', 'rosenberg2'].map(function(o) {
+        offices: V1_FTBEND_OFFICES.map(function(o) {
           var b = byOffice[o];
-          // daily_county_status puts the announced value in phase1_color for
-          // EVERY office (single colors included), and Rosenberg 2 sometimes
-          // announces a plain color — so classify by the VALUE, not the
-          // office: phases only when it actually reads "Phase N".
-          var isPhases = b && (/^phase\s/i.test(b.phase1_color || '') || /^phase\s/i.test(b.phase2_color || ''));
-          var phases = isPhases
-            ? [b.phase1_color, b.phase2_color].filter(Boolean).map(function(p) { return String(p).replace(/^phase\s*/i, ''); })
-            : null;
-          var announced = (!isPhases && b && b.color) ? [String(b.color).toLowerCase()] : null;
+          var a = ftbend.announcementOf(b);
           return {
             office: o,
             program: FTBEND_OFFICE_META[o].program,
             code: FTBEND_OFFICE_META[o].code,
-            announced: announced,   // mutually exclusive with phases
-            phases: phases,
+            announced: a.announced,   // mutually exclusive with phases
+            phases: a.phases,
             heardAt: b ? b.created_at : null
           };
         })
@@ -3495,6 +3494,59 @@ async function loadColorCatalog() {
   return _colorCache;
 }
 
+// §4.11 `recent` — 90 days of announcements for all three Fort Bend offices.
+//
+// Every Fort Bend subscriber gets a BYTE-IDENTICAL array: it is what the
+// hotlines said, not anything about the user. So it is built once per day and
+// shared, the same pattern as loadColorCatalog above. Uncached this is 270
+// rows of Supabase egress on every poll of a screen the app can refresh
+// freely — the shape of the traffic that caused the 2026-09-03 incident.
+//
+// Keyed on the Central-time date — but a date alone is NOT enough. The date
+// flips at midnight and the morning run does not write until ~5:05, so a
+// single request at 01:00 would cache a day-key array that is missing today
+// and hold it until tomorrow: the one row a user opens this screen to see
+// would never appear. So the cache is only trusted once it actually CONTAINS
+// today. Before the run, it re-reads — bounded to once every 5 minutes so an
+// all-day outage cannot turn this into a per-request query.
+var RECENT_HISTORY_DAYS = 90;
+var RECENT_PENDING_TTL_MS = 5 * 60 * 1000;
+var _ftbendRecent = null, _ftbendRecentDay = null, _ftbendRecentAt = 0;
+
+async function loadFtbendRecent() {
+  var day = formatLocalDay(new Date(), 'America/Chicago');
+  if (_ftbendRecent && _ftbendRecentDay === day) {
+    var hasToday = _ftbendRecent.length > 0 && _ftbendRecent[0].date === day;
+    if (hasToday || (Date.now() - _ftbendRecentAt) < RECENT_PENDING_TTL_MS) return _ftbendRecent;
+  }
+
+  var since = new Date(Date.now() - RECENT_HISTORY_DAYS * 86400000).toISOString().slice(0, 10);
+  var q = await supabase.from('daily_county_status')
+    .select('county, date, color, phase1_color, phase2_color')
+    .in('county', ['ftbend_missouri', 'ftbend_rosenberg', 'ftbend_rosenberg2'])
+    .gte('date', since)
+    .order('date', { ascending: false });
+  if (q.error) {
+    // Serve the last good array rather than failing the whole screen over the
+    // history panel. A stale copy is missing at most today, and §4.11 already
+    // defines an absent day as "we captured nothing" — which is exactly what
+    // happened. With nothing cached there is nothing honest to send, so the
+    // error propagates to the handler's 500.
+    if (_ftbendRecent) {
+      console.error('[V1-COUNTY-STATS] recent[] read failed, serving cached ' + _ftbendRecentDay + ':', briefErr(q.error));
+      return _ftbendRecent;
+    }
+    throw new Error(q.error.message);
+  }
+
+  _ftbendRecent = ftbend.groupRecent(q.data || []);
+  _ftbendRecentDay = day;
+  _ftbendRecentAt = Date.now();
+  console.log('[V1-COUNTY-STATS] rebuilt Fort Bend recent[]: ' + _ftbendRecent.length + ' days for ' + day +
+    (_ftbendRecent.length && _ftbendRecent[0].date === day ? '' : ' (today not written yet)'));
+  return _ftbendRecent;
+}
+
 // Normalise on lookup: lowercase + trim handles "GRAY"/" Gray" without needing
 // alias rows; the alias table carries genuine artefacts ("can" -> cyan).
 // Returns null for anything not in the catalogue, which is how PHASES,
@@ -3507,6 +3559,16 @@ function resolveColor(catalog, raw) {
   return catalog.byName[key] || null;
 }
 
+// Send a §4.11 payload under an ETag. Both branches turn over at most once a
+// day — Fort Bend after the morning run, Montgomery when a call resolves — so
+// a client polling this screen pays for one response and gets 304s after it.
+function sendCountyStats(req, res, payload) {
+  var etag = '"' + require('crypto').createHash('md5').update(JSON.stringify(payload)).digest('hex') + '"';
+  res.set('ETag', etag);
+  if (req.headers['if-none-match'] === etag) return res.status(304).end();
+  return res.json(payload);
+}
+
 // §4.11 GET /county-stats — discriminated on `type` so Swift decodes cleanly.
 app.get('/api/v1/county-stats', authV1, async function(req, res) {
   try {
@@ -3515,7 +3577,7 @@ app.get('/api/v1/county-stats', authV1, async function(req, res) {
 
     if (county !== 'ftbend') {
       var st = await computeSystemStats();
-      return res.json({
+      return sendCountyStats(req, res, {
         type: 'montgomery',
         montgomery: {
           systemAvgIntervalDays: st.scheduledAvg,
@@ -3631,7 +3693,7 @@ app.get('/api/v1/county-stats', authV1, async function(req, res) {
       };
     }
 
-    res.json({
+    var payload = {
       type: 'ftbend',
       montgomery: null,
       fortBend: {
@@ -3639,9 +3701,12 @@ app.get('/api/v1/county-stats', authV1, async function(req, res) {
         mostCalled: mostCalled,
         dueSoon: dueSoon,
         byDayOfWeek: byDayOfWeek,
-        yourColor: yourColor
+        yourColor: yourColor,
+        recent: await loadFtbendRecent()
       }
-    });
+    };
+
+    return sendCountyStats(req, res, payload);
   } catch (e) {
     console.error('[V1-COUNTY-STATS] failed:', e.message);
     return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);

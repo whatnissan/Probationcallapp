@@ -1139,7 +1139,17 @@ Fort Bend — rotation model:
     "mostCalled": [ {"name":"Gray","hex":"#9BA1A8","percent":15.9,"count":58,"isProgram":false} ],
     "dueSoon":   [ {"name":"Tan","hex":"#D9B98C","daysSince":73,"averageIntervalDays":10,"overdueRatio":7.3,"isProgram":false} ],
     "byDayOfWeek": [ {"day":"mon","name":"Bronze","hex":"#C1802F"} ],
-    "yourColor": {"name":"Zinc","hex":"#A8AEB3","daysSince":31,"averageIntervalDays":18,"overdueRatio":1.72}
+    "yourColor": {"name":"Zinc","hex":"#A8AEB3","daysSince":31,"averageIntervalDays":18,"overdueRatio":1.72},
+    "recent": [
+      { "date": "2026-09-06", "offices": [
+          { "office": "missouri",   "announced": ["apricot"], "phases": null },
+          { "office": "rosenberg",  "announced": ["apricot"], "phases": null },
+          { "office": "rosenberg2", "announced": ["gray"],    "phases": null } ] },
+      { "date": "2026-09-04", "offices": [
+          { "office": "missouri",   "announced": ["copper"], "phases": null },
+          { "office": "rosenberg",  "announced": ["copper"], "phases": null },
+          { "office": "rosenberg2", "announced": null, "phases": ["1","1 B"] } ] }
+    ]
   }
 }
 ```
@@ -1147,6 +1157,44 @@ Fort Bend — rotation model:
 **The server owns the hex values.** Colors are domain data, not styling — a new
 county color must not require an app release. `isProgram: true` marks Prep /
 Prep Phase 1 / Prep Phase 2, which render on a neutral slate swatch.
+
+**`recent` — the announced-color history, all three offices, 90 days.**
+Newest first, capped by how far back `daily_county_status` goes (2025-12-11).
+`offices` carries the same `announced`/`phases` shape as §4.1: mutually
+exclusive, arrays or `null`, `phases` stripped of the word "Phase".
+`office` ∈ `missouri` `rosenberg` `rosenberg2`. `program`, `code` and
+`heardAt` are NOT repeated here — the first two are static and belong to
+§4.1's board, and `heardAt` is when WE captured the announcement, not when
+the county made it, which is not a fact worth 270 timestamps.
+
+**This is what the hotlines announced, not what the user was told.** It is
+identical for every Fort Bend subscriber and unaffected by whether that user
+was called, was paused, or had credits. A day missing from the array means no
+row was captured for any office that day — usually an outage on our side, not
+a day the county announced nothing. An office missing from a day that IS
+present means the same for that office alone. **Clients must not render a gap
+as "no test called."**
+
+**One element is not necessarily one color.** When a hotline announces a
+colour list and phase groups in a single message, the whole announcement
+lands in one `announced` element — e.g.
+`["gray, lemon, prep, phase 1, phase 1 a, ..."]`. This is inherited from
+§4.1's classifier, which decides phases-vs-colour by whether `phase1_color`
+or `phase2_color` READS as "Phase N"; a combined message fails that test and
+falls through to the raw string. It occurred once in the most recent 270 rows,
+at Rosenberg 2. Clients must not assume one colour word per element, must not
+split on commas to manufacture swatches, and should render an element they
+cannot parse as the text it is.
+
+**It is history, not a forecast.** §4.11a governs it: no green, no scale that
+reads as a safe day, and no "next likely" derived from it on the client. It
+exists so a user can see the rotation with their own eyes instead of being
+told a pattern that is not there.
+
+**`GET /county-stats` carries an `ETag`** on BOTH county shapes;
+`If-None-Match` returns 304. Fort Bend's payload turns over after the morning
+run, Montgomery's when a call resolves, so a client polling this screen pays
+for one response and gets 304s until something actually changed.
 
 `overdueRatio = daysSince / averageIntervalDays`. Server computes it so both
 clients sort identically.
