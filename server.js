@@ -3616,15 +3616,11 @@ app.get('/api/v1/county-stats', authV1, async function(req, res) {
     var rows = hist.data || [];
 
     var seen = {};   // name -> { color, dates: [] }
-    var dowTop = {}; // 0..6 -> name -> count
     rows.forEach(function(r) {
       var c = resolveColor(catalog, r.color);
       if (!c) return;                       // PHASES / UNKNOWN / compounds
       if (!seen[c.name]) seen[c.name] = { color: c, dates: [] };
       seen[c.name].dates.push(r.date);
-      var dow = new Date(r.date + 'T12:00:00').getDay();
-      if (!dowTop[dow]) dowTop[dow] = {};
-      dowTop[dow][c.name] = (dowTop[dow][c.name] || 0) + 1;
     });
 
     var names = Object.keys(seen);
@@ -3679,15 +3675,20 @@ app.get('/api/v1/county-stats', authV1, async function(req, res) {
       }).filter(Boolean)
       .sort(function(a, b) { return b.overdueRatio - a.overdueRatio; });
 
-    var dayNames = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+    // byDayOfWeek is DEPRECATED and always empty since 2026-09-07. It sent
+    // the most frequent colour per weekday, and three weekdays even cleared
+    // Bonferroni — but the rows it counted are not independent observations
+    // (Missouri City and Rosenberg announce the same colour on 41% of dates;
+    // Rosenberg 2 repeats the previous day on 70% of weekend rows), and the
+    // weekend signal was Rosenberg 2's weekend recordings announcing a bare
+    // colour where its weekday ones announce phases, so they survived
+    // resolveColor at double the rate. The modal colour was wrong 69-88% of
+    // the time. §4.11 records the full reasoning; do not re-add it in this
+    // shape. The KEY stays because every shipped iOS build through 12
+    // decodes it as a non-optional array — a missing key fails the whole
+    // /county-stats decode and empties the app's colour catalogue. Drop the
+    // key only once a build with the field optional has been adopted.
     var byDayOfWeek = [];
-    for (var d = 0; d < 7; d++) {
-      var m = dowTop[d];
-      if (!m) continue;
-      var top = Object.keys(m).sort(function(a, b) { return m[b] - m[a]; })[0];
-      if (!top) continue;
-      byDayOfWeek.push({ day: dayNames[d], name: seen[top].color.display_name, hex: seen[top].color.hex || null });
-    }
 
     var prof = await supabase.from('profiles').select('user_color').eq('id', req.user.id).maybeSingle();
     var yourColor = null;

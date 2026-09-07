@@ -1138,7 +1138,7 @@ Fort Bend — rotation model:
     "totalCallsLogged": 366,
     "mostCalled": [ {"name":"Gray","hex":"#9BA1A8","percent":15.9,"count":58,"isProgram":false} ],
     "dueSoon":   [ {"name":"Tan","hex":"#D9B98C","daysSince":73,"averageIntervalDays":10,"overdueRatio":7.3,"isProgram":false} ],
-    "byDayOfWeek": [ {"day":"mon","name":"Bronze","hex":"#C1802F"} ],
+    "byDayOfWeek": [],
     "yourColor": {"name":"Zinc","hex":"#A8AEB3","daysSince":31,"averageIntervalDays":18,"overdueRatio":1.72},
     "recent": [
       { "date": "2026-09-06", "offices": [
@@ -1195,6 +1195,47 @@ told a pattern that is not there.
 `If-None-Match` returns 304. Fort Bend's payload turns over after the morning
 run, Montgomery's when a call resolves, so a client polling this screen pays
 for one response and gets 304s until something actually changed.
+
+**`byDayOfWeek` is DEPRECATED and always `[]` since 2026-09-07. Do not
+render it, and do not re-add it in this shape.** The key remains only because
+every shipped iOS build through 12 decodes it as a non-optional array, and a
+missing key fails the whole `/county-stats` decode — which also empties the
+app's colour catalogue, since that is built from this payload. Once a build
+that treats the field as optional has been adopted, the key will be removed.
+
+It sent the single most frequent colour per weekday, with no counts and no
+minimum. It looked defensible — across 773 rows the winners held 8 to 30
+observations, and sun, sat and mon each beat their own pooled base rate at
+p < 0.05 after Bonferroni. All three of those are artefacts:
+
+- **The counts were not independent observations.** Missouri City and
+  Rosenberg announce the SAME colour on the same date 41% of the time
+  (105/254), so one county decision was counted twice. Rosenberg 2 repeats the
+  previous day's value on 70% of weekend rows and 33% of weekdays. Collapsing
+  consecutive identical announcements, Rosenberg 2's 255 rows are 144
+  independent runs. A significance test over rows is testing a sample size
+  that does not exist.
+- **The weekend signal was a message-format artefact at ONE office.** 25 of
+  the 26 Saturday Grays and 23 of the 30 Sunday Grays came from Rosenberg 2,
+  whose weekend recordings announce a BARE COLOUR (25/37 Saturdays, 23/36
+  Sundays) where its weekday recordings mostly announce phase groups. Bare
+  colours survive `resolveColor`; phase announcements are dropped. So
+  Rosenberg 2's weekends entered the statistic at roughly double the weekday
+  rate, and "Gray on Saturday" was one office's recording format, sampled
+  twice by a repeat, rendered as a rotation.
+- **The answer was wrong most of the time.** The modal colour held 12.2% to
+  31.3% of its weekday — wrong 69% to 88% of the time — while rendering as one
+  swatch under one weekday label.
+- **§4.11a forbids the shape.** Naming one colour per weekday is the promise
+  "Monday is Bronze" made with a swatch instead of a colour scale. The six days
+  it is not Bronze are invisible.
+
+Adding counts and a minimum-appearance gate does not repair it, because the
+gate would have to count independent observations rather than rows. An honest
+version is a DIFFERENT field: per office rather than pooled, consecutive
+identical announcements collapsed, counts and denominators exposed, and a
+minimum on runs. `recent` ships the raw sequence instead, which is the
+evidence a user can check for themselves.
 
 `overdueRatio = daysSince / averageIntervalDays`. Server computes it so both
 clients sort identically.
