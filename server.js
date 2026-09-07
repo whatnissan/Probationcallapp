@@ -2105,6 +2105,14 @@ app.get('/api/v1/today', authV1, async function(req, res) {
       fortBend: null
     };
 
+    // Fort Bend needs the user's colour twice: to map a pre-036 row that has
+    // no stored verdict (v1MapResult), and to fill fortBend.yourColor.
+    var userColor = null;
+    if (county === 'ftbend') {
+      var prColor = await supabase.from('profiles').select('user_color').eq('id', req.user.id).maybeSingle();
+      if (prColor.data) userColor = prColor.data.user_color || null;
+    }
+
     if (row.enabled === false) {
       payload.pauseReason = row.paused_reason || null;
     } else {
@@ -2134,7 +2142,12 @@ app.get('/api/v1/today', authV1, async function(req, res) {
       var resultRow = finals.length ? finals[finals.length - 1] : null;
 
       if (resultRow) {
-        payload.result = resultRow.result;
+        // call_history.result is the operational string ("COLOR:Chrome",
+        // "TRANSCRIBER_DOWN"), not the §2 enum. Sending it raw made every
+        // Fort Bend morning decode to the app's unknown(String) fallback
+        // ("Unrecognized result") from 2026-08-25 until 2026-09-07. The
+        // mapper prefers the verdict stored at call time (migration 036).
+        payload.result = v1MapResult(resultRow.result, userColor, resultRow.verdict);
         payload.billed = !!resultRow.billed_at;
         payload.resolvedAt = resultRow.created_at;
         payload.attempt = Math.max(1, (attempts.data || []).length);
@@ -2196,8 +2209,7 @@ app.get('/api/v1/today', authV1, async function(req, res) {
           };
         })
       };
-      var prColor = await supabase.from('profiles').select('user_color').eq('id', req.user.id).maybeSingle();
-      if (prColor.data) payload.fortBend.yourColor = prColor.data.user_color || null;
+      payload.fortBend.yourColor = userColor;
     }
 
     // ETag on the full payload; If-None-Match -> 304 for cheap polling.
