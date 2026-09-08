@@ -7185,7 +7185,15 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
       } else {
         // Max retries hit or Fort Bend - alert admin and user
         console.log('[TRANSCRIBE] Max retries reached or skipped for', callId);
-        if (config.notifyNumber && !config.isFtbendDaily) {
+        // Scheduled mornings are NOT told here (2026-09-08). This path
+        // hands the morning to the retry engine below, which retries at
+        // +5m / +1h / +2h and often succeeds; a "call the hotline" notice
+        // at 6 AM was premature, and the engine's final-fail notice at
+        // cutoff made it a second notice for the same failure. UNKNOWN and
+        // CALL_FAILED already kept mid-retry silence; this was the one
+        // no-result path that did not. Manual and non-retrying calls still
+        // get the immediate notice, and admins are still alerted at once.
+        if (config.notifyNumber && !config.isFtbendDaily && !config.isScheduledMorning) {
           await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod,
             '⚠️ Call Issue\n\nThe hotline may be experiencing issues today. We could not get a clear result after multiple attempts.\n\nPlease call the hotline manually to verify:\n+1 (936) 283-4848\n\n- ProbationCall.com', callId, 'hotline_issue');
         }
