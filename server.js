@@ -5853,7 +5853,7 @@ function rescheduleUser(userId, sched) {
           }
           if (pauseUpd.data && pauseUpd.data.length > 0) {
             console.log('[SCHED] No credits for ' + userId.slice(0, 8) + ' — schedule PAUSED (config kept)');
-            await notify(sched.notify_number, sched.notify_email, sched.notify_method, 'Your daily checks are paused — your credits ran out.\n\nAdd credits and we\'ll restart them automatically. You won\'t need to set anything up again:\nprobationcall.com\n\n- ProbationCall.com', 'sched');
+            await notify(sched.notify_number, sched.notify_email, sched.notify_method, 'Your daily checks are paused — your credits ran out.\n\nAdd credits and we\'ll restart them automatically. You won\'t need to set anything up again:\nprobationcall.com\n\n- ProbationCall.com', 'no_credits_pause');
           }
           return;
         }
@@ -5873,7 +5873,7 @@ function rescheduleUser(userId, sched) {
         // can also fail). Tells the user to verify manually if they don't
         // hear back, which is the right action.
         console.error('[SCHED] Error for ' + userId.slice(0,8) + '...:', e.message);
-        await notify(sched.notify_number, sched.notify_email, sched.notify_method, 'We couldn\'t get through to the hotline this morning.\n\nWe\'re trying again within the hour — if you don\'t hear from us by 10 AM, please call the hotline yourself to check.\n\n- ProbationCall.com', 'sched');
+        await notify(sched.notify_number, sched.notify_email, sched.notify_method, 'We couldn\'t get through to the hotline this morning.\n\nWe\'re trying again within the hour — if you don\'t hear from us by 10 AM, please call the hotline yourself to check.\n\n- ProbationCall.com', 'dial_failed');
       }
     }, staggerDelay);
   }, { timezone: sched.timezone });
@@ -7187,7 +7187,7 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
         console.log('[TRANSCRIBE] Max retries reached or skipped for', callId);
         if (config.notifyNumber && !config.isFtbendDaily) {
           await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod,
-            '⚠️ Call Issue\n\nThe hotline may be experiencing issues today. We could not get a clear result after multiple attempts.\n\nPlease call the hotline manually to verify:\n+1 (936) 283-4848\n\n- ProbationCall.com', callId);
+            '⚠️ Call Issue\n\nThe hotline may be experiencing issues today. We could not get a clear result after multiple attempts.\n\nPlease call the hotline manually to verify:\n+1 (936) 283-4848\n\n- ProbationCall.com', callId, 'hotline_issue');
         }
         // Alert admins
         var adminResult = await supabase.from('profiles').select('id').eq('is_admin', true);
@@ -7430,7 +7430,7 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
             .catch(function(e) { console.error('[PIN-EXPIRED] handler failed:', e.message); });
         } else {
           // Manual call with no userId (rare). Notify directly.
-          await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, '⚠️ The hotline says your ID/PIN has expired. Please verify with your probation officer.\n\n- ProbationCall.com', callId);
+          await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, '⚠️ The hotline says your ID/PIN has expired. Please verify with your probation officer.\n\n- ProbationCall.com', callId, 'pin_expired_heard');
         }
       } else if (KEYWORDS.MUST_TEST.some(function(k) { return lower.includes(k); })) {
         result = 'MUST_TEST';
@@ -7599,7 +7599,7 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
 
     if (!config.isFtbendDaily && config.notifyNumber) {
       await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod,
-        'We could not get a result from your check-in this morning.\n\nPlease call the hotline yourself today to be safe. You have not been charged.\n\n- ProbationCall.com', callId);
+        'We could not get a result from your check-in this morning.\n\nPlease call the hotline yourself today to be safe. You have not been charged.\n\n- ProbationCall.com', callId, 'no_result');
     }
   }
 });
@@ -7859,7 +7859,7 @@ app.post('/webhook/status', validateTwilio, async function(req, res) {
 
   var msg = '⚠️ Call Issue\n\nYour scheduled check-in could not be completed — ' + reason + '. Please call the hotline manually to verify your status.' + (config.pin ? '\n\nPIN: ' + config.pin : '') + '\n\n- ProbationCall.com';
   try {
-    await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, msg, callId);
+    await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, msg, callId, 'call_incomplete');
   } catch (e) {
     console.error('[STATUS] notify failed for ' + callId + ':', e.message);
   }
@@ -7886,11 +7886,13 @@ app.post('/webhook/status', validateTwilio, async function(req, res) {
   }
 });
 
-async function notify(phone, email, method, message, callId) {
+async function notify(phone, email, method, message, callId, kind) {
+  // kind: optional transactional subject key (EMAIL_SUBJECTS). callId stays
+  // the log key so notification_log still links the row to its call.
   log(callId, 'Notifying via ' + method, 'info');
   
   if (method === 'email' && email) {
-    return await sendEmail(email, message, callId);
+    return await sendEmail(email, message, callId, kind);
   }
   if (method === 'sms' && phone) {
     var smsResult = await sendSMS(phone, message, callId);
@@ -7900,13 +7902,13 @@ async function notify(phone, email, method, message, callId) {
     // use it rather than let a MUST_TEST vanish.
     if (smsResult && smsResult.opted_out && email) {
       log(callId, 'SMS opted out — falling back to email', 'info');
-      return await sendEmail(email, message, callId);
+      return await sendEmail(email, message, callId, kind);
     }
     return smsResult;
   }
   if (method === 'both') {
     var results = [];
-    if (email) results.push(await sendEmail(email, message, callId));
+    if (email) results.push(await sendEmail(email, message, callId, kind));
     if (phone) results.push(await sendSMS(phone, message, callId));
     return { success: results.some(function(r) { return r.success; }) };
   }
@@ -7919,24 +7921,74 @@ async function notify(phone, email, method, message, callId) {
 }
 
 
-async function sendEmail(to, message, callId) {
+// Subject line per transactional kind (the third argument to sendEmail /
+// notify). Audited 2026-09-07: every non-result email went out as
+// "ProbationCall Alert (M/D)", so a user who had just been switched to
+// email, or paused, could not find the message that said so. Daily result
+// emails are NOT here — they arrive under a per-call id and keep the
+// body-sniffed TEST REQUIRED / No Test / Fort Bend Color subjects.
+//
+// stamp:false = one-off state change, no date in the subject. stamp:true =
+// a per-morning notice that must not thread under yesterday's.
+var EMAIL_SUBJECTS = {
+  // Channel changes (inbound STOP, §2 sms_opted_out)
+  sms_opt_out:        { subject: 'Texts stopped — your results now come by email', stamp: false, emoji: '📧' },
+  sms_opt_out_noop:   { subject: 'Texts stopped — nothing else changes', stamp: false, emoji: '📧' },
+  // Schedule state changes
+  no_credits_pause:   { subject: 'Your daily checks are paused — out of credits', stamp: false, emoji: '⏸', color: '#f59e0b' },
+  resume:             { subject: 'Your daily checks have restarted', stamp: false, emoji: '▶️', color: '#22c55e' },
+  earned_extension:   { subject: 'We added credits so your checks keep running', stamp: false, emoji: '🎁', color: '#22c55e' },
+  unknown_streak:     { subject: 'Your daily checks are paused — we couldn\'t read your results', stamp: false, emoji: '⏸', color: '#f59e0b' },
+  pin_expired:        { subject: 'Your daily checks are paused — your PIN has expired', stamp: false, emoji: '⏸', color: '#f59e0b' },
+  low_credit:         { subject: 'You\'re running low on credits', stamp: false, emoji: '🔋', color: '#f59e0b' },
+  welcome:            { subject: 'Your daily check-in is active', stamp: false, emoji: '🎉', color: '#22c55e' },
+  // Per-morning failures — these ARE about today, so they say "call the
+  // hotline" and keep the date. hotline_issue and retry-final-fail can
+  // both fire on one morning (three empty transcripts notify immediately,
+  // then the retry engine can final-fail at cutoff), so they differ.
+  hotline_issue:      { subject: 'Hotline trouble this morning — call the hotline to verify', stamp: true, emoji: '⚠️', color: '#f59e0b' },
+  'retry-final-fail': { subject: 'No result after every try today — call the hotline', stamp: true, emoji: '⚠️', color: '#f59e0b' },
+  no_result:          { subject: 'We couldn\'t get your result today — call the hotline', stamp: true, emoji: '⚠️', color: '#f59e0b' },
+  call_incomplete:    { subject: 'We couldn\'t complete today\'s check — call the hotline', stamp: true, emoji: '⚠️', color: '#f59e0b' },
+  dial_failed:        { subject: 'We couldn\'t reach the hotline — trying again within the hour', stamp: true, emoji: '⚠️', color: '#f59e0b' },
+  pin_expired_heard:  { subject: 'The hotline says your PIN has expired', stamp: true, emoji: '⚠️', color: '#f59e0b' },
+  ftbend_final_fail:  { subject: 'We couldn\'t get today\'s Fort Bend color — call the hotline', stamp: true, emoji: '⚠️', color: '#f59e0b' },
+  // Internal
+  verify_volume_admin:  { subject: 'ADMIN: verification text volume alert', stamp: true, emoji: '🛠' },
+  account_delete_admin: { subject: 'ADMIN: account deletion blocked', stamp: true, emoji: '🛠' },
+  demo_tripwire_admin:  { subject: 'ADMIN: demo PIN tripwire fired', stamp: true, emoji: '🛠' },
+  integrity_digest:     { subject: 'ADMIN: integrity digest', stamp: true, emoji: '🛠' }
+};
+
+async function sendEmail(to, message, callId, kind) {
   if (!process.env.BREVO_KEY) {
     log(callId, "Brevo not configured", "error");
     return { success: false, error: "Email not configured" };
   }
 
   // Date-stamp the subject so Gmail doesn't bundle today's notification
-  // into yesterday's thread. Excluded: one-off transactional emails (test,
-  // low-credit) where threading isn't a problem. (Welcome emails use a
-  // separate path that bypasses this function entirely.)
-  var stamp = (callId === 'test' || callId === 'low_credit') ? '' : ' (' + todayMD() + ')';
+  // into yesterday's thread. State-change notices (paused, restarted,
+  // switched to email) drop the stamp: there is one of them, and a stamp
+  // makes it look like a daily alert. Per-morning failures keep it — a
+  // second one tomorrow must not thread under today's.
+  var kindSubject = EMAIL_SUBJECTS[kind || callId] || null;
+  var stamp = (kindSubject && !kindSubject.stamp) || callId === 'test' ? '' : ' (' + todayMD() + ')';
 
   var subject = "ProbationCall Alert" + stamp;
   var headerColor = "#00d9ff";
   var resultBadge = "";
   var headerEmoji = "📞";
 
-  if (message.includes("MUST TEST") || message.includes("TEST REQUIRED")) {
+  if (kindSubject) {
+    // Transactional kinds carry their own subject. Deliberately checked
+    // BEFORE the body sniff below, which is only for the daily result
+    // emails (they arrive under a per-call id, not a kind): the sniff gave
+    // the Fort Bend outage notice a "🎨 Fort Bend Color Update" subject
+    // because its body said "Fort Bend".
+    subject = kindSubject.subject + stamp;
+    headerColor = kindSubject.color || headerColor;
+    headerEmoji = kindSubject.emoji || headerEmoji;
+  } else if (message.includes("MUST TEST") || message.includes("TEST REQUIRED")) {
     subject = "🚨 TEST REQUIRED TODAY" + stamp + " - ProbationCall";
     headerColor = "#ef4444";
     resultBadge = "<div style='background:#ef4444;color:#fff;padding:15px 25px;border-radius:8px;font-size:20px;font-weight:bold;text-align:center;margin:20px 0'>⚠️ YOU MUST TEST TODAY</div>";
@@ -8072,7 +8124,7 @@ async function applySmsOptOutToUser(userId, e164) {
         'You replied STOP, so we won\'t text that number again.\n\n' +
         'Your daily check-in result already goes to this email address — nothing else changes.\n\n' +
         'Changed your mind? Reply START to the same number and texts resume.\n\n- ProbationCall.com',
-        'sms_opt_out').catch(function(e) { console.error('[SMS-IN] opt-out email failed:', e.message); });
+        'sms_opt_out_noop').catch(function(e) { console.error('[SMS-IN] opt-out email failed:', e.message); });
     }
     return;
   }
@@ -8114,12 +8166,28 @@ async function logNotification(fields) {
     if (!userId && fields.destination) {
       // sendSMS/sendEmail only receive a destination. One indexed lookup;
       // nullable, so an unresolvable destination still produces a row.
+      //
+      // NOT .maybeSingle(): a notify_number can be on more than one
+      // schedule (one is today — two users, one handset), and maybeSingle
+      // ERRORS on that, which left every log row for the shared number
+      // with a null user. Third instance of this bug class fixed
+      // 2026-09-07, after recordSmsOptOut. A log row has one user_id
+      // column, so on a shared destination it takes the most recently
+      // updated schedule and says so in the log — deterministic, and the
+      // [DUPLICATE-PHONE] line is the signal to look closer.
       var col = fields.channel === 'sms' ? 'notify_number' : 'notify_email';
-      var sc = await supabase.from('user_schedules').select('user_id').eq(col, fields.destination).maybeSingle();
-      if (sc && sc.data) userId = sc.data.user_id;
+      var sc = await supabase.from('user_schedules').select('user_id, updated_at')
+        .eq(col, fields.destination).order('updated_at', { ascending: false }).limit(2);
+      if (sc && sc.data && sc.data.length) {
+        userId = sc.data[0].user_id;
+        if (sc.data.length > 1) {
+          console.warn('[DUPLICATE-PHONE] ' + col + ' ending ' + String(fields.destination).slice(-4) +
+            ' is on ' + sc.data.length + '+ schedules; notification_log row attributed to ' + String(userId).slice(0, 8));
+        }
+      }
       if (!userId && fields.channel === 'email') {
-        var pr = await supabase.from('profiles').select('id').eq('email', fields.destination).maybeSingle();
-        if (pr && pr.data) userId = pr.data.id;
+        var pr = await supabase.from('profiles').select('id').eq('email', fields.destination).limit(1);
+        if (pr && pr.data && pr.data.length) userId = pr.data[0].id;
       }
     }
     // Tie call-result notifications to their Twilio call (migration 031).
@@ -11012,7 +11080,7 @@ async function deliverFtbendNotification(row) {
     if (ftPause.error) {
       console.error('[FTBEND] Pause failed for ' + userId.slice(0, 8) + ':', ftPause.error.message);
     } else if (ftPause.data && ftPause.data.length > 0) {
-      await notify(s.notify_number, s.notify_email, s.notify_method, 'Your daily checks are paused — your credits ran out.\n\nAdd credits and we\'ll restart them automatically. You won\'t need to set anything up again:\nprobationcall.com\n\n- ProbationCall.com', 'ftbend');
+      await notify(s.notify_number, s.notify_email, s.notify_method, 'Your daily checks are paused — your credits ran out.\n\nAdd credits and we\'ll restart them automatically. You won\'t need to set anything up again:\nprobationcall.com\n\n- ProbationCall.com', 'no_credits_pause');
     }
     await supabase.from('call_history').insert({ user_id: userId, target_number: FTBEND_OFFICES[oid] ? FTBEND_OFFICES[oid].number : COUNTIES.ftbend.number, result: 'NO_CREDITS', county: 'ftbend', ftbend_office: oid });
     return;
