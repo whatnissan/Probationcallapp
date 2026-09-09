@@ -2076,6 +2076,9 @@ app.get('/api/v1/me', authV1, async function(req, res) {
 var V1_USABLE_TODAY = /^(MUST_TEST|NO_TEST|PIN_EXPIRED|UNKNOWN|HOTLINE_DOWN|CALL_FAILED|TRANSCRIBER_DOWN|RECORDING_UNAVAILABLE|COLOR:|P1:)/;
 app.get('/api/v1/today', authV1, async function(req, res) {
   try {
+    // Build visibility (migration 051): which build this person is on, from
+    // the User-Agent. Throttled and fire-and-forget inside noteAppBuild.
+    noteAppBuild(req.user.id, req.headers['user-agent']);
     var sched = await supabase.from('user_schedules').select('*').eq('user_id', req.user.id).maybeSingle();
     if (!sched.data) return v1Error(res, 404, 'schedule_missing', 'Set up your daily call first.');
     var row = sched.data;
@@ -3303,6 +3306,17 @@ app.post('/api/v1/devices', authV1, async function(req, res) {
       console.error('[PUSH] device register failed:', up.error.message);
       return v1Error(res, 500, 'internal', 'Could not register this device.', true);
     }
+    // Build number from the User-Agent (migration 051). A separate UPDATE
+    // rather than a column in the upsert above, so registration keeps
+    // working if the migration has not been applied yet — the build is
+    // observability, the token is delivery.
+    var appBuild = appBuildFromUA(req.headers['user-agent']);
+    if (appBuild) {
+      supabase.from('device_tokens').update({ app_build: appBuild }).eq('token', token)
+        .then(function(r) { if (r.error) console.error('[APP-BUILD] device write failed:', r.error.message); },
+              function(e) { console.error('[APP-BUILD] device write threw:', e.message); });
+      noteAppBuild(req.user.id, req.headers['user-agent']);
+    }
     // Retire this user's OTHER registrations on the same platform and
     // environment that have gone stale. A person has a phone and maybe an
     // iPad; ten live tokens on one account is a signal that something is
@@ -3490,6 +3504,60 @@ var COLOR_CACHE_MS = 60 * 60 * 1000;
 // device used occasionally survives; short enough that throwaway simulator
 // registrations do not pile up.
 var DEVICE_STALE_DAYS = 30;
+
+// ---------------------------------------------------------------------------
+// App BUILD number from the User-Agent (migration 051).
+//
+// The app registers with the marketing version ("1.0" on every build), so
+// the server could not tell who was still on an old build — the question
+// every field removal has to answer (the byDayOfWeek hold). URLSession's
+// default User-Agent is "<executable>/<CFBundleVersion> CFNetwork/… Darwin/…"
+// and the app does not override it, so the build number is already on every
+// request. Parsed, never logged raw and never concatenated into a key (the
+// rollup rule in test/rollup-404.test.js).
+// ---------------------------------------------------------------------------
+function appBuildFromUA(ua) {
+  // "Probationcall" is the app; "ProbationcallWidgetExtension" is the
+  // widget, which polls /today too and ships in the same archive, so its
+  // build is the same fact. Anything else (Safari, curl, the tests) is null.
+  var m = String(ua || '').match(/(?:^|\s)probationcall(?:widgetextension)?\/(\d{1,6})(?:\s|$)/i);
+  return m ? m[1] : null;
+}
+
+// Per-person "last seen on build N", written from /today polls. Throttled in
+// memory: the app polls /today freely (ETag 304s), and one UPDATE per poll
+// is the traffic shape of the 2026-09-03 incident. A changed build writes
+// at once; an unchanged one at most every 6 hours. Fire-and-forget, and a
+// missing column (migration not yet applied) is a logged error, not a
+// failed request.
+var _lastBuildWrite = {};
+var LAST_BUILD_REWRITE_MS = 6 * 60 * 60 * 1000;
+function noteAppBuild(userId, ua) {
+  var build = appBuildFromUA(ua);
+  if (!build || !userId) return;
+  var prev = _lastBuildWrite[userId];
+  var now = Date.now();
+  if (prev && prev.build === build && (now - prev.at) < LAST_BUILD_REWRITE_MS) return;
+  _lastBuildWrite[userId] = { build: build, at: now };
+  supabase.from('profiles')
+    .update({ last_app_build: build, last_app_build_at: new Date(now).toISOString() })
+    .eq('id', userId)
+    .then(function(r) {
+      if (r.error) console.error('[APP-BUILD] profile write failed for ' + userId.slice(0, 8) + ':', r.error.message);
+    }, function(e) { console.error('[APP-BUILD] profile write threw:', e.message); });
+  // Per-device refresh from a poll ONLY when it is unambiguous: a poll
+  // carries no token, so with two live devices we cannot say which one
+  // polled, and stamping both with this build would invent a fact about
+  // the other. Registration (which does carry the token) covers that case.
+  supabase.from('device_tokens').select('id, app_build')
+    .eq('user_id', userId).is('unregistered_at', null).limit(2)
+    .then(function(r) {
+      if (r.error) { console.error('[APP-BUILD] device lookup failed:', r.error.message); return; }
+      if (!r.data || r.data.length !== 1 || r.data[0].app_build === build) return;
+      return supabase.from('device_tokens').update({ app_build: build }).eq('id', r.data[0].id)
+        .then(function(u) { if (u.error) console.error('[APP-BUILD] device refresh failed:', u.error.message); });
+    }, function(e) { console.error('[APP-BUILD] device refresh threw:', e.message); });
+}
 
 async function loadColorCatalog() {
   var now = Date.now();
