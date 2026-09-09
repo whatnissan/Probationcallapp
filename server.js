@@ -7042,12 +7042,29 @@ app.post('/twiml/answer', validateTwilio, async function(req, res) {
 app.post('/webhook/recording', validateTwilio, async function(req, res) {
   var callId = req.query.callId;
   var recordingUrl = req.body.RecordingUrl;
-  
+
   console.log('[RECORDING] CallId:', callId, 'URL:', recordingUrl);
   res.sendStatus(200);
-  
-  if (!recordingUrl || !callId) return;
 
+  if (!recordingUrl || !callId) return;
+  // Twilio posts RecordingDuration in this same validated body. Captured once
+  // here and written wherever the row is created, because the row for this
+  // call usually does not exist yet at this point — it is INSERTed further
+  // down processRecording, which is why the UPDATE there silently affected
+  // zero rows and migration 034 never populated anything.
+  var recDurRaw = parseInt(req.body.RecordingDuration, 10);
+  await processRecording(callId, recordingUrl, isNaN(recDurRaw) ? null : recDurRaw);
+});
+
+// Everything that happens to a recording once we have it: download,
+// transcribe, detect, notify, bill, record. Lifted out of the webhook on
+// 2026-09-09 so the retry poller can run it again against a STORED
+// recording when the first attempt died on our transcriber rather than on
+// the hotline — a Deepgram blip does not need a second phone call, it needs
+// a second look at the same audio. `callId` must resolve through
+// getPendingCall (the webhook's real pending call, or the synthetic one the
+// poller registers for a re-transcription).
+async function processRecording(callId, recordingUrl, recordingDurationSeconds) {
   // Never attach Twilio credentials to a non-Twilio host. A forged webhook
   // could otherwise set RecordingUrl to an attacker server and harvest the
   // Basic-auth header from our transcription download below. Enforced
@@ -7060,13 +7077,6 @@ app.post('/webhook/recording', validateTwilio, async function(req, res) {
   }
 
   var mp3Url = recordingUrl + '.mp3';
-  // Twilio posts RecordingDuration in this same validated body. Captured once
-  // here and written wherever the row is created, because the row for this
-  // call usually does not exist yet at this point — it is INSERTed further
-  // down this same handler, which is why the UPDATE below silently affected
-  // zero rows and migration 034 never populated anything.
-  var recDurRaw = parseInt(req.body.RecordingDuration, 10);
-  var recordingDurationSeconds = isNaN(recDurRaw) ? null : recDurRaw;
   var config = await getPendingCall(callId);
 
   if (!config) return;
@@ -7648,11 +7658,41 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
     var tCode = err && err.transcriptionCode ? err.transcriptionCode : 'TRANSCRIBE_ERROR';
     console.error('[TRANSCRIBE] ' + tCode + ' for ' + callId + ':', err.message);
 
-    if (tCode === 'TRANSCRIBER_DOWN' || tCode === 'RECORDING_UNAVAILABLE') {
-      // Record the outage against the call so a morning of vendor failure is
-      // countable afterwards, rather than being inferred from a pattern of
-      // empty transcripts. Does NOT bill — this result code is outside the
-      // MUST_TEST/NO_TEST gate, same as every other non-result outcome.
+    var vendorCode = (tCode === 'TRANSCRIBER_DOWN' || tCode === 'RECORDING_UNAVAILABLE');
+    if (vendorCode) {
+      // Tell admins WHICH vendor failed, immediately, on every path below.
+      await alertAdminTranscriberFailure(tCode, err.message, config).catch(function(e) {
+        console.error('[TRANSCRIBE] transcriber alert failed:', e.message);
+      });
+    }
+
+    // A re-transcription the retry poller asked for (retranscribeStoredRecording).
+    // The poller decides what happens next — dial again — so this path
+    // reports the failure to it and does nothing else. No row, no notice.
+    if (config.onTranscriberFailure) {
+      config.onTranscriberFailure(tCode, err.message);
+      return;
+    }
+
+    // Scheduled morning: the retry engine owns the outcome, exactly as it
+    // does for UNKNOWN, HOTLINE_DOWN and CALL_FAILED. The recording URL
+    // travels with the row so the poller can transcribe the SAME audio
+    // again before spending a second phone call on it. Mid-retry silence;
+    // final-fail at cutoff sends the one notice. A non-vendor error
+    // (a fetch that threw) enters as UNKNOWN, which is a known no-result
+    // status everywhere downstream; TRANSCRIBE_ERROR is not.
+    if (config.isScheduledMorning && config.userId && !config.isFtbendDaily) {
+      await handleScheduledMorningNoResult(config, vendorCode ? tCode : 'UNKNOWN', config.callSid, null,
+        recordingUrl ? recordingUrl + '.mp3' : null, recordingUrl ? recordingDurationSeconds : null);
+      return;
+    }
+
+    if (vendorCode) {
+      // Manual / non-retrying call: record the outage against the call so a
+      // morning of vendor failure is countable afterwards, rather than being
+      // inferred from a pattern of empty transcripts. Does NOT bill — this
+      // result code is outside the MUST_TEST/NO_TEST gate, same as every
+      // other non-result outcome.
       if (config.userId) {
         await supabase.from('call_history').insert({
           user_id: config.userId,
@@ -7667,21 +7707,61 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
           console.error('[TRANSCRIBE] could not record ' + tCode + ':', e.message);
         });
       }
-      // Tell admins WHICH vendor failed. The user-facing message deliberately
-      // does not speculate about the county — "we could not get a result" is
-      // true regardless, and blaming the hotline for our supplier's outage is
-      // what the old copy did.
-      await alertAdminTranscriberFailure(tCode, err.message, config).catch(function(e) {
-        console.error('[TRANSCRIBE] transcriber alert failed:', e.message);
-      });
     }
 
-    if (!config.isFtbendDaily && config.notifyNumber) {
+    // The user-facing message deliberately does not speculate about the
+    // county — "we could not get a result" is true regardless, and blaming
+    // the hotline for our supplier's outage is what the old copy did.
+    // Scheduled mornings never reach here (routed above), so this is the
+    // manual-call notice only.
+    if (!config.isFtbendDaily && config.notifyNumber && !config.isScheduledMorning) {
       await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod,
         'We could not get a result from your check-in this morning.\n\nPlease call the hotline yourself today to be safe. You have not been charged.\n\n- ProbationCall.com', callId, 'no_result');
     }
   }
-});
+}
+
+// Retry-engine step (2026-09-09): when the last attempt died on OUR
+// transcriber rather than on the hotline, look at the same recording again
+// before dialling again. Twilio keeps the audio; a Deepgram blip or a
+// not-ready recording clears in minutes, and a second phone call would
+// only produce a second recording of the same announcement.
+//
+// Runs processRecording under a synthetic pending call carrying the
+// original call's sid, so a confirmed result is written and billed exactly
+// as the webhook would have. Returns { handled: true } when the recording
+// produced an outcome the engine or the success path has already dealt
+// with (a result, an UNKNOWN that re-queued, an empty transcript that
+// started its own dial), or { handled: false, code } when the transcriber
+// failed AGAIN — the poller then dials, as it always did.
+var RETRANSCRIBE_RESULTS = ['TRANSCRIBER_DOWN', 'RECORDING_UNAVAILABLE'];
+async function retranscribeStoredRecording(row) {
+  var callId = 'retranscribe_' + Date.now() + '_' + String(row.user_id).slice(0, 8);
+  var failure = null;
+  pendingCalls.set(callId, {
+    targetNumber: row.target_number,
+    pin: row.pin,
+    county: row.county,
+    notifyNumber: row.notify_number,
+    notifyEmail: row.notify_email,
+    notifyMethod: row.notify_method,
+    userId: row.user_id,
+    retryCount: row.attempt_number,
+    isScheduledMorning: true,
+    callSid: row.last_call_sid || null,
+    result: null,
+    onTranscriberFailure: function(code, detail) { failure = code + (detail ? ' (' + String(detail).slice(0, 120) + ')' : ''); }
+  });
+  console.log('[RETRY-POLLER] ' + String(row.user_id).slice(0, 8) + ' — re-transcribing the stored recording from ' + row.last_result + ' before dialling');
+  try {
+    await processRecording(callId, String(row.last_recording_url).replace(/\.mp3$/, ''), row.last_recording_duration_seconds);
+  } catch (e) {
+    failure = 'THREW (' + e.message + ')';
+  } finally {
+    pendingCalls.delete(callId);
+  }
+  return failure ? { handled: false, code: failure } : { handled: true };
+}
 
 // Cron job to delete old recordings (runs daily at 3am).
 // Only nulls recording_url for rows whose Twilio delete actually succeeded
@@ -7780,13 +7860,25 @@ async function runDailyIntegrityDigest() {
   try {
     var profiles = await supabase.from('profiles').select('id, credits, email, is_admin');
     if (profiles.error) throw new Error('profiles: ' + profiles.error.message);
-    var ledger = [], from = 0;
-    while (true) {
-      var l = await supabase.from('credit_transactions').select('user_id, amount').range(from, from + 999);
-      if (l.error) throw new Error('ledger: ' + l.error.message);
-      ledger = ledger.concat(l.data || []);
-      if ((l.data || []).length < 1000) break;
-      from += 1000;
+    // Per-user sums from Postgres (migration 052): one request, one row per
+    // user with a ledger, bounded by the profile count rather than the
+    // length of the ledger. Until the migration is applied the rpc fails
+    // with "function not found"; fall back to paging the whole table the
+    // old way so the digest keeps running, and say so in the log.
+    var ledger = [];
+    var sums = await supabase.rpc('ledger_sums');
+    if (!sums.error) {
+      ledger = (sums.data || []).map(function(r) { return { user_id: r.user_id, amount: r.ledger_sum }; });
+    } else {
+      console.error('[INTEGRITY] ledger_sums rpc failed (' + sums.error.message + ') — paging the full ledger; apply migrations/052_ledger_sums.sql');
+      var from = 0;
+      while (true) {
+        var l = await supabase.from('credit_transactions').select('user_id, amount').range(from, from + 999);
+        if (l.error) throw new Error('ledger: ' + l.error.message);
+        ledger = ledger.concat(l.data || []);
+        if ((l.data || []).length < 1000) break;
+        from += 1000;
+      }
     }
     var mismatches = integrity.ledgerMismatches(profiles.data || [], ledger);
     var since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
@@ -11866,6 +11958,14 @@ cron.schedule('* * * * *', async function() {
     if (leaseUpd.error) {
       console.error('[RETRY-POLLER] Failed to set lease for ' + userId.slice(0, 8) + ':', leaseUpd.error.message);
       continue;
+    }
+
+    // Transcriber failure with the audio still on file: look at the same
+    // recording again first. Dial only if that fails too.
+    if (RETRANSCRIBE_RESULTS.indexOf(row.last_result) >= 0 && row.last_recording_url) {
+      var again = await retranscribeStoredRecording(row);
+      if (again.handled) continue;
+      console.log('[RETRY-POLLER] ' + userId.slice(0, 8) + ' — stored recording failed again: ' + again.code + '. Dialling.');
     }
 
     console.log('[RETRY-POLLER] Firing retry attempt ' + (row.attempt_number + 1) + ' for ' + userId.slice(0, 8));
