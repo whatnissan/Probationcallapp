@@ -1651,6 +1651,9 @@ app.get('/return', function(req, res) {
 // 404'd, which for a privacy policy is the worst page to lose.
 app.get('/privacy', function(req, res) { res.sendFile(path.join(__dirname, 'public', 'privacy.html')); });
 app.get('/terms', function(req, res) { res.sendFile(path.join(__dirname, 'public', 'terms.html')); });
+// Public support page: App Store Connect requires a support URL, and the
+// in-app form does not satisfy it.
+app.get('/support', function(req, res) { res.sendFile(path.join(__dirname, 'public', 'support.html')); });
 app.get('/sms-consent', function(req, res) { res.sendFile(path.join(__dirname, 'public', 'sms-consent.html')); });
 app.get('/sms-compliance', function(req, res) { res.sendFile(path.join(__dirname, 'public', 'sms-compliance.html')); });
 app.get('/health', function(req, res) { res.json({ status: 'ok', scheduledJobs: scheduledJobs.size, activeConnections: wsClients.size }); });
