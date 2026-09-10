@@ -38,7 +38,13 @@ Emitted values may include fractional seconds (Postgres emits microseconds)
 and may use `Z` instead of a numeric offset — e.g.
 `"2026-08-24T13:01:49.007851Z"`. Clients must accept all of these variants.
 Never bare dates for events. Calendar days (a testing date) use `"2026-08-20"`
-and are interpreted in the user's `timezone`.
+and are interpreted in the schedule's `timezone`, which is **always the
+county's zone** — `America/Chicago` for both counties today. The hotline
+announces, the call window opens and closes, and the retry cutoff falls on
+the county's clock, so a testing day is the county's day even when the phone
+is in Denver. Clients should send `America/Chicago`; the server writes the
+county's zone regardless of what was sent (2026-09-10) and echoes what it
+stored.
 
 **Money** integer cents. Never floats.
 
@@ -61,6 +67,18 @@ Every non-2xx returns:
 
 `code` is a stable machine string — the client branches on it.
 `message` is user-presentable and safe to display.
+
+**`field`** `string`, optional (2026-09-10) — present when the refusal
+concerns one wire field, carrying that field's name exactly as it appears in
+the request: `"callTime"`, `"notifyMethods"`, `"notifyNumber"`,
+`"notifyEmail"`, `"pin"`, `"timezone"`, `"ftbendColor"`, `"testingOfficeId"`,
+`"probationEndDate"`, `"phone"`, `"code"`, `"token"`, `"confirm"`,
+`"intent"`, `"creditCount"`, `"cursor"`. A client maps `field` to a screen
+or an input; it never keyword-matches `message`, which is display copy and
+may change. Absent when the refusal is about the request as a whole. Carried
+on every `validation_failed`, and on `phone_not_verified`,
+`sms_consent_required` and the verification-time `sms_opted_out`, which each
+concern one field. Additive: older clients ignore it.
 **Never leak Postgres errors or schema details into `message`.** The backend
 already learned this the hard way with the Fort Bend `pin` not-null constraint.
 
@@ -69,7 +87,7 @@ Standard codes: `unauthenticated`, `forbidden`, `not_found`, `validation_failed`
 `internal`, `billing_cancel_failed`, `unpaid_affiliate_earnings`,
 `account_deletion_blocked` (all three §4.15), `phone_not_verified` (§4.7),
 `referral_already_applied`, `referral_after_purchase` (both §4.14),
-`sms_opted_out`, `sms_send_failed`, `verification_not_found`,
+`sms_opted_out`, `sms_consent_required` (§4.7, §4.17), `sms_send_failed`, `verification_not_found`,
 `verification_expired`, `verification_locked`, `verification_incorrect`
 (§4.17).
 
@@ -587,6 +605,24 @@ county records the day's announcement and report yesterday's answer as
 today's — the server must not accept a time it cannot honour. Fort Bend's
 office call is fixed at 5:05, so the user's time is only when they are told.
 Onboarding should offer a picker with 06:00 preselected, not a fixed default.
+
+**`timezone` is written as the county's zone, not the device's (2026-09-10).**
+A device zone shifted the dial, the cutoff, and `/today`'s day boundary
+together — one hour late by the county's clock for a traveller in Mountain
+time, with the last retry landing after the hotline's window. The field stays
+on the wire for shape validation (an unknown zone is still a `400` naming
+`timezone`), but the stored value is the county's, and the response shows it:
+a client that sends `America/Denver` gets `America/Chicago` back. Every live
+schedule already carried Central when this landed.
+
+**SMS consent (2026-09-10).** If `notifyMethods` includes `sms` and consent
+is not on file for the account, the write is refused with
+`400 sms_consent_required`, `field: "notifyNumber"`. §4.17 returns the same
+code (`field: "phone"`) when a verification text is requested without
+consent. Clients branch on the code and route to the consent step; the
+message is display copy and may change. Until 2026-09-10 this was a
+`validation_failed` whose only signal was the words "SMS consent" in the
+prose.
 
 **SMS requires a verified number (2026-09-02, v1 only).** If `notifyMethods`
 includes `sms`, `notifyNumber` must equal `/me`'s `phone.verifiedNumber`, or
@@ -1904,7 +1940,8 @@ pumping impossible. A number that has replied STOP is refused with
 
 **Consent binds here exactly as on `PUT /schedule`:** `smsConsent: true`
 records consent (source `phone_verify`); an existing record satisfies;
-neither is a `400`. This is a text to a number we are about to text daily.
+neither is a `400 sms_consent_required` (`field: "phone"`). This is a text to
+a number we are about to text daily.
 
 **Limits, counted from durable rows, not memory:** 60 seconds between
 resends to the same number; 3 sends per 10 minutes and 6 per day per account;

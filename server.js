@@ -1914,8 +1914,13 @@ app.get('/api/system-stats', auth, async function(req, res) {
 // (public/prediction-core.js) — one implementation, two runtimes, no drift.
 var PredictionCoreV1 = require('./public/prediction-core.js').PredictionCore;
 
-function v1Error(res, status, code, message, retryable) {
-  return res.status(status).json({ error: { code: code, message: message, retryable: retryable === true } });
+// field (§1, 2026-09-10): the wire name the message concerns, so a client
+// maps a refusal to a screen without keyword-matching prose. Only emitted
+// when set — the envelope is otherwise unchanged for older clients.
+function v1Error(res, status, code, message, retryable, field) {
+  var err = { code: code, message: message, retryable: retryable === true };
+  if (field) err.field = field;
+  return res.status(status).json({ error: err });
 }
 
 // v1 auth: same Supabase JWT verification as auth(), but errors in the
@@ -1955,6 +1960,11 @@ function v1NotifyMethods(m) {
   if (m === 'sms') return ['sms'];
   return ['email'];
 }
+// Every schedule is kept on its COUNTY's clock, never the device's (§1).
+// Both counties are Central today; the map exists so a third county in
+// another zone is a row here, not a search through the code.
+var COUNTY_TIMEZONE = { montgomery: 'America/Chicago', ftbend: 'America/Chicago' };
+
 function v1CallWindow(county) {
   // Truthful values from the scheduler: Montgomery schedules run 6:00–14:59
   // local with the retry engine cutting off at 14:00; Fort Bend detection
@@ -2399,7 +2409,7 @@ app.get('/api/v1/history', authV1, async function(req, res) {
         before = decoded && decoded.t ? decoded.t : null;
         if (!before) throw new Error('no t');
       } catch (e) {
-        return v1Error(res, 400, 'validation_failed', 'That page link is not valid.');
+        return v1Error(res, 400, 'validation_failed', 'That page link is not valid.', false, 'cursor');
       }
     }
 
@@ -3021,16 +3031,16 @@ app.post('/api/v1/phone/verify/start', authV1, rateLimit('verify_start', 5, 10 *
     }
     var b = req.body || {};
     var phone = normalizePhoneE164(b.phone);
-    if (!phone) return v1Error(res, 400, 'validation_failed', 'Enter a valid US phone number.');
+    if (!phone) return v1Error(res, 400, 'validation_failed', 'Enter a valid US phone number.', false, 'phone');
     if (await isSmsOptedOut(phone)) {
-      return v1Error(res, 409, 'sms_opted_out', 'This number has opted out of texts. Reply START to our last message first, then try again.');
+      return v1Error(res, 409, 'sms_opted_out', 'This number has opted out of texts. Reply START to our last message first, then try again.', false, 'phone');
     }
     // Consent: the same rule that binds /schedule. This is a text to a
     // number we are about to start texting daily.
     if (b.smsConsent === true) {
       await recordSmsConsent(req.user.id, phone, req, 'phone_verify');
     } else if (!(await hasSmsConsent(req.user.id))) {
-      return v1Error(res, 400, 'validation_failed', 'Please confirm SMS consent before we text this number.');
+      return v1Error(res, 400, 'sms_consent_required', 'Please confirm SMS consent before we text this number.', false, 'phone');
     }
 
     var now = Date.now();
@@ -3104,8 +3114,8 @@ app.post('/api/v1/phone/verify/check', authV1, rateLimit('verify_check', 20, 10 
     var b = req.body || {};
     var phone = normalizePhoneE164(b.phone);
     var code = String(b.code || '').trim();
-    if (!phone) return v1Error(res, 400, 'validation_failed', 'Enter a valid US phone number.');
-    if (!/^[0-9]{6}$/.test(code)) return v1Error(res, 400, 'validation_failed', 'Enter the 6-digit code from the text.');
+    if (!phone) return v1Error(res, 400, 'validation_failed', 'Enter a valid US phone number.', false, 'phone');
+    if (!/^[0-9]{6}$/.test(code)) return v1Error(res, 400, 'validation_failed', 'Enter the 6-digit code from the text.', false, 'code');
 
     var open = await supabase.from('phone_verifications').select('id, code_hmac, expires_at, attempts, consumed_at, superseded_at')
       .eq('user_id', req.user.id).eq('phone', phone).is('consumed_at', null).is('superseded_at', null)
@@ -3177,7 +3187,7 @@ app.delete('/api/v1/account', authV1, rateLimit('account_delete', 5, 60 * 60 * 1
   var tag = '[ACCOUNT-DELETE] ' + userId.slice(0, 8);
   try {
     if (!req.body || req.body.confirm !== 'DELETE') {
-      return v1Error(res, 400, 'validation_failed', 'To delete your account, send {"confirm":"DELETE"}.');
+      return v1Error(res, 400, 'validation_failed', 'To delete your account, send {"confirm":"DELETE"}.', false, 'confirm');
     }
     var pr = await supabase.from('profiles').select('*').eq('id', userId).maybeSingle();
     if (pr.error) {
@@ -3332,7 +3342,7 @@ app.post('/api/v1/devices', authV1, async function(req, res) {
     var b = req.body || {};
     var token = String(b.token || '').trim();
     if (!/^[a-fA-F0-9]{64,200}$/.test(token)) {
-      return v1Error(res, 400, 'validation_failed', 'That device token is not valid.');
+      return v1Error(res, 400, 'validation_failed', 'That device token is not valid.', false, 'token');
     }
     var platform = b.platform === 'android' ? 'android' : 'ios';
     var environment = b.environment === 'sandbox' ? 'sandbox' : 'production';
@@ -3857,22 +3867,22 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
     if (b.callTime !== undefined && b.callTime !== null) {
       var m = /^([0-9]{1,2}):([0-9]{2})$/.exec(String(b.callTime).trim());
       if (!m) {
-        return v1Error(res, 400, 'validation_failed', 'callTime must look like "06:05".');
+        return v1Error(res, 400, 'validation_failed', 'callTime must look like "06:05".', false, 'callTime');
       }
       hour = parseInt(m[1], 10);
       minute = parseInt(m[2], 10);
       if (!(hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59)) {
-        return v1Error(res, 400, 'validation_failed', 'callTime must be a real time of day, like "06:05".');
+        return v1Error(res, 400, 'validation_failed', 'callTime must be a real time of day, like "06:05".', false, 'callTime');
       }
     } else if (b.hour !== undefined) {
       // Legacy shape, still accepted so an older build does not break.
       hour = parseInt(b.hour, 10);
       minute = parseInt(b.minute, 10) || 0;
       if (!Number.isFinite(hour)) {
-        return v1Error(res, 400, 'validation_failed', 'callTime must look like "06:05".');
+        return v1Error(res, 400, 'validation_failed', 'callTime must look like "06:05".', false, 'callTime');
       }
     } else {
-      return v1Error(res, 400, 'validation_failed', 'callTime is required — send the time you want us to call, e.g. "06:05".');
+      return v1Error(res, 400, 'validation_failed', 'callTime is required — send the time you want us to call, e.g. "06:05".', false, 'callTime');
     }
 
     // The server must not accept a time it cannot honour. Montgomery before
@@ -3881,28 +3891,40 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
     // exists to prevent. Fort Bend's office call is fixed at 5:05; the
     // user's time is only when they are told, so 5:10 is the floor there.
     if (county !== 'ftbend' && (hour < MIN_HOUR || hour > MAX_HOUR || (hour === MAX_HOUR && minute > 59))) {
-      return v1Error(res, 400, 'validation_failed', 'callTime must be between 06:00 and 14:59 for Montgomery County.');
+      return v1Error(res, 400, 'validation_failed', 'callTime must be between 06:00 and 14:59 for Montgomery County.', false, 'callTime');
     }
     if (county === 'ftbend' && (hour < 5 || (hour === 5 && minute < 10))) {
-      return v1Error(res, 400, 'validation_failed', 'callTime must be 05:10 or later for Fort Bend County.');
+      return v1Error(res, 400, 'validation_failed', 'callTime must be 05:10 or later for Fort Bend County.', false, 'callTime');
     }
     // PIN is Montgomery-only — Fort Bend announcements have no per-user PIN.
     if (county !== 'ftbend' && !isValidPin(b.pin)) {
-      return v1Error(res, 400, 'validation_failed', 'Enter the 6-digit PIN from your probation paperwork.');
+      return v1Error(res, 400, 'validation_failed', 'Enter the 6-digit PIN from your probation paperwork.', false, 'pin');
     }
-    var tz = b.timezone || 'America/Chicago';
-    if (!isValidTimezone(tz)) {
-      return v1Error(res, 400, 'validation_failed', 'That timezone is not supported.');
+    // timezone is validated for shape, then REPLACED with the county's zone
+    // (§1 / §4.7, 2026-09-10). The device's zone was never the right input:
+    // the hotline announces, the window opens and the cutoff falls on the
+    // county's clock, and a device zone shifted the dial, the cutoff and
+    // /today's day boundary together — an hour late for a traveller in
+    // Mountain time, with the last retry landing after the hotline closed.
+    // Forcing it here means a future client that forgets cannot reintroduce
+    // it. The response echoes what was stored, so a client sending Denver
+    // sees Chicago come back.
+    if (b.timezone !== undefined && b.timezone !== null && !isValidTimezone(b.timezone)) {
+      return v1Error(res, 400, 'validation_failed', 'That timezone is not supported.', false, 'timezone');
+    }
+    var tz = COUNTY_TIMEZONE[county];
+    if (b.timezone && b.timezone !== tz) {
+      console.log('[V1-SCHEDULE] ' + req.user.id.slice(0, 8) + ' sent timezone ' + String(b.timezone).slice(0, 40) + '; storing the county zone ' + tz);
     }
     var notifyEmail = b.notifyEmail ? String(b.notifyEmail).trim() : null;
     if (notifyEmail && !isValidEmail(notifyEmail)) {
-      return v1Error(res, 400, 'validation_failed', 'That email address is not valid.');
+      return v1Error(res, 400, 'validation_failed', 'That email address is not valid.', false, 'notifyEmail');
     }
     var notifyNumber = null;
     if (b.notifyNumber) {
       notifyNumber = normalizePhoneE164(b.notifyNumber);
       if (!notifyNumber) {
-        return v1Error(res, 400, 'validation_failed', 'Use a 10-digit US phone number.');
+        return v1Error(res, 400, 'validation_failed', 'Use a 10-digit US phone number.', false, 'notifyNumber');
       }
     }
     // A delivery method with no destination means the user silently gets
@@ -3917,25 +3939,25 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
       var wanted = b.notifyMethods.map(function(x) { return String(x).trim().toLowerCase(); });
       var unknown = wanted.filter(function(x) { return ['push', 'sms', 'email'].indexOf(x) === -1; });
       if (unknown.length) {
-        return v1Error(res, 400, 'validation_failed', 'notifyMethods contains an unsupported value: "' + unknown[0] + '". Use push, sms or email.');
+        return v1Error(res, 400, 'validation_failed', 'notifyMethods contains an unsupported value: "' + unknown[0] + '". Use push, sms or email.', false, 'notifyMethods');
       }
       var wantsSms = wanted.indexOf('sms') >= 0;
       var wantsEmail = wanted.indexOf('email') >= 0;
       if (!wantsSms && !wantsEmail) {
         // Push alone has no backstop, and §2 makes SMS the backstop by design.
-        return v1Error(res, 400, 'validation_failed', 'notifyMethods needs sms or email as well as push — push alone has no fallback if the phone is off.');
+        return v1Error(res, 400, 'validation_failed', 'notifyMethods needs sms or email as well as push — push alone has no fallback if the phone is off.', false, 'notifyMethods');
       }
       notifyMethod = (wantsSms && wantsEmail) ? 'both' : (wantsSms ? 'sms' : 'email');
     } else if (b.notifyMethod !== undefined) {
       notifyMethod = b.notifyMethod;   // legacy shape
     } else {
-      return v1Error(res, 400, 'validation_failed', 'notifyMethods is required — send how you want to be told, e.g. ["sms"].');
+      return v1Error(res, 400, 'validation_failed', 'notifyMethods is required — send how you want to be told, e.g. ["sms"].', false, 'notifyMethods');
     }
     if ((notifyMethod === 'sms' || notifyMethod === 'both') && !notifyNumber) {
-      return v1Error(res, 400, 'validation_failed', 'A phone number is required for text notifications.');
+      return v1Error(res, 400, 'validation_failed', 'A phone number is required for text notifications.', false, 'notifyNumber');
     }
     if ((notifyMethod === 'email' || notifyMethod === 'both') && !notifyEmail) {
-      return v1Error(res, 400, 'validation_failed', 'An email address is required for email notifications.');
+      return v1Error(res, 400, 'validation_failed', 'An email address is required for email notifications.', false, 'notifyEmail');
     }
 
     // Verified phone (§4.17, v1 only): if SMS is chosen, the notify number
@@ -3948,7 +3970,7 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
         return v1Error(res, 500, 'internal', 'Could not save your schedule.', true);
       }
       if (!vp.data || vp.data.verified_phone !== notifyNumber) {
-        return v1Error(res, 400, 'phone_not_verified', 'Verify this phone number before choosing text notifications.');
+        return v1Error(res, 400, 'phone_not_verified', 'Verify this phone number before choosing text notifications.', false, 'notifyNumber');
       }
     }
     // A2P consent, same rule as the web path: an explicit tick records fresh
@@ -3957,7 +3979,7 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
       if (b.smsConsent === true) {
         await recordSmsConsent(req.user.id, notifyNumber, req, b.consentSource === 'onboarding' ? 'onboarding' : 'schedule_save');
       } else if (!(await hasSmsConsent(req.user.id))) {
-        return v1Error(res, 400, 'validation_failed', 'Please confirm SMS consent to receive text notifications.');
+        return v1Error(res, 400, 'sms_consent_required', 'Please confirm SMS consent to receive text notifications.', false, 'notifyNumber');
       }
     }
 
@@ -3975,7 +3997,7 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
         var peValid = peDate && peDate.toISOString().slice(0, 10) === pe;
         var peYear = peValid ? peDate.getUTCFullYear() : 0;
         if (!peValid || peYear < 2000 || peYear > new Date().getUTCFullYear() + 15) {
-          return v1Error(res, 400, 'validation_failed', 'probationEndDate must be a real date as YYYY-MM-DD.');
+          return v1Error(res, 400, 'validation_failed', 'probationEndDate must be a real date as YYYY-MM-DD.', false, 'probationEndDate');
         }
         probationEnd = pe;
       }
@@ -4008,12 +4030,12 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
     var ftbendColorName = null;
     if (b.ftbendColor !== undefined && b.ftbendColor !== null && String(b.ftbendColor).trim() !== '') {
       if (county !== 'ftbend') {
-        return v1Error(res, 400, 'validation_failed', 'ftbendColor does not apply to a Montgomery schedule.');
+        return v1Error(res, 400, 'validation_failed', 'ftbendColor does not apply to a Montgomery schedule.', false, 'ftbendColor');
       }
       var catalog = await loadColorCatalog();
       var resolved = resolveColor(catalog, b.ftbendColor);
       if (!resolved) {
-        return v1Error(res, 400, 'validation_failed', 'ftbendColor "' + String(b.ftbendColor).slice(0, 30) + '" is not a Fort Bend colour we recognise.');
+        return v1Error(res, 400, 'validation_failed', 'ftbendColor "' + String(b.ftbendColor).slice(0, 30) + '" is not a Fort Bend colour we recognise.', false, 'ftbendColor');
       }
       ftbendColorName = resolved.name;
     }
@@ -4031,7 +4053,7 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
         data.testing_office_id = null;
       } else {
         if (county !== 'montgomery') {
-          return v1Error(res, 400, 'validation_failed', 'testingOfficeId does not apply to a Fort Bend schedule.');
+          return v1Error(res, 400, 'validation_failed', 'testingOfficeId does not apply to a Fort Bend schedule.', false, 'testingOfficeId');
         }
         var officeId = String(rawOffice).trim().toLowerCase();
         var active = await loadActiveOfficeIds();
@@ -4039,7 +4061,7 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
           return v1Error(res, 503, 'internal', 'Could not check the office directory. Please try again.', true);
         }
         if (!(active.montgomery && active.montgomery[officeId])) {
-          return v1Error(res, 400, 'validation_failed', 'testingOfficeId "' + officeId.slice(0, 40) + '" is not an office in the Montgomery County directory.');
+          return v1Error(res, 400, 'validation_failed', 'testingOfficeId "' + officeId.slice(0, 40) + '" is not an office in the Montgomery County directory.', false, 'testingOfficeId');
         }
         data.testing_office_id = officeId;
       }
@@ -4284,7 +4306,7 @@ app.post('/api/v1/redeem', authV1, rateLimit('redeem', 5, 60 * 60 * 1000), async
   try {
     var code = String((req.body && req.body.code) || '').trim().toUpperCase();
     if (!/^[A-Z0-9]{4,24}$/.test(code)) {
-      return v1Error(res, 400, 'validation_failed', 'Enter the code exactly as it was given to you.');
+      return v1Error(res, 400, 'validation_failed', 'Enter the code exactly as it was given to you.', false, 'code');
     }
 
     var pr = await supabase.from('promo_codes').select('*').eq('code', code).maybeSingle();
@@ -4386,11 +4408,11 @@ app.post('/api/v1/referral/apply', authV1, rateLimit('referral_apply', 10, 10 * 
           alreadyAttributed: !!r.alreadyAttributed
         });
       case 'validation_failed':
-        return v1Error(res, 400, 'validation_failed', 'Enter the referral code you were given.');
+        return v1Error(res, 400, 'validation_failed', 'Enter the referral code you were given.', false, 'code');
       case 'invalid_code':
         return v1Error(res, 404, 'not_found', 'That referral code is not valid.');
       case 'self_referral':
-        return v1Error(res, 400, 'validation_failed', 'You cannot use your own referral code.');
+        return v1Error(res, 400, 'validation_failed', 'You cannot use your own referral code.', false, 'code');
       // The two 409s are DIFFERENT failures and the client branches on code.
       case 'conflict':
         return v1Error(res, 409, 'referral_already_applied', 'A referral code has already been applied to this account.');
@@ -4443,7 +4465,7 @@ app.post('/api/v1/checkout-link', authV1, rateLimit('checkout', 10, 5 * 60 * 100
   try {
     var intent = String((req.body && req.body.intent) || 'credits');
     if (intent !== 'credits' && intent !== 'subscription') {
-      return v1Error(res, 400, 'validation_failed', 'That purchase type is not available in the app yet.');
+      return v1Error(res, 400, 'validation_failed', 'That purchase type is not available in the app yet.', false, 'intent');
     }
 
     var credits = null, priceCents = null, subPriceId = null, profile = null;
@@ -4462,7 +4484,7 @@ app.post('/api/v1/checkout-link', authV1, rateLimit('checkout', 10, 5 * 60 * 100
         .select('subscription_status, stripe_customer_id').eq('id', req.user.id).maybeSingle();
       profile = pr.data || {};
       if (profile.subscription_status === 'active' && profile.stripe_customer_id) {
-        return v1Error(res, 400, 'validation_failed', 'You already have an active subscription. Use Manage subscription to make changes.');
+        return v1Error(res, 400, 'validation_failed', 'You already have an active subscription. Use Manage subscription to make changes.', false, 'intent');
       }
       // Stripe owns the recurring price, so ASK it rather than hardcoding
       // 1499 — a hardcoded number starts lying the day the price changes,
@@ -4481,7 +4503,7 @@ app.post('/api/v1/checkout-link', authV1, rateLimit('checkout', 10, 5 * 60 * 100
     } else {
       credits = parseInt(req.body && req.body.creditCount, 10);
       if (!Number.isFinite(credits) || credits < 1 || credits > MAX_EXACT_CREDITS) {
-        return v1Error(res, 400, 'validation_failed', 'Choose between 1 and ' + MAX_EXACT_CREDITS + ' credits.');
+        return v1Error(res, 400, 'validation_failed', 'Choose between 1 and ' + MAX_EXACT_CREDITS + ' credits.', false, 'creditCount');
       }
       // Authoritative server-side price. A client-supplied price is never read.
       priceCents = computeTieredPriceCents(credits);
@@ -5777,10 +5799,13 @@ app.post('/api/schedule', auth, async function(req, res) {
   if (county !== 'ftbend' && !isValidPin(req.body.pin)) {
     return res.status(400).json({ error: 'Enter the 6-digit PIN from your probation paperwork' });
   }
-  var tz = req.body.timezone || 'America/Chicago';
-  if (!isValidTimezone(tz)) {
+  // Same rule as PUT /api/v1/schedule (§4.7, 2026-09-10): validated for
+  // shape, stored as the county's zone. The browser's zone is not the
+  // county's clock either.
+  if (req.body.timezone && !isValidTimezone(req.body.timezone)) {
     return res.status(400).json({ error: 'Unsupported timezone' });
   }
+  var tz = COUNTY_TIMEZONE[county] || 'America/Chicago';
   // notify_email is optional (SMS-only users), but must be well-formed if sent.
   var notifyEmail = req.body.notifyEmail ? String(req.body.notifyEmail).trim() : null;
   if (notifyEmail && !isValidEmail(notifyEmail)) {
