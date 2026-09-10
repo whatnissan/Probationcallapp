@@ -3755,11 +3755,8 @@ app.get('/api/v1/county-stats', authV1, async function(req, res) {
     // colour where its weekday ones announce phases, so they survived
     // resolveColor at double the rate. The modal colour was wrong 69-88% of
     // the time. §4.11 records the full reasoning; do not re-add it in this
-    // shape. The KEY stays because every shipped iOS build through 12
-    // decodes it as a non-optional array — a missing key fails the whole
-    // /county-stats decode and empties the app's colour catalogue. Drop the
-    // key only once a build with the field optional has been adopted.
-    var byDayOfWeek = [];
+    // shape. The key was dropped once an iOS build with the field optional
+    // had been adopted (it was non-optional through build 12).
 
     var prof = await supabase.from('profiles').select('user_color').eq('id', req.user.id).maybeSingle();
     var yourColor = null;
@@ -3784,7 +3781,6 @@ app.get('/api/v1/county-stats', authV1, async function(req, res) {
         totalCallsLogged: totalMatched,
         mostCalled: mostCalled,
         dueSoon: dueSoon,
-        byDayOfWeek: byDayOfWeek,
         yourColor: yourColor,
         recent: await loadFtbendRecent()
       }

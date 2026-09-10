@@ -1174,7 +1174,6 @@ Fort Bend — rotation model:
     "totalCallsLogged": 366,
     "mostCalled": [ {"name":"Gray","hex":"#9BA1A8","percent":15.9,"count":58,"isProgram":false} ],
     "dueSoon":   [ {"name":"Tan","hex":"#D9B98C","daysSince":73,"averageIntervalDays":10,"overdueRatio":7.3,"isProgram":false} ],
-    "byDayOfWeek": [],
     "yourColor": {"name":"Zinc","hex":"#A8AEB3","daysSince":31,"averageIntervalDays":18,"overdueRatio":1.72},
     "recent": [
       { "date": "2026-09-06", "offices": [
@@ -1232,12 +1231,11 @@ told a pattern that is not there.
 run, Montgomery's when a call resolves, so a client polling this screen pays
 for one response and gets 304s until something actually changed.
 
-**`byDayOfWeek` is DEPRECATED and always `[]` since 2026-09-07. Do not
-render it, and do not re-add it in this shape.** The key remains only because
-every shipped iOS build through 12 decodes it as a non-optional array, and a
-missing key fails the whole `/county-stats` decode — which also empties the
-app's colour catalogue, since that is built from this payload. Once a build
-that treats the field as optional has been adopted, the key will be removed.
+**`byDayOfWeek` WAS REMOVED and must not come back in this shape.** It was
+deprecated to `[]` on 2026-09-07 and the key was dropped on 2026-09-09, once an iOS build
+that decodes it as optional had been adopted (builds through 12 decoded it
+as a non-optional array, so a missing key failed the whole `/county-stats`
+decode and emptied the app's colour catalogue).
 
 It sent the single most frequent colour per weekday, with no counts and no
 minimum. It looked defensible — across 773 rows the winners held 8 to 30
