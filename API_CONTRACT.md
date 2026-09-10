@@ -230,6 +230,7 @@ bad connection, one round trip beats five.**
       "pin": "482913",
       "ftbendOffice": null,
       "ftbendColor": null,
+      "testingOfficeId": "conroe",
       "callTime": "06:05",
       "timezone": "America/Chicago",
       "callWindow": { "opensAt": "06:00", "closesAt": "14:59", "retryCutoff": "14:00" },
@@ -269,6 +270,42 @@ once the date passes, deliberately.
 **`ftbendColor` is sourced from `profiles.user_color`** — the color lives on
 the profile, not the schedule row. The serializer joins it in; clients should
 not care, but whoever touches the backend should know where it comes from.
+
+**`testingOfficeId`** `string | null` — the id, from the §4.18 directory, of
+the building the county assigned this person to test at. Named for what it
+is: `ftbendOffice` is a hotline line, this is a building, and the two must
+never be confused. **Montgomery only**; Fort Bend schedules always carry
+`null`. Stored on `user_schedules.testing_office_id` (migration 054).
+
+**The user declares it. The app never picks.** §4.18's `assignmentRule` is
+the county's own instruction — "test only at the office you're assigned to"
+— and it is why neither the app nor the server ever chooses an office for
+anyone. This field records what the county told the person, nothing more.
+Once set, a client may show that one office first and compute today's
+deadline from its hours.
+
+**`null` is a legitimate, expected state, not an error and not a gap to
+fill.** It means the person has not told us, or has cleared it. Every
+consumer renders `null` as today's behaviour: all of the county's offices,
+none highlighted, no deadline. **No consumer may default to an office** —
+not the first in the list, not the nearest, not the one most people use. A
+default is the app picking, under another name.
+
+**Retired ids are nulled on read.** If the office an id names is no longer
+in the live directory (§4.18: retired offices disappear), `/me` returns
+`null` for this field, so a deadline can never be rendered from a building
+that does not exist. The stored value is kept; restoring the office restores
+the assignment without the user re-entering it.
+
+**Deadlines are computed at render time from live hours, never baked into a
+snapshot.** New Caney is open 07:00–11:00 and 12:00–15:45 on its weekdays: a
+snapshot taken at 6 AM that stored "test by 11:00 AM" is lying by 1 PM, when
+the true answer is 3:45 PM. Widgets, notifications, and cached `/today`
+payloads carry the office id and resolve the deadline against the directory
+when they draw, the same way `Shared/TestingOffice` already computes
+open-or-closed. A stored deadline string is a bug. For the same reason the
+field is NOT repeated on `/today`: the client has the id from `/me` and the
+hours from `/offices`, which is everything render-time resolution needs.
 
 **`GET /me` is the one deliberate exception to `authV1`'s no-side-effects
 rule:** when no profile row exists it bootstraps a ZERO-credit one. For an
@@ -569,6 +606,20 @@ catalogue (§4.11), so an unrecognised colour is a `400` naming `ftbendColor`
 rather than a value that silently never matches an announcement. It is stored
 on `profiles.user_color`, and sending it with a Montgomery schedule is a `400`
 — colour has no meaning there.
+
+**`testingOfficeId` (2026-09-09).** `string | null`, optional. **Omitted
+means unchanged; an explicit `null` clears it.** This is the one field on
+this endpoint that is not full-replace, and the reason is mechanical: PUT
+rewrites the whole schedule, and a client that does not know the field — an
+older build, or the website's schedule form, which sends the legacy shape
+and is deliberately left alone for now — would wipe the office on every PIN
+edit. A value is validated against the **live** directory for that
+schedule's county: it must be the id of an active office there, or the write
+is refused with `400 validation_failed` naming `testingOfficeId`. An id from
+another county is the same `400`. Sending a non-null value with a Fort Bend
+schedule is a `400`, for the same reason `ftbendColor` is one on Montgomery:
+it has no meaning there, and Fort Bend has no verified buildings yet. The
+response echoes what was stored, after the retired-id rule in §3.
 
 **`probationEndDate` is writable here (2026-09-02).** `"YYYY-MM-DD"` or
 `null` to clear; stored on `profiles.probation_end_date` and read back from
