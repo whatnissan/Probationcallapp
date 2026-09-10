@@ -1963,7 +1963,49 @@ function v1CallWindow(county) {
     ? { opensAt: '05:00', closesAt: '09:00', retryCutoff: '09:30' }
     : { opensAt: '06:00', closesAt: '14:59', retryCutoff: '14:00' };
 }
-function v1Schedule(row, profile) {
+// Active office ids per county, from the §4.18 directory (migration 049).
+// Shared by the §3 read (retired ids are nulled) and the §4.7 write (ids
+// are validated). Cached an hour: the directory changes a few times a year.
+// On a read failure the last good copy is served; with nothing cached,
+// null — the callers treat "directory unknown" as "do not null anything",
+// because inventing a retirement out of a database hiccup would silently
+// drop a real assignment.
+var _officeIdsCache = null, _officeIdsAt = 0;
+var OFFICE_IDS_CACHE_MS = 60 * 60 * 1000;
+async function loadActiveOfficeIds() {
+  var now = Date.now();
+  if (_officeIdsCache && (now - _officeIdsAt) < OFFICE_IDS_CACHE_MS) return _officeIdsCache;
+  var r = await supabase.from('offices').select('id, county').eq('is_active', true);
+  if (r.error) {
+    console.error('[OFFICES] active-id read failed:', r.error.message);
+    return _officeIdsCache; // last good copy, or null
+  }
+  var byCounty = {};
+  (r.data || []).forEach(function(o) {
+    var c = String(o.county || '').toLowerCase();
+    if (!byCounty[c]) byCounty[c] = {};
+    byCounty[c][String(o.id).toLowerCase()] = true;
+  });
+  _officeIdsCache = byCounty;
+  _officeIdsAt = now;
+  return _officeIdsCache;
+}
+
+// §3 testingOfficeId on read. Montgomery only; a stored id that is no
+// longer in the live directory reads as null so a deadline can never be
+// rendered from a building that does not exist. The stored value is kept —
+// restoring the office restores the assignment. activeIds === null means the
+// directory could not be read; the stored id is passed through rather than
+// nulled (see loadActiveOfficeIds).
+function v1TestingOfficeId(row, activeIds) {
+  if ((row.county || 'montgomery') !== 'montgomery') return null;
+  var id = row.testing_office_id ? String(row.testing_office_id).toLowerCase() : null;
+  if (!id) return null;
+  if (activeIds === null || activeIds === undefined) return id;
+  return activeIds.montgomery && activeIds.montgomery[id] ? id : null;
+}
+
+function v1Schedule(row, profile, activeIds) {
   return {
     id: row.id,
     county: row.county || 'montgomery',
@@ -1971,6 +2013,9 @@ function v1Schedule(row, profile) {
     ftbendOffice: row.county === 'ftbend' ? (row.ftbend_office || 'missouri') : null,
     // The user's color lives on profiles.user_color, not the schedule row.
     ftbendColor: row.county === 'ftbend' ? ((profile && profile.user_color) || null) : null,
+    // The building the county assigned them (§3). User-declared, never
+    // picked by us; null is the normal state and renders as all offices.
+    testingOfficeId: v1TestingOfficeId(row, activeIds),
     callTime: v1Time(row.hour !== null && row.hour !== undefined ? row.hour : 6, row.minute || 0),
     timezone: row.timezone || 'America/Chicago',
     callWindow: v1CallWindow(row.county || 'montgomery'),
@@ -2059,7 +2104,7 @@ app.get('/api/v1/me', authV1, async function(req, res) {
         lowBalance: (profile.credits || 0) <= 3 // same threshold as the low-credit alert
       },
       // Array by contract even though it is one row today; [] = not onboarded.
-      schedules: sched.data ? [v1Schedule(sched.data, profile)] : []
+      schedules: sched.data ? [v1Schedule(sched.data, profile, await loadActiveOfficeIds())] : []
     });
   } catch (e) {
     console.error('[V1-ME] failed:', e.message);
@@ -3973,6 +4018,36 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
       ftbendColorName = resolved.name;
     }
 
+    // §4.7 testingOfficeId (migration 054). The ONE field here that is not
+    // full-replace: omitted means unchanged, explicit null clears. PUT
+    // rewrites the whole schedule, and a client that does not know the
+    // field — an older build, or the website's form, which sends the legacy
+    // shape — would otherwise wipe the office on every PIN edit. A value is
+    // validated against the LIVE directory for this schedule's county; the
+    // user declares what the county assigned them, and we never pick.
+    if (Object.prototype.hasOwnProperty.call(b, 'testingOfficeId')) {
+      var rawOffice = b.testingOfficeId;
+      if (rawOffice === null || String(rawOffice).trim() === '') {
+        data.testing_office_id = null;
+      } else {
+        if (county !== 'montgomery') {
+          return v1Error(res, 400, 'validation_failed', 'testingOfficeId does not apply to a Fort Bend schedule.');
+        }
+        var officeId = String(rawOffice).trim().toLowerCase();
+        var active = await loadActiveOfficeIds();
+        if (!active) {
+          return v1Error(res, 503, 'internal', 'Could not check the office directory. Please try again.', true);
+        }
+        if (!(active.montgomery && active.montgomery[officeId])) {
+          return v1Error(res, 400, 'validation_failed', 'testingOfficeId "' + officeId.slice(0, 40) + '" is not an office in the Montgomery County directory.');
+        }
+        data.testing_office_id = officeId;
+      }
+    } else if (county === 'ftbend') {
+      // A schedule moving to Fort Bend cannot carry a Montgomery building.
+      data.testing_office_id = null;
+    }
+
     // This read decides UPDATE vs INSERT, so an unchecked failure does not
     // degrade — it writes the wrong thing. maybeSingle already returns null
     // without an error when the row is genuinely absent, so any .error here
@@ -4014,7 +4089,7 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
 
     var saved = await supabase.from('user_schedules').select('*').eq('user_id', req.user.id).maybeSingle();
     var profile = await supabase.from('profiles').select('user_color').eq('id', req.user.id).maybeSingle();
-    res.json(saved.data ? v1Schedule(saved.data, profile.data) : { saved: true });
+    res.json(saved.data ? v1Schedule(saved.data, profile.data, await loadActiveOfficeIds()) : { saved: true });
   } catch (e) {
     console.error('[V1-SCHEDULE] error:', e.message);
     return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
