@@ -4710,7 +4710,14 @@ app.get('/api/v1/pricing', rateLimit('pricing', 60, 60 * 1000), async function(r
 app.get('/api/v1/offices', rateLimit('offices', 60, 60 * 1000), async function(req, res) {
   try {
     var countyRows = await supabase.from('office_counties')
-      .select('county, time_zone, assignment_rule, maps_query, updated_at');
+      .select('county, time_zone, assignment_rule, maps_query, sole_office, updated_at');
+    if (countyRows.error && /sole_office/.test(countyRows.error.message || '')) {
+      // Migration 055 not applied yet: serve the directory without the
+      // column rather than a 500 that strands every client on its cache.
+      console.error('[V1-OFFICES] sole_office column missing — apply migrations/055_sole_office.sql; serving without it');
+      countyRows = await supabase.from('office_counties')
+        .select('county, time_zone, assignment_rule, maps_query, updated_at');
+    }
     if (countyRows.error) throw new Error('office_counties: ' + countyRows.error.message);
 
     var officeRows = await supabase.from('offices')

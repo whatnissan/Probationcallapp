@@ -77,3 +77,36 @@ test('asOf is the newest updated_at across counties and offices', function() {
   const d = o.shapeDirectory(counties, [conroe, newCaney]);
   assert.strictEqual(d.asOf, '2026-09-03T11:00:00.000Z'); // conroe's, the latest
 });
+
+// ---- soleOffice (§4.18, migration 055) ----
+test('soleOffice relays the county restriction as data, resolved against active offices', function() {
+  const c = counties.map(x => x.county === 'montgomery' ? Object.assign({}, x, { sole_office: { saturday: 'conroe' } }) : x);
+  const d = o.shapeDirectory(c, [conroe, newCaney]);
+  assert.deepStrictEqual(d.counties.montgomery.soleOffice, { saturday: 'conroe' });
+  // A county with no restriction, or no column yet, is {} — never null.
+  assert.deepStrictEqual(d.counties.ftbend.soleOffice, {});
+});
+
+test('soleOffice never names a retired office, a closed day, or an unknown weekday', function() {
+  const c = counties.map(x => x.county === 'montgomery' ? Object.assign({}, x, {
+    sole_office: { saturday: 'conroe', monday: 'new-caney', sunday: 'conroe', funday: 'conroe', tuesday: 'willis' }
+  }) : x);
+  const warns = []; const orig = console.warn; console.warn = m => warns.push(m);
+  try {
+    // conroe is active with Saturday hours -> kept. new-caney is closed
+    // Mondays -> dropped. conroe has no Sunday hours -> dropped. funday is
+    // not a weekday -> dropped. willis is not an active office -> dropped.
+    const d = o.shapeDirectory(c, [conroe, newCaney]);
+    assert.deepStrictEqual(d.counties.montgomery.soleOffice, { saturday: 'conroe' });
+    // Retiring conroe empties the entry the same way it empties offices.
+    const d2 = o.shapeDirectory(c, [newCaney]);
+    assert.deepStrictEqual(d2.counties.montgomery.soleOffice, {});
+  } finally { console.warn = orig; }
+  assert.ok(warns.length >= 4, 'each dropped entry is logged');
+});
+
+test('soleOffice: junk in the column is {}', function() {
+  ['nope', 7, null, ['saturday'], { saturday: 7 }, { saturday: '  ' }].forEach(raw => {
+    assert.deepStrictEqual(o.cleanSoleOffice(raw, [o.shapeDirectory(counties, [conroe]).counties.montgomery.offices[0]], 'montgomery'), {});
+  });
+});

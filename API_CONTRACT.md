@@ -2097,6 +2097,54 @@ May be `null`.
 test at, shown above the list. May be `null`. The app never picks an office
 for anyone.
 
+**`soleOffice`** `{ weekday: officeId }` per county (2026-09-14, migration
+055) — the weekdays on which the county restricts testing to **one** office,
+and which office. Keys are lowercase weekday names, values are ids from that
+county's `offices`. Montgomery today: `{ "saturday": "conroe" }`. Empty `{}`
+means no restriction on any day. Absent weekdays mean the normal rule: test
+at the office you are assigned to.
+
+**This replaces prose matching.** Until 2026-09-14 the app decided whether to
+send a person to another office by keyword-matching a note — "Saturday:
+Conroe only…" — so a rewording silently changed behaviour on the one day the
+county restricts testing to a single building. The rule is now data.
+**Clients MUST NOT parse `notes`** for behaviour; notes are display copy and
+may change at any time.
+
+**This is the county picking, and the app relaying — not an exception to
+"the app never picks".** The standing rule is that no client and no server
+code chooses a building for a person. `soleOffice` does not change that: the
+county published "Saturday: Conroe only", the server stores the county's
+statement as data, and the client shows it. On a `soleOffice` day the client
+is doing exactly what it does every other day with `assignmentRule` and
+`testingOfficeId` — repeating what the county said. The difference is only
+which county statement applies today. Nobody should read the two as
+contradictory later: the app relays the county's assignment on ordinary days
+and the county's exception on the days the county publishes one.
+
+**How a client uses it.** If today's weekday is in `soleOffice`, that office
+is where everyone in the county tests today, whatever their
+`testingOfficeId`, and the deadline is computed from that office's live
+hours. If today is not in the map, the assigned office applies and no
+substitution fires. There is no "exactly one other open" inference; that was
+the app reconstructing this fact from hours, and it goes with the prose
+match.
+
+**On a `soleOffice` day, show the exception INSTEAD of `assignmentRule`, not
+beside it.** "Test only at the office you're assigned to" and "today everyone
+tests at Conroe" read as a contradiction when stacked, and the second is the
+one that is true today. The client renders one line: the county's exception,
+naming the office. `assignmentRule` returns the next day. Someone whose
+`testingOfficeId` IS the sole office sees the same exception line as everyone
+else — today it is the county's rule for the county, not their assignment.
+
+**The server only emits an entry it can stand behind.** The named office must
+be active and must have hours on that weekday; an entry that fails either
+check is dropped from the response and logged, because a restriction pointing
+at a closed or retired building is a data error, never something to send. A
+retired office therefore disappears from `soleOffice` the same way it
+disappears from `offices`.
+
 **`asOf` is when this data was last edited**, the newest change across the
 counties and offices returned. **Clients MUST show the `asOf` date whenever
 the directory they are displaying is more than 7 days old.** This is a MUST,
