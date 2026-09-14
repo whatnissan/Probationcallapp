@@ -1467,6 +1467,45 @@ for Fort Bend); the client may restyle it but should not need to.
 already gone out — the server reports what happened rather than claiming a
 cancellation that did not occur.
 
+**What pushes, and what does not (2026-09-14).** Only `MUST_TEST` and
+`NO_TEST` push, in both counties. `UNKNOWN` never pushes: "call the hotline
+yourself" is an action item and goes out as SMS and email (§2). The
+no-result outcomes (`HOTLINE_DOWN`, `CALL_FAILED`, the transcriber codes)
+belong to the retry engine and produce at most one notice at cutoff, by SMS
+and email. `PIN_EXPIRED` and the pause notices are state changes, not
+results, and go by SMS and email. Quiet mode suppresses `NO_TEST` on every
+channel including push; `MUST_TEST` always pushes. The demo account never
+pushes.
+
+**The four alerts.** Titles carry the same mark SMS and email already
+carry, so the lock screen reads at a glance:
+
+| County | Result | Title | Body |
+|---|---|---|---|
+| Montgomery | `MUST_TEST` | 🚨 Test required today | Your PIN was called. Report for testing today. |
+| Montgomery | `NO_TEST` | ✅ No test today | Your PIN was not called today. |
+| Fort Bend | `MUST_TEST` | 🚨 Test required today | Today's color is Grey. Your color (Blue) was called. Report for testing today. |
+| Fort Bend | `NO_TEST` | ✅ No test today | Today's color is Grey. Your color (Blue) was not called. |
+
+The Fort Bend colour words are live values. The client may restyle but
+should not need to rewrite.
+
+**Expiry (2026-09-14).** A `MUST_TEST` push carries **no expiration**: the
+header is omitted, and APNs then stores the push under its storage policy
+and delivers when the phone comes back. A phone that was off at 6 AM still
+has until the office closes, and until 2026-09-14 APNs discarded that push
+at noon — six hours before Conroe's 5:45 PM close. A `NO_TEST` push expires
+at the **end of the county's day**, midnight Central: a clearance is a
+statement about today and must not arrive tomorrow. The SMS fallback (§2,
+10 minutes unacknowledged) is the delivery guarantee in both cases; expiry
+only governs what the lock screen shows later.
+
+**Collapse (2026-09-14).** The collapse id is per user per result stream,
+not per day, so **tomorrow's push replaces yesterday's** in Notification
+Center. Until 2026-09-14 the id included the date, which made days stack,
+and an unread `NO_TEST` read the next morning was a stale clearance sitting
+above today's answer. Same-day retries still collapse into one.
+
 ### 4.13 `POST /checkout-link`
 
 ```json

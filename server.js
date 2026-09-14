@@ -24,7 +24,7 @@ const {
   validateFtbendColor, detectColor, detectPhaseColors, detectPinExpired,
   phoneticMatch, doCrossCheck
 } = require('./lib/detection');
-const { formatLocalDay, todayMD, wouldExceedCutoff, wouldExceedFtbendCutoff, ftbendRetryDelayMs } = require('./lib/time');
+const { formatLocalDay, todayMD, wouldExceedCutoff, wouldExceedFtbendCutoff, ftbendRetryDelayMs, endOfLocalDayEpochSeconds } = require('./lib/time');
 const { computeTieredPriceCents, creditPricing, MAX_EXACT_CREDITS } = require('./lib/pricing');
 const { resolveBearerUser, emailTombstoneHash } = require('./lib/auth');
 const demoAccount = require('./lib/demo');
@@ -2898,9 +2898,23 @@ async function tryPushFirst(opts) {
         token: d.token,
         environment: d.environment,
         payload: payload,
-        collapseId: opts.localDate + ':' + opts.userId,
-        // Pointless to deliver this evening: it is a statement about today.
-        expirationEpochSeconds: Math.floor(Date.now() / 1000) + 6 * 3600
+        // Per user per RESULT STREAM, not per day (§4.12a, 2026-09-14):
+        // tomorrow's push replaces yesterday's in Notification Center. With
+        // the date in the id, days stacked, and an unread NO_TEST read the
+        // next morning sat above today's answer as a stale clearance.
+        // Same-day retries still collapse into one.
+        collapseId: 'result:' + opts.userId,
+        // MUST_TEST: NO expiry. Omitting the header means APNs stores the
+        // push under its storage policy and delivers when the phone comes
+        // back (Apple: "If you omit this header, APNs stores the push
+        // according to APNs storage policy"). Until 2026-09-14 this was
+        // now + 6h on both results, which discarded a 6 AM MUST_TEST at
+        // noon — six hours before Conroe closes at 5:45 PM.
+        // NO_TEST: end of the county's day. A clearance is a statement about
+        // today and must not arrive tomorrow.
+        expirationEpochSeconds: opts.result === 'NO_TEST'
+          ? endOfLocalDayEpochSeconds(opts.localDate, (opts.schedule && opts.schedule.timezone) || 'America/Chicago')
+          : null
       });
       // Prune only when BOTH environments called it dead — sendPushBothEnvironments
       // already ands the two together. Pruning on the first BadDeviceToken
@@ -7629,7 +7643,7 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
         var mustPushed = await tryPushFirst({
           userId: config.userId, result: 'MUST_TEST', localDate: pushLocalDate(config),
           callId: null, schedule: await pushSchedule(config.userId),
-          title: 'Test required today', body: 'Your PIN was called. Report for testing today.',
+          title: '🚨 Test required today', body: 'Your PIN was called. Report for testing today.',
           fallbackMessage: mustMsg
         });
         if (!mustPushed) await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, mustMsg, callId);
@@ -7651,7 +7665,7 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
           var noTestPushed = await tryPushFirst({
             userId: config.userId, result: 'NO_TEST', localDate: pushLocalDate(config),
             callId: null, schedule: noTestSched,
-            title: 'No test today', body: 'Your PIN was not called today.',
+            title: '✅ No test today', body: 'Your PIN was not called today.',
             fallbackMessage: noTestMsg
           });
           if (!noTestPushed) await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, noTestMsg, callId);
@@ -11404,7 +11418,7 @@ async function deliverFtbendNotification(row) {
       ftPushed = await tryPushFirst({
         userId: userId, result: ftVerdict, localDate: todayDate,
         callId: null, schedule: s,
-        title: ftVerdict === 'MUST_TEST' ? 'Test required today' : 'No test today',
+        title: ftVerdict === 'MUST_TEST' ? '🚨 Test required today' : '✅ No test today',
         body: ftVerdict === 'MUST_TEST'
           ? 'Today\'s color is ' + todayDisplay + '. Your color (' + colourLabel + ') was called. Report for testing today.'
           : 'Today\'s color is ' + todayDisplay + '. Your color (' + colourLabel + ') was not called.',

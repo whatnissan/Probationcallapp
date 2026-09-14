@@ -67,3 +67,29 @@ test('backoff bounds a morning to ~10 attempts, not ~52', function() {
   // The old flat-5-minute schedule would have allowed 53.
   assert.strictEqual(Math.ceil(265 / 5), 53);
 });
+
+// ---- endOfLocalDayEpochSeconds (§4.12a NO_TEST push expiry) ----
+const { endOfLocalDayEpochSeconds } = require('../lib/time');
+
+test('endOfLocalDayEpochSeconds: midnight Central, expressed in UTC', function() {
+  // 2026-09-14 ends at 2026-09-15 00:00 CDT = 05:00 UTC
+  assert.strictEqual(endOfLocalDayEpochSeconds('2026-09-14', CHI), Date.parse('2026-09-15T05:00:00Z') / 1000);
+  // Winter: CST is UTC-6
+  assert.strictEqual(endOfLocalDayEpochSeconds('2026-01-20', CHI), Date.parse('2026-01-21T06:00:00Z') / 1000);
+});
+
+test('endOfLocalDayEpochSeconds: DST transition days still end at local midnight', function() {
+  // 2026-03-08 is spring-forward (23-hour day); 2026-11-01 is fall-back (25-hour day).
+  assert.strictEqual(endOfLocalDayEpochSeconds('2026-03-08', CHI), Date.parse('2026-03-09T05:00:00Z') / 1000);
+  assert.strictEqual(endOfLocalDayEpochSeconds('2026-11-01', CHI), Date.parse('2026-11-02T06:00:00Z') / 1000);
+  // The instant returned is the FIRST second that is no longer that day.
+  var t = endOfLocalDayEpochSeconds('2026-11-01', CHI);
+  assert.strictEqual(formatLocalDay(new Date((t - 1) * 1000), CHI), '2026-11-01');
+  assert.strictEqual(formatLocalDay(new Date(t * 1000), CHI), '2026-11-02');
+});
+
+test('endOfLocalDayEpochSeconds: junk input is null, never a made-up expiry', function() {
+  assert.strictEqual(endOfLocalDayEpochSeconds('yesterday', CHI), null);
+  assert.strictEqual(endOfLocalDayEpochSeconds(null, CHI), null);
+  assert.strictEqual(endOfLocalDayEpochSeconds('2026-13-40', CHI), null);
+});
