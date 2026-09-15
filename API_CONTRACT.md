@@ -1568,7 +1568,7 @@ needs them before sign-in.
   "subscription": {
     "priceCents": 1499, "currency": "usd",
     "interval": "month", "intervalCount": 1,
-    "creditsPerPeriod": 30,
+    "creditsPerPeriod": 31,
     "asOf": "2026-09-02T18:40:11Z"
   },
   "credits": {
@@ -1588,6 +1588,44 @@ from Stripe (the live recurring Price), cached server-side for ten minutes, so
 a price change in the Stripe dashboard reaches the app without a release.
 `credits.tiers` is the very array the server charges from — the app renders it
 rather than mirroring the formula.
+
+**`creditsPerPeriod` is 31, not 30 (2026-09-15), and the app renders this
+field rather than the number.** A daily dialer spends 31 credits in a 31-day
+cycle, so a 30-credit grant eroded the balance by one every long month until
+the subscriber hit zero at 6 AM, was paused, and lost that morning — the
+renewal grant landed hours later and nothing re-dialled it. Twelve grants of
+31 is 372 against 365 days: every month covered, a small surplus instead of a
+deficit. The first payment and every renewal grant the same 31. The count is
+server-owned: it lives in one constant, is written to the ledger and the
+purchases row by the `invoice.paid` webhook, and does not exist in Stripe at
+all. Any copy that says "30 credits" is wrong as of this date; the one-time
+month pass stays at 30 on purpose, because a one-time buyer gets 30 days for
+30 credits and is not eroded month over month.
+
+**Low-credit warnings and subscribers (2026-09-15).** The low-balance warning
+(three credits or fewer, checked after each deduction, email plus SMS if
+chosen) is **suppressed while `subscription_status` is `active` and the
+subscription is not cancelling.** Their renewal is coming on its own, and the
+copy says "top up", which to someone whose card is about to be charged reads
+as the subscription failing — on a 30-credit grant every daily dialer got it
+three mornings a month, every month. A **cancelling** subscriber keeps the
+warning: they are a one-time buyer in slow motion. A **`past_due`**
+subscriber keeps it too: their card already failed and running out is now
+real.
+
+**A failed renewal payment is the one moment a subscriber has to act, and it
+now says so (2026-09-15).** On `invoice.payment_failed` the server sets
+`past_due` and sends **one notice per failed invoice** — subject "Your
+payment didn't go through" — saying the card was declined for the amount,
+Stripe will retry over the next few days, no credits are added until a
+payment succeeds, and to update the card under Manage subscription. Keyed on
+the invoice id against the durable notification log, so Stripe's retry
+attempts of the same invoice never repeat it. If the balance then reaches
+zero, the pause notice says the payment failed rather than "add credits". A
+later successful payment grants the 31, and the existing auto-resume turns
+the schedule back on and says "you're back on". Until this date the handler
+set `past_due` and logged, and the person heard nothing until the morning
+they were paused.
 
 **Tier math, for display.** Tiers are marginal: credits 1–30 cost 50¢ each,
 31–90 cost 42¢ each, 91+ cost 33¢ each, then apply `minimumCents` as a floor.

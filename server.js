@@ -875,7 +875,26 @@ async function deductCreditOnce(userId, idempotencyKey, options) {
       // Threshold 3, not 2: with pause-on-first-zero the warning is the only
       // thing standing between a user and a paused morning, and 3 gives a
       // weekend's margin to top up.
-      if (extended === 0 && newCredits <= 3 && options.notifyNumber !== undefined) {
+      //
+      // NOT for an ACTIVE, non-cancelling subscriber (§4.13a, 2026-09-15).
+      // Their renewal is coming on its own and the copy says "top up", which
+      // to someone whose card is about to be charged reads as the
+      // subscription failing — and on a 30-credit grant every daily dialer
+      // got it three mornings a month, every month. A CANCELLING subscriber
+      // keeps the warning: they are a one-time buyer in slow motion. A
+      // PAST_DUE subscriber keeps it too: their card already failed, the
+      // payment-failed notice said so, and running out is now real. One
+      // profile read, at most three mornings a month per user.
+      var subscriberQuiet = false;
+      if (extended === 0 && newCredits <= 3) {
+        try {
+          var subProf = await supabase.from('profiles')
+            .select('subscription_status, subscription_cancel_at_period_end').eq('id', userId).maybeSingle();
+          subscriberQuiet = !!(subProf.data && subProf.data.subscription_status === 'active' && !subProf.data.subscription_cancel_at_period_end);
+        } catch (e) { /* unknown status reads as not a subscriber: warn rather than stay silent */ }
+        if (subscriberQuiet) console.log('[LOW-CREDIT] suppressed for ' + userId.slice(0, 8) + ' — active subscription renews on its own (' + newCredits + ' left)');
+      }
+      if (extended === 0 && newCredits <= 3 && !subscriberQuiet && options.notifyNumber !== undefined) {
         sendLowCreditAlert(userId, newCredits, options.notifyNumber, options.notifyEmail, options.notifyMethod);
       }
     } else {
@@ -2733,6 +2752,24 @@ function pushFallbackMinutes() {
 // Fort Bend), so this gate is the push half of one policy, not a push-only
 // exception. UNKNOWN is never suppressed anywhere: "call the hotline yourself"
 // is an action item, and silence must never read as no test.
+// Pause-for-zero-credits copy (§4.13a, 2026-09-15). A subscriber whose card
+// failed is out of credits BECAUSE the payment failed; telling them to "add
+// credits" points at the wrong door. Same pause, same auto-resume on the
+// next successful grant — only the words and the subject differ.
+function pauseNoticeFor(profile) {
+  if (profile && profile.subscription_status === 'past_due') {
+    return {
+      kind: 'no_credits_pause_sub',
+      message: 'Your daily checks are paused — your subscription payment didn\'t go through and your credits ran out.\n\n' +
+        'Update your card at probationcall.com under Manage subscription. As soon as a payment succeeds your credits are added and your checks restart automatically.\n\n- ProbationCall.com'
+    };
+  }
+  return {
+    kind: 'no_credits_pause',
+    message: 'Your daily checks are paused — your credits ran out.\n\nAdd credits and we\'ll restart them automatically. You won\'t need to set anything up again:\nprobationcall.com\n\n- ProbationCall.com'
+  };
+}
+
 function pushAllowed(schedule, result) {
   if (!schedule) return true;
   if (!schedule.quiet_mode) return true;
@@ -5998,7 +6035,7 @@ function rescheduleUser(userId, sched) {
     setTimeout(async function() {
       console.log('[SCHED] Running for ' + userId.slice(0,8) + '... (after ' + staggerMinutes + 'm stagger)');
       try {
-        var profileResult = await supabase.from('profiles').select('credits, email, is_disabled, is_demo').eq('id', userId).single();
+        var profileResult = await supabase.from('profiles').select('credits, email, is_disabled, is_demo, subscription_status').eq('id', userId).single();
         var profile = profileResult.data;
 
         if (!profile) return;
@@ -6041,7 +6078,7 @@ function rescheduleUser(userId, sched) {
           }
           if (pauseUpd.data && pauseUpd.data.length > 0) {
             console.log('[SCHED] No credits for ' + userId.slice(0, 8) + ' — schedule PAUSED (config kept)');
-            await notify(sched.notify_number, sched.notify_email, sched.notify_method, 'Your daily checks are paused — your credits ran out.\n\nAdd credits and we\'ll restart them automatically. You won\'t need to set anything up again:\nprobationcall.com\n\n- ProbationCall.com', 'no_credits_pause');
+            await notify(sched.notify_number, sched.notify_email, sched.notify_method, pauseNoticeFor(profile).message, pauseNoticeFor(profile).kind);
           }
           return;
         }
@@ -6080,7 +6117,17 @@ async function loadAllSchedules() {
 // === SUBSCRIPTION SUPPORT ===
 // All subscription handlers below intentionally DO NOT touch affiliate /
 // commission code. Affiliate program is off for subscriptions per policy.
-const SUBSCRIPTION_CREDITS_PER_PAYMENT = 30;
+// 31, not 30 (2026-09-15). A daily dialer spends 31 credits in a 31-day
+// cycle, so a 30-credit grant eroded the buffer by one every long month
+// until the subscriber hit zero at 6 AM, was paused, and lost that morning
+// — the grant landed hours later and nothing re-dialled it. Twelve grants
+// of 31 is 372 against 365 days: every month covered, a small surplus
+// instead of a deficit. First payment and renewals alike; the first cycle
+// is as likely to be 31 days as any other. The one-time month pass stays
+// at 30 on purpose: a buyer gets 30 days for 30 credits and is not eroded
+// month over month, which only renewal does. The count lives HERE and
+// nowhere in Stripe; /pricing echoes it as creditsPerPeriod (§4.13a).
+const SUBSCRIPTION_CREDITS_PER_PAYMENT = 31;
 
 // Locate the profile that owns a subscription. Prefer subscription metadata
 // (set at Checkout creation time so it's stable across renewals); fall back
@@ -6328,6 +6375,49 @@ async function handleSubscriptionInvoicePaid(invoice, res) {
   }
 }
 
+// One notice per failed INVOICE, on the channels the person chose. Stripe
+// sends invoice.payment_failed on EVERY retry attempt of the same invoice
+// (smart retries run over days), so the key is the invoice id, checked
+// against notification_log — the durable record the send helpers already
+// write under `kind` — never memory, which a redeploy would empty. A
+// failed idempotency read skips THIS attempt rather than risking a
+// duplicate; the next retry attempt checks again. Email always (running
+// out is account-critical and email is the channel every account has),
+// SMS only if they asked for it; sendSMS refuses an opted-out number.
+async function notifySubscriptionPaymentFailed(profile, invoice) {
+  if (!profile || !invoice || !invoice.id) return;
+  var key = 'sub_payment_failed:' + invoice.id;
+  var prior = await supabase.from('notification_log').select('id').eq('kind', key).limit(1);
+  if (prior.error) {
+    console.error('[SUB-FAILED] idempotency read failed for ' + invoice.id + ' — not sending on this attempt:', prior.error.message);
+    return;
+  }
+  if (prior.data && prior.data.length) {
+    console.log('[SUB-FAILED] ' + profile.id.slice(0, 8) + ' already told about ' + invoice.id);
+    return;
+  }
+  var sched = await supabase.from('user_schedules')
+    .select('notify_number, notify_email, notify_method').eq('user_id', profile.id).maybeSingle();
+  var s = (sched && sched.data) || {};
+  var email = s.notify_email || profile.email || null;
+  var phone = s.notify_number || null;
+  var wantsSms = (s.notify_method === 'sms' || s.notify_method === 'both');
+  var amount = Number.isFinite(invoice.amount_due) ? '$' + (invoice.amount_due / 100).toFixed(2) : 'this month\'s payment';
+  var msg = 'Your subscription payment didn\'t go through.\n\n' +
+    'Your card was declined for ' + amount + '. We\'ll try again over the next few days, but your daily checks only run while you have credits, and no credits are added until a payment succeeds.\n\n' +
+    'Update your card at probationcall.com under Manage subscription and the next attempt will go through.\n\n- ProbationCall.com';
+  var sent = 0;
+  if (email) {
+    var er = await sendEmail(email, msg, key, 'sub_payment_failed').catch(function(e) { console.error('[SUB-FAILED] email failed:', e.message); return null; });
+    if (er && er.success) sent++;
+  }
+  if (phone && wantsSms) {
+    var sr = await sendSMS(phone, msg, key).catch(function(e) { console.error('[SUB-FAILED] SMS failed:', e.message); return null; });
+    if (sr && sr.success) sent++;
+  }
+  console.log('[SUB-FAILED] ' + profile.id.slice(0, 8) + ' told about ' + invoice.id + ' on ' + sent + ' channel(s)');
+}
+
 async function handleSubscriptionInvoicePaymentFailed(invoice, res) {
   try {
     var refs = extractInvoiceSubscriptionRefs(invoice);
@@ -6364,6 +6454,14 @@ async function handleSubscriptionInvoicePaymentFailed(invoice, res) {
       safeFields: { subscription_status: 'past_due' },
       idFields: failIdBackfill,
       label: 'invoice.payment_failed'
+    });
+    // The one moment a subscriber has to act (§4.13a, 2026-09-15). Until
+    // now this handler set past_due and logged; the person heard nothing
+    // until the morning their balance hit zero, and then a message telling
+    // them to "add credits". Never fatal to the webhook: Stripe must get its
+    // 200 whether or not the notice went out.
+    await notifySubscriptionPaymentFailed(profile, invoice).catch(function(e) {
+      console.error('[SUB-FAILED] notice threw for ' + profile.id.slice(0, 8) + ':', e.message);
     });
     console.log('[STRIPE WEBHOOK] Subscription payment FAILED: user=' + profile.id.slice(0, 8) + ' invoice=' + invoice.id
       + (Object.keys(failIdBackfill).length ? ' backfill=' + JSON.stringify(failIdBackfill) + (failRes.idsDropped ? ' (DROPPED on conflict)' : '') : ''));
@@ -8224,6 +8322,8 @@ var EMAIL_SUBJECTS = {
   sms_opt_out_noop:   { subject: 'Texts stopped — nothing else changes', stamp: false, emoji: '📧' },
   // Schedule state changes
   no_credits_pause:   { subject: 'Your daily checks are paused — out of credits', stamp: false, emoji: '⏸', color: '#f59e0b' },
+  no_credits_pause_sub: { subject: 'Your daily checks are paused — your payment didn\'t go through', stamp: false, emoji: '⏸', color: '#ef4444' },
+  sub_payment_failed: { subject: 'Your payment didn\'t go through', stamp: false, emoji: '💳', color: '#ef4444' },
   resume:             { subject: 'Your daily checks have restarted', stamp: false, emoji: '▶️', color: '#22c55e' },
   earned_extension:   { subject: 'We added credits so your checks keep running', stamp: false, emoji: '🎁', color: '#22c55e' },
   unknown_streak:     { subject: 'Your daily checks are paused — we couldn\'t read your results', stamp: false, emoji: '⏸', color: '#f59e0b' },
@@ -11368,7 +11468,7 @@ async function deliverFtbendNotification(row) {
     if (ftPause.error) {
       console.error('[FTBEND] Pause failed for ' + userId.slice(0, 8) + ':', ftPause.error.message);
     } else if (ftPause.data && ftPause.data.length > 0) {
-      await notify(s.notify_number, s.notify_email, s.notify_method, 'Your daily checks are paused — your credits ran out.\n\nAdd credits and we\'ll restart them automatically. You won\'t need to set anything up again:\nprobationcall.com\n\n- ProbationCall.com', 'no_credits_pause');
+      await notify(s.notify_number, s.notify_email, s.notify_method, pauseNoticeFor(profile).message, pauseNoticeFor(profile).kind);
     }
     await supabase.from('call_history').insert({ user_id: userId, target_number: FTBEND_OFFICES[oid] ? FTBEND_OFFICES[oid].number : COUNTIES.ftbend.number, result: 'NO_CREDITS', county: 'ftbend', ftbend_office: oid });
     return;
@@ -11940,7 +12040,7 @@ cron.schedule('45 * * * *', async function() {
     console.log('[RECOVERY] MISSED CALL detected for user ' + sched.user_id.slice(0,8) + '... (scheduled ' + schedHour + ':' + String(schedMin).padStart(2,'0') + ')');
     
     // Get user profile and credits
-    var profileResult = await supabase.from('profiles').select('credits, email, is_disabled, is_demo').eq('id', sched.user_id).single();
+    var profileResult = await supabase.from('profiles').select('credits, email, is_disabled, is_demo, subscription_status').eq('id', sched.user_id).single();
     var profile = profileResult.data;
     if (!profile) continue;
     if (profile.is_disabled) {
