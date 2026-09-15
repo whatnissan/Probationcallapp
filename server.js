@@ -2096,6 +2096,7 @@ app.get('/api/v1/me', authV1, async function(req, res) {
     }
 
     var sched = await supabase.from('user_schedules').select('*').eq('user_id', req.user.id).maybeSingle();
+    var consentOnFile = await hasSmsConsent(req.user.id);
 
     var probEnd = profile.probation_end_date || null;
     var daysRemaining = null, creditsNeeded = null;
@@ -2124,6 +2125,14 @@ app.get('/api/v1/me', authV1, async function(req, res) {
       phone: {
         verifiedNumber: profile.verified_phone || null,
         verifiedAt: profile.verified_phone_at || null
+      },
+      // §3 smsConsent — the A2P record, and the re-confirmation flag the
+      // web dashboard has carried since 2026-08-27. Until 2026-09-15 the
+      // app never saw it, so an app-only pre-migration SMS user could never
+      // clear the prompt. Never gates delivery.
+      smsConsent: {
+        onFile: consentOnFile,
+        needsReconfirm: !consentOnFile && !!(sched.data && ['sms', 'both'].indexOf(sched.data.notify_method) >= 0)
       },
       credits: {
         balance: profile.credits || 0,
@@ -3207,6 +3216,41 @@ app.post('/api/v1/phone/verify/check', authV1, rateLimit('verify_check', 20, 10 
     res.json({ verified: true, phoneLast4: phoneVerify.phoneLast4(phone), verifiedAt: nowIso });
   } catch (e) {
     console.error(tag + ' check error:', e.message);
+    return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+  }
+});
+
+// §4.19 — the app side of the re-confirmation prompt. Same append-only row
+// the web prompt records (source 'reconfirm_prompt'), for the number the
+// schedule texts today. Idempotent by state: consent already on file means
+// nothing is written. Deliberately NOT behind the §4.7 phone_not_verified
+// gate — the number is already being texted, and the row proves consent,
+// not possession. Notifications are never gated on any of this.
+app.post('/api/v1/sms-consent/reconfirm', authV1, async function(req, res) {
+  var tag = '[SMS-CONSENT] ' + req.user.id.slice(0, 8);
+  try {
+    var b = req.body || {};
+    if (b.smsConsent !== true) {
+      return v1Error(res, 400, 'validation_failed', 'Check the box to confirm SMS consent.', false, 'smsConsent');
+    }
+    var sched = await supabase.from('user_schedules')
+      .select('notify_method, notify_number').eq('user_id', req.user.id).maybeSingle();
+    if (sched.error) {
+      console.error(tag + ' schedule read failed:', sched.error.message);
+      return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+    }
+    if (!sched.data || ['sms', 'both'].indexOf(sched.data.notify_method) < 0) {
+      return v1Error(res, 409, 'nothing_to_confirm', 'Your notifications are not set to text, so there is nothing to confirm.');
+    }
+    if (await hasSmsConsent(req.user.id)) {
+      return res.json({ onFile: true, recorded: false });
+    }
+    var ok = await recordSmsConsent(req.user.id, sched.data.notify_number, req, 'reconfirm_prompt');
+    if (!ok) return v1Error(res, 500, 'internal', 'Could not save your confirmation. Please try again.', true);
+    console.log(tag + ' reconfirmed via app (…' + String(sched.data.notify_number || '').slice(-4) + ')');
+    res.json({ onFile: true, recorded: true });
+  } catch (e) {
+    console.error(tag + ' reconfirm error:', e.message);
     return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
   }
 });
