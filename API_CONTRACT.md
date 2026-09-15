@@ -247,6 +247,7 @@ bad connection, one round trip beats five.**
     "createdAt": "2026-05-02T14:22:10-05:00"
   },
   "phone": { "verifiedNumber": "+12815550142", "verifiedAt": "2026-09-02T20:41:07Z" },
+  "smsConsent": { "onFile": true, "needsReconfirm": false },
   "credits": {
     "balance": 47,
     "probationEndDate": "2027-01-02",
@@ -302,6 +303,32 @@ and forgetting lands straight back on "0 days left".
 **`creditsNeeded` stays clamped at 0** and never goes negative: you do not
 need credits for days that have already elapsed. So the two fields diverge
 once the date passes, deliberately.
+
+**`smsConsent`** `{onFile, needsReconfirm}` (2026-09-15). `onFile` is
+whether an `sms_consents` row exists for the account — the A2P opt-in
+record, written by `PUT /schedule` and §4.17 when `smsConsent: true` is
+sent, and by §4.19. `needsReconfirm` is `!onFile && notifyMethods includes
+sms` on the schedule: a schedule that is texting a number with no consent
+record behind it. That is every SMS user who signed up on the website
+before 2026-08-24, when consent was a browser-side checkbox that was never
+persisted. The website has shown those users a one-time re-confirmation
+prompt since 2026-08-27; the app could not, because `/me` did not carry the
+flag — an app-only user was stuck with `needsReconfirm` forever with no way
+to clear it.
+
+When `needsReconfirm` is true the app shows the same prompt the website
+does, once per launch at most, after onboarding and terms: the number the
+account is texted at, the sentence "We're tidying up our records — please
+confirm you're happy to keep receiving them", the carrier consent text
+verbatim (the same block onboarding shows), an unchecked box, and a
+"Confirm — keep texting me" button that posts §4.19. Offer "Prefer email
+instead?" as the quiet alternative, which is a `PUT /schedule` with
+`notifyMethods: ["email"]` (or `["push","email"]`) and nothing else changed.
+
+**Notifications are never gated on this flag.** It exists to build the
+record, not to threaten delivery: a `needsReconfirm` user keeps getting
+texts whether or not they ever confirm. Do not render it as a warning, a
+badge, or a blocker, and never as anything that reads like a result.
 
 **`subscription`** `{status, cancelAtPeriodEnd, currentPeriodEnd} | null`
 (2026-09-15, migration 056). `null` means the account has never subscribed.
@@ -2290,6 +2317,40 @@ error as an empty directory either.
 stops being returned; the row is kept server-side so the record it existed
 survives. A client holding a cached office that is no longer listed should
 drop it.
+
+### 4.19 `POST /sms-consent/reconfirm`
+
+The app side of the re-confirmation prompt (§3 `smsConsent`). Records the
+same append-only `sms_consents` row a schedule save records, sourced
+`reconfirm_prompt`, for the number the schedule texts today.
+
+```json
+POST /sms-consent/reconfirm   { "smsConsent": true }
+→ { "onFile": true, "recorded": true }
+```
+
+**`smsConsent` must be literally `true`** — the box was checked. Anything
+else is `400 validation_failed`, `field: "smsConsent"`. The server records
+the consent text version it knows the client showed, so the app must show
+the verbatim carrier text before enabling the button.
+
+**`409 nothing_to_confirm`** when the account has no schedule or the
+schedule's `notifyMethods` does not include `sms`: there is nothing to
+consent to. The app should not be able to reach this — `needsReconfirm`
+was false — but a stale `/me` can.
+
+**Idempotent by state, not by row.** If consent is already on file the
+response is `{ "onFile": true, "recorded": false }` and nothing is written;
+a retried request never produces a second row. After a `recorded: true`
+the app re-reads `/me` and `needsReconfirm` is false.
+
+**Does not require a verified number.** This is the one SMS-related write
+that skips the §4.7 `phone_not_verified` gate, deliberately: the number is
+already being texted, the prompt exists to document that, and the person
+answering it may well be a website user opening the app for the first
+time, with a number that predates verification. Verification is not
+weakened by this — the row proves consent, not possession, and nothing
+reads it as possession.
 
 ## 5. Build order
 
