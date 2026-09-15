@@ -248,6 +248,9 @@ bad connection, one round trip beats five.**
   },
   "phone": { "verifiedNumber": "+12815550142", "verifiedAt": "2026-09-02T20:41:07Z" },
   "smsConsent": { "onFile": true, "needsReconfirm": false },
+  "promo": [
+    { "code": "BAILBONDS", "redeemedAt": "2026-09-08T15:02:11Z", "credits": 5 }
+  ],
   "credits": {
     "balance": 47,
     "probationEndDate": "2027-01-02",
@@ -329,6 +332,40 @@ instead?" as the quiet alternative, which is a `PUT /schedule` with
 record, not to threaten delivery: a `needsReconfirm` user keeps getting
 texts whether or not they ever confirm. Do not render it as a warning, a
 badge, or a blocker, and never as anything that reads like a result.
+
+**`promo`** `PromoRedemption[] | null` (2026-09-15, build 16). Every promo
+code the account has redeemed (§4.14a), newest first; `[]` when none.
+Until this landed nothing on the wire carried a redemption — the person
+saw the confirmation once in onboarding and it was gone, and an office
+asking "did that work?" a week later had nothing to look at. The app
+renders the latest on Account as a fact: "Code BAILBONDS applied
+8 Sep, 5 credits."
+
+- `code` — the code as redeemed, uppercase.
+- `redeemedAt` — `promo_redemptions.created_at`, the moment the claim was
+  written. The table predates the migrations directory; the column was
+  verified live on 2026-09-15.
+- `credits` `integer | null` — what the code granted **at the time**, read
+  from the credit ledger row the redemption wrote (`credit_transactions`,
+  source `promo`), never from today's value on `promo_codes`, which an
+  admin can edit after the fact. `null` when the redemption predates the
+  ledger (migration 002, 2026-05-19): one live account is in that state.
+  Render "credits applied" without a number, not 0.
+
+**An array because an account can hold several.** `/redeem` refuses
+`promo_already_used` per code, not per account, so a second code is a
+second row. The app shows the latest and may list the rest.
+
+**Not on the wire, deliberately:** `referred_by` and the affiliate. That
+is the affiliate's record, an admin can change it, and rendering it to the
+user invites a question the app cannot answer. The code IS the
+affiliate's code, so the office's question is already answered by `code`.
+
+**`null` means the read failed, not that nothing was redeemed.** `/me` is
+the bootstrap call and must not fail over a cosmetic field, so a database
+error here logs server-side and returns `null`; the app renders nothing
+and does not say "no code applied". `[]` is the only value that means
+that.
 
 **`subscription`** `{status, cancelAtPeriodEnd, currentPeriodEnd} | null`
 (2026-09-15, migration 056). `null` means the account has never subscribed.

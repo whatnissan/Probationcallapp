@@ -2097,6 +2097,7 @@ app.get('/api/v1/me', authV1, async function(req, res) {
 
     var sched = await supabase.from('user_schedules').select('*').eq('user_id', req.user.id).maybeSingle();
     var consentOnFile = await hasSmsConsent(req.user.id);
+    var promoRedemptions = await readPromoRedemptions(req.user.id);
 
     var probEnd = profile.probation_end_date || null;
     var daysRemaining = null, creditsNeeded = null;
@@ -2134,6 +2135,9 @@ app.get('/api/v1/me', authV1, async function(req, res) {
         onFile: consentOnFile,
         needsReconfirm: !consentOnFile && !!(sched.data && ['sms', 'both'].indexOf(sched.data.notify_method) >= 0)
       },
+      // §3 promo — every code the account redeemed, newest first, with the
+      // credits the ledger says landed at the time. null = read failed.
+      promo: promoRedemptions,
       credits: {
         balance: profile.credits || 0,
         probationEndDate: probEnd,
@@ -3219,6 +3223,49 @@ app.post('/api/v1/phone/verify/check', authV1, rateLimit('verify_check', 20, 10 
     return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
   }
 });
+
+// §3 promo. The redemption row is the claim (promo_redemptions, one per
+// user per code by unique index — migration 012); the credits come from
+// the ledger row the same redemption wrote, matched on user + source
+// 'promo' + the note both redeem paths write ('Promo code: X'), so an
+// admin editing promo_codes.credits later cannot rewrite history. A
+// redemption older than the ledger (migration 002, 2026-05-19) has no row
+// to match and reports credits: null. Never throws: /me must not fail over
+// this, so a read error returns null (contract: "could not be read", not
+// "nothing redeemed").
+async function readPromoRedemptions(userId) {
+  try {
+    var red = await supabase.from('promo_redemptions')
+      .select('promo_code_id, created_at').eq('user_id', userId)
+      .order('created_at', { ascending: false });
+    if (red.error) throw new Error('promo_redemptions: ' + red.error.message);
+    if (!red.data || !red.data.length) return [];
+    var ids = red.data.map(function(r) { return r.promo_code_id; });
+    var codes = await supabase.from('promo_codes').select('id, code').in('id', ids);
+    if (codes.error) throw new Error('promo_codes: ' + codes.error.message);
+    var byId = {};
+    (codes.data || []).forEach(function(c) { byId[c.id] = String(c.code || '').toUpperCase(); });
+    var led = await supabase.from('credit_transactions').select('amount, note')
+      .eq('user_id', userId).eq('source', 'promo');
+    if (led.error) throw new Error('credit_transactions: ' + led.error.message);
+    var granted = {};
+    (led.data || []).forEach(function(t) {
+      var m = /^promo code:\s*([A-Z0-9]+)/i.exec(String(t.note || ''));
+      if (m && granted[m[1].toUpperCase()] === undefined) granted[m[1].toUpperCase()] = t.amount;
+    });
+    return red.data.map(function(r) {
+      var code = byId[r.promo_code_id] || null;
+      return {
+        code: code,
+        redeemedAt: r.created_at,
+        credits: code && granted[code] !== undefined ? granted[code] : null
+      };
+    }).filter(function(x) { return x.code; });
+  } catch (e) {
+    console.error('[PROMO] /me read failed for ' + userId.slice(0, 8) + ':', e.message);
+    return null;
+  }
+}
 
 // §4.19 — the app side of the re-confirmation prompt. Same append-only row
 // the web prompt records (source 'reconfirm_prompt'), for the number the
