@@ -3597,12 +3597,15 @@ async function runPushFallbackSweep() {
         var msg = d.fallback_message || (d.result === 'MUST_TEST'
           ? '🚨 TEST REQUIRED today.\n\nReport for testing today.\n\n- ProbationCall.com'
           : '✅ No test today.\n\n- ProbationCall.com');
-        await notify(sched.data.notify_number, sched.data.notify_email, sched.data.notify_method, msg, 'push_fallback');
+        var sent = await notify(sched.data.notify_number, sched.data.notify_email, sched.data.notify_method, msg, 'push_fallback');
         await supabase.from('push_deliveries').update({
           fallback_sent_at: new Date().toISOString(),
           fallback_reason: d.fallback_reason || 'unread'
         }).eq('id', d.id);
-        console.log('[PUSH-FALLBACK] SMS sent for ' + d.user_id.slice(0, 8) + ' (' + (d.fallback_reason || 'unread') + ', ' + d.result + ')');
+        // Log the channel that delivered, not the method: they differ.
+        var who = d.user_id.slice(0, 8) + ' (' + (d.fallback_reason || 'unread') + ', ' + d.result + ', method=' + (sched.data.notify_method || 'none') + ')';
+        if (sent && sent.success) console.log('[PUSH-FALLBACK] ' + sent.channel + ' sent for ' + who);
+        else console.error('[PUSH-FALLBACK] NOTHING delivered for ' + who + ': ' + ((sent && sent.error) || 'unknown'));
       } catch (inner) {
         // One user's failure must not stop the sweep for everyone else.
         console.error('[PUSH-FALLBACK] failed for ' + d.user_id.slice(0, 8) + ':', inner.message);
@@ -4075,6 +4078,8 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
       notify_number: notifyNumber,
       notify_email: notifyEmail,
       notify_method: notifyMethod,
+      // A saved method is the user's choice; a later START must not undo it.
+      notify_method_before_optout: null,
       hour: hour,
       minute: minute,
       timezone: tz,
@@ -4239,6 +4244,11 @@ app.post('/api/v1/schedule/resume', authV1, async function(req, res) {
         }
         resumeFields.notify_method = 'email';
         resumeFields.notify_email = em;
+        // This switch is the opt-out's doing, not the user's (§2), so START
+        // may undo it the same way it undoes the STOP-time switch.
+        if (cur.data.notify_method === 'sms' || cur.data.notify_method === 'both') {
+          resumeFields.notify_method_before_optout = cur.data.notify_method;
+        }
       }
     }
     var upd = await supabase.from('user_schedules')
@@ -5866,7 +5876,7 @@ app.post('/api/notify-method', auth, async function(req, res) {
     return res.status(400).json({ error: 'No email address on file — add one on the Schedule page first.' });
   }
   var upd = await supabase.from('user_schedules')
-    .update({ notify_method: 'email', notify_email: email })
+    .update({ notify_method: 'email', notify_email: email, notify_method_before_optout: null })
     .eq('user_id', req.user.id);
   if (upd.error) {
     console.error('[NOTIFY-METHOD] switch failed for ' + req.user.id.slice(0, 8) + ':', upd.error.message);
@@ -5952,6 +5962,8 @@ app.post('/api/schedule', auth, async function(req, res) {
     notify_number: notifyNumber,
     notify_email: notifyEmail,
     notify_method: notifyMethod,
+    // A saved method is the user's choice; a later START must not undo it.
+    notify_method_before_optout: null,
     hour: hour,
     minute: minute,
     timezone: tz,
@@ -8347,8 +8359,14 @@ async function notify(phone, email, method, message, callId, kind) {
   // the log key so notification_log still links the row to its call.
   log(callId, 'Notifying via ' + method, 'info');
   
+  // Every return carries `channel`: the channel(s) that actually delivered,
+  // which is not always `method` (an opted-out SMS falls back to email;
+  // 'both' may land on one side only). Callers that log must log THIS, not
+  // the method — the push-fallback sweep printed "SMS sent" for seven
+  // emails on 2026-09-15 and sent an investigation the wrong way.
   if (method === 'email' && email) {
-    return await sendEmail(email, message, callId, kind);
+    var emailOnly = await sendEmail(email, message, callId, kind);
+    return Object.assign({}, emailOnly, { channel: emailOnly.success ? 'email' : 'none' });
   }
   if (method === 'sms' && phone) {
     var smsResult = await sendSMS(phone, message, callId);
@@ -8358,22 +8376,34 @@ async function notify(phone, email, method, message, callId, kind) {
     // use it rather than let a MUST_TEST vanish.
     if (smsResult && smsResult.opted_out && email) {
       log(callId, 'SMS opted out — falling back to email', 'info');
-      return await sendEmail(email, message, callId, kind);
+      var fb = await sendEmail(email, message, callId, kind);
+      return Object.assign({}, fb, { channel: fb.success ? 'email (sms opted out)' : 'none' });
     }
-    return smsResult;
+    return Object.assign({}, smsResult, { channel: smsResult && smsResult.success ? 'sms' : 'none' });
   }
   if (method === 'both') {
-    var results = [];
-    if (email) results.push(await sendEmail(email, message, callId, kind));
-    if (phone) results.push(await sendSMS(phone, message, callId));
-    return { success: results.some(function(r) { return r.success; }) };
+    var delivered = [];
+    var failures = [];
+    if (email) {
+      var er = await sendEmail(email, message, callId, kind);
+      if (er.success) delivered.push('email'); else failures.push('email: ' + (er.error || 'failed'));
+    }
+    if (phone) {
+      var sr = await sendSMS(phone, message, callId);
+      if (sr.success) delivered.push('sms'); else failures.push('sms: ' + (sr.error || 'failed'));
+    }
+    return {
+      success: delivered.length > 0,
+      channel: delivered.length ? delivered.join('+') : 'none',
+      error: failures.length ? failures.join('; ') : undefined
+    };
   }
   // WhatsApp channel removed 2026-08-24 — unreliable in production, and zero
   // schedules used it (verified against prod before removal). An unknown
   // method now falls through to the error below instead of a dead channel.
 
   log(callId, 'No valid notification method', 'error');
-  return { success: false, error: 'No notification method' };
+  return { success: false, error: 'No notification method', channel: 'none' };
 }
 
 
@@ -8581,22 +8611,24 @@ async function applySmsOptOutToUser(userId, e164) {
         'Text messages stopped.\n\n' +
         'You replied STOP, so we won\'t text that number again.\n\n' +
         'Your daily check-in result already goes to this email address — nothing else changes.\n\n' +
-        'Changed your mind? Reply START to the same number and texts resume.\n\n- ProbationCall.com',
+        'Changed your mind? Reply START to the same number and we can text it again.\n\n- ProbationCall.com',
         'sms_opt_out_noop').catch(function(e) { console.error('[SMS-IN] opt-out email failed:', e.message); });
     }
     return;
   }
 
   if (email) {
+    // Remember what the STOP replaced (migration 057) so START can put it
+    // back. Only sms/both reach this branch, which is all the column allows.
     var upd = await supabase.from('user_schedules')
-      .update({ notify_method: 'email', notify_email: email })
+      .update({ notify_method: 'email', notify_email: email, notify_method_before_optout: method })
       .eq('user_id', userId);
     if (upd.error) console.error('[SMS-OPTOUT] could not switch ' + userId.slice(0, 8) + ' to email:', upd.error.message);
-    else console.log('[SMS-OPTOUT] ' + userId.slice(0, 8) + ' (' + tail + ') switched ' + method + ' -> email');
+    else console.log('[SMS-OPTOUT] ' + userId.slice(0, 8) + ' (' + tail + ') switched ' + method + ' -> email (prior kept for START)');
     await sendEmail(email,
       'Text messages stopped — your results now come by email.\n\n' +
       'You replied STOP, so we won\'t text you again. We\'ve switched your daily check-in result to this email address instead, so you won\'t miss a test day. Your schedule is still running and nothing else changes.\n\n' +
-      'Check this inbox each morning. If you\'d rather get texts again, reply START to the same number and then turn SMS back on at probationcall.com.\n\n- ProbationCall.com',
+      'Check this inbox each morning. If you\'d rather get texts again, reply START to the same number and your texts come back on by themselves.\n\n- ProbationCall.com',
       'sms_opt_out').catch(function(e) { console.error('[SMS-IN] opt-out email failed:', e.message); });
     return;
   }
@@ -8610,6 +8642,57 @@ async function applySmsOptOutToUser(userId, e164) {
     else console.log('[SMS-OPTOUT] ' + userId.slice(0, 8) + ' (' + tail + ') PAUSED — no email on file, no channel left');
   } else {
     console.log('[SMS-OPTOUT] ' + userId.slice(0, 8) + ' (' + tail + ') already paused (' + (s.paused_reason || 'unrecorded') + '), no email on file');
+  }
+}
+
+// START undoes the STOP-time switch to email (migration 057) — but only
+// when nothing moved in between: the schedule is still on email, the stored
+// prior is sms/both, and the number that texted START is still the
+// schedule's notify_number. Anything else means the user (or a later
+// STOP from a different number) made a choice since, so the schedule is
+// left as it is and the stored value is cleared rather than kept around to
+// fire on some later START. Every schedule on the number is considered:
+// one handset can be on two.
+async function restoreNotifyMethodAfterStart(e164) {
+  var tail = String(e164).slice(-4);
+  var cand = await supabase.from('user_schedules')
+    .select('user_id, notify_method, notify_number, notify_method_before_optout')
+    .eq('notify_number', e164)
+    .not('notify_method_before_optout', 'is', null);
+  if (cand.error) { console.error('[SMS-OPTOUT] restore lookup failed for ' + tail + ':', cand.error.message); return; }
+  var rows = cand.data || [];
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    var prior = r.notify_method_before_optout;
+    var uid = String(r.user_id).slice(0, 8);
+    var restorable = r.notify_method === 'email' &&
+      (prior === 'sms' || prior === 'both') &&
+      r.notify_number === e164;
+    if (!restorable) {
+      var clr = await supabase.from('user_schedules')
+        .update({ notify_method_before_optout: null })
+        .eq('user_id', r.user_id);
+      if (clr.error) console.error('[SMS-OPTOUT] could not clear stored prior for ' + uid + ':', clr.error.message);
+      else console.log('[SMS-OPTOUT] ' + uid + ' (' + tail + ') START: left on ' + r.notify_method + ' (stored prior ' + prior + ' cleared — changed since STOP)');
+      continue;
+    }
+    var upd = await supabase.from('user_schedules')
+      .update({ notify_method: prior, notify_method_before_optout: null })
+      .eq('user_id', r.user_id)
+      .eq('notify_method', 'email')
+      .eq('notify_method_before_optout', prior)
+      .select('user_id');
+    if (upd.error) { console.error('[SMS-OPTOUT] could not restore ' + uid + ' to ' + prior + ':', upd.error.message); continue; }
+    if (!upd.data || !upd.data.length) { console.log('[SMS-OPTOUT] ' + uid + ' (' + tail + ') changed under the START — not restored'); continue; }
+    console.log('[SMS-OPTOUT] ' + uid + ' (' + tail + ') START: restored email -> ' + prior);
+    // The opt-out row is already gone, so this send is the proof the
+    // channel works again. One line; Twilio has sent its own START reply.
+    try {
+      await sendSMS(e164,
+        'Texts are back on. Your daily check-in result comes to this number again' +
+        (prior === 'both' ? ' (and still by email)' : '') + '.\n\n- ProbationCall.com',
+        'sms_opt_in_restored');
+    } catch (e) { console.error('[SMS-OPTOUT] restore confirmation text failed for ' + uid + ':', e.message); }
   }
 }
 
@@ -10542,6 +10625,7 @@ app.post('/webhook/sms-incoming', validateTwilio, async function(req, res) {
         .eq('notify_number', e164).eq('paused_reason', 'sms_opted_out').select('user_id');
       if (back.error) console.error('[SMS-IN] could not resume sms_opted_out schedules for ' + String(e164).slice(-4) + ':', back.error.message);
       else if (back.data && back.data.length) console.log('[SMS-OPTOUT] resumed ' + back.data.length + ' schedule(s) paused for sms_opted_out on ' + String(e164).slice(-4));
+      await restoreNotifyMethodAfterStart(e164);
       return;
     }
 

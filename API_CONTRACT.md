@@ -162,6 +162,19 @@ Remedy copy: "switch to email", or reply START. START clears the opt-out and
 resumes schedules paused for this reason only, the same discipline as the
 `no_credits` auto-resume.
 
+**START restores the method (2026-09-15).** The switch to `email` that a
+STOP causes is the opt-out's doing, not the user's, so START undoes it: the
+server keeps the replaced method in `notify_method_before_optout` (`sms` or
+`both`) and puts it back on START **only** when the schedule is still on
+`email`, the stored prior is `sms`/`both`, and the number that texted START
+is still the schedule's `notify_number`. If anything moved in between, the
+schedule is left as it is and the stored value is cleared. Any user-driven
+write of `notifyMethods` (§4.7 save, the switch-to-email prompt) clears it
+too, so a deliberate choice of email is never undone by a later START. A
+restored schedule gets one confirmation text. Clients should expect
+`notifyMethods` to change underneath them on START as well as on STOP and
+re-read `/me`.
+
 **When the user DOES have an email, STOP does not pause anything.** The
 server switches `notify_method` to `email` (filling `notify_email` from the
 profile if the schedule had none), keeps the schedule running, keeps
