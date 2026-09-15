@@ -134,3 +134,27 @@ test('renderBrandedEmail: table-based layout, per CLAUDE.md rule 4', function() 
   assert.ok(out.html.indexOf('<table') > -1);
   assert.ok(out.html.indexOf('probationcall.com') > -1);
 });
+
+
+// ------------------------------------------------ smsStatusTransition
+const { smsStatusTransition } = require('../lib/messaging');
+test('status receipts: forward moves write, duplicates and late older ones do not', () => {
+  assert.deepEqual(smsStatusTransition(null, 'queued'), { deliveryStatus: 'queued', delivered: false, failed: false });
+  assert.deepEqual(smsStatusTransition('queued', 'sent'), { deliveryStatus: 'sent', delivered: false, failed: false });
+  assert.deepEqual(smsStatusTransition('sent', 'delivered'), { deliveryStatus: 'delivered', delivered: true, failed: false });
+  assert.equal(smsStatusTransition('delivered', 'sent'), null, 'a late sent must not undo delivered');
+  assert.equal(smsStatusTransition('delivered', 'delivered'), null, 'retry of the same status writes nothing');
+  assert.equal(smsStatusTransition('sent', 'sent'), null);
+});
+test('status receipts: terminal failures are recorded and never downgraded', () => {
+  assert.deepEqual(smsStatusTransition('sent', 'undelivered'), { deliveryStatus: 'undelivered', delivered: false, failed: true });
+  assert.deepEqual(smsStatusTransition(null, 'failed'), { deliveryStatus: 'failed', delivered: false, failed: true });
+  assert.equal(smsStatusTransition('undelivered', 'sent'), null);
+  assert.equal(smsStatusTransition('undelivered', 'delivered'), null, 'a failure and a delivery at equal rank keep the first word');
+});
+test('status receipts: unknown or empty statuses are ignored, case-insensitively otherwise', () => {
+  assert.equal(smsStatusTransition('sent', 'wat'), null);
+  assert.equal(smsStatusTransition('sent', ''), null);
+  assert.equal(smsStatusTransition('sent', undefined), null);
+  assert.deepEqual(smsStatusTransition('Sent', 'DELIVERED'), { deliveryStatus: 'delivered', delivered: true, failed: false });
+});

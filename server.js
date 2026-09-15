@@ -41,7 +41,7 @@ const { constructEventWithSecrets } = require('./lib/stripe-webhook');
 const apns = require('./lib/apns');
 const { fallbackFieldsFor } = require('./lib/push');
 const { isValidPin, isValidTimezone, isValidEmail, normalizePhoneE164, isValidSupportSubject, isValidSupportBody } = require('./lib/validation');
-const { toSmsText, smsSegmentInfo, looksLikeEmailContent, renderBrandedEmail } = require('./lib/messaging');
+const { toSmsText, smsSegmentInfo, looksLikeEmailContent, renderBrandedEmail, smsStatusTransition } = require('./lib/messaging');
 const { createBilling, logStripeError } = require('./lib/billing');
 
 
@@ -8273,6 +8273,45 @@ cron.schedule('0 3 * * *', async function() {
 // connect or produce audio.
 var TWILIO_TERMINAL_FAILURES = ['failed', 'no-answer', 'busy', 'canceled'];
 
+// Twilio message status receipts. One POST per transition (queued, sent,
+// delivered, undelivered, failed), keyed by MessageSid, which sendSMS stored
+// as notification_log.provider_message_id. This is the only place
+// delivery_status / delivered_at are written. Out-of-order and duplicate
+// receipts are decided by smsStatusTransition (lib/messaging, tested); the
+// row can lag the first receipt by a moment because sendSMS inserts it
+// after messages.create returns, so a miss retries once.
+app.post('/webhook/sms-status', validateTwilio, function(req, res) {
+  res.sendStatus(200);
+  var b = req.body || {};
+  var sid = b.MessageSid || b.SmsSid;
+  var status = b.MessageStatus || b.SmsStatus;
+  if (!sid || !status) return;
+  var tail = String(b.To || '').slice(-4);
+  var errCode = b.ErrorCode ? String(b.ErrorCode) : null;
+
+  async function apply(attempt) {
+    var cur = await supabase.from('notification_log')
+      .select('id, delivery_status, error')
+      .eq('provider_message_id', sid).limit(1);
+    if (cur.error) { console.error('[SMS-STATUS] lookup failed for ' + sid + ':', cur.error.message); return; }
+    if (!cur.data || !cur.data.length) {
+      if (attempt === 0) return setTimeout(function() { apply(1).catch(function(e) { console.error('[SMS-STATUS] retry error:', e.message); }); }, 3000);
+      console.warn('[SMS-STATUS] no notification_log row for ' + sid + ' (…' + tail + ', ' + status + ') — sent outside sendSMS?');
+      return;
+    }
+    var row = cur.data[0];
+    var t = smsStatusTransition(row.delivery_status, status);
+    if (!t) return;
+    var fields = { delivery_status: t.deliveryStatus };
+    if (t.delivered) fields.delivered_at = new Date().toISOString();
+    if (t.failed && !row.error) fields.error = 'Twilio ' + (errCode || t.deliveryStatus) + (b.ErrorMessage ? ': ' + String(b.ErrorMessage).slice(0, 200) : '');
+    var upd = await supabase.from('notification_log').update(fields).eq('id', row.id);
+    if (upd.error) { console.error('[SMS-STATUS] update failed for ' + sid + ':', upd.error.message); return; }
+    if (t.failed) console.error('[SMS-STATUS] …' + tail + ' ' + t.deliveryStatus + (errCode ? ' (' + errCode + ')' : '') + ' sid=' + sid);
+  }
+  apply(0).catch(function(e) { console.error('[SMS-STATUS] handler error:', e.message); });
+});
+
 app.post('/webhook/status', validateTwilio, async function(req, res) {
   var callId = req.query.callId;
   var callStatus = req.body.CallStatus;
@@ -8769,7 +8808,11 @@ async function sendSMS(to, message, callId) {
     var msg = await twilioClient.messages.create({
       messagingServiceSid: MESSAGING_SERVICE_SID,
       to: to,
-      body: message
+      body: message,
+      // Delivery receipts (migration 027 gave notification_log the columns;
+      // nothing wrote them until 2026-09-15). Without this, "sent" only
+      // means Twilio accepted the message.
+      statusCallback: process.env.BASE_URL + '/webhook/sms-status'
     });
     log(callId, 'SMS sent: ' + msg.sid, 'success');
     await logNotification({ channel: 'sms', kind: callId || 'sms', destination: to,
