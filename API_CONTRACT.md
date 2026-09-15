@@ -347,8 +347,8 @@ renders the latest on Account as a fact: "Code BAILBONDS applied
   verified live on 2026-09-15.
 - `credits` `integer | null` — what the code granted **at the time**, read
   from the credit ledger row the redemption wrote (`credit_transactions`,
-  source `promo`), never from today's value on `promo_codes`, which an
-  admin can edit after the fact. `null` when the redemption predates the
+  joined on `promo_code_id`, migration 059), never from today's value on
+  `promo_codes`, which an admin can edit after the fact. `null` when the redemption predates the
   ledger (migration 002, 2026-05-19): one live account is in that state.
   Render "credits applied" without a number, not 0.
 

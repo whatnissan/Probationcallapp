@@ -603,7 +603,10 @@ async function recordCreditAdd(opts) {
     p_note: opts.note || null,
     p_performed_by: opts.performedBy || null,
     p_stripe_session_id: opts.stripeSessionId || null,
-    p_stripe_invoice_id: opts.stripeInvoiceId || null
+    p_stripe_invoice_id: opts.stripeInvoiceId || null,
+    // Migration 059: the ledger names the promo code it paid for, so /me's
+    // promo array joins on it instead of parsing the note.
+    p_promo_code_id: opts.promoCodeId || null
   });
   if (rpc.error) {
     console.error('[CREDITS] add_credits_with_ledger RPC failed for ' + opts.userId.slice(0, 8) + ' source=' + opts.source + ':', rpc.error.message || rpc.error);
@@ -3226,13 +3229,14 @@ app.post('/api/v1/phone/verify/check', authV1, rateLimit('verify_check', 20, 10 
 
 // §3 promo. The redemption row is the claim (promo_redemptions, one per
 // user per code by unique index — migration 012); the credits come from
-// the ledger row the same redemption wrote, matched on user + source
-// 'promo' + the note both redeem paths write ('Promo code: X'), so an
-// admin editing promo_codes.credits later cannot rewrite history. A
-// redemption older than the ledger (migration 002, 2026-05-19) has no row
-// to match and reports credits: null. Never throws: /me must not fail over
-// this, so a read error returns null (contract: "could not be read", not
-// "nothing redeemed").
+// the ledger row the same redemption wrote, joined on
+// credit_transactions.promo_code_id (migration 059 — it was a string match
+// on the note for one day, the coupling that has bitten this codebase
+// three times), so an admin editing promo_codes.credits later cannot
+// rewrite history. A redemption older than the ledger (migration 002,
+// 2026-05-19) has no row to join and reports credits: null. Never throws:
+// /me must not fail over this, so a read error returns null (contract:
+// "could not be read", not "nothing redeemed").
 async function readPromoRedemptions(userId) {
   try {
     var red = await supabase.from('promo_redemptions')
@@ -3245,20 +3249,18 @@ async function readPromoRedemptions(userId) {
     if (codes.error) throw new Error('promo_codes: ' + codes.error.message);
     var byId = {};
     (codes.data || []).forEach(function(c) { byId[c.id] = String(c.code || '').toUpperCase(); });
-    var led = await supabase.from('credit_transactions').select('amount, note')
-      .eq('user_id', userId).eq('source', 'promo');
+    var led = await supabase.from('credit_transactions').select('promo_code_id, amount')
+      .eq('user_id', userId).eq('source', 'promo').in('promo_code_id', ids);
     if (led.error) throw new Error('credit_transactions: ' + led.error.message);
     var granted = {};
     (led.data || []).forEach(function(t) {
-      var m = /^promo code:\s*([A-Z0-9]+)/i.exec(String(t.note || ''));
-      if (m && granted[m[1].toUpperCase()] === undefined) granted[m[1].toUpperCase()] = t.amount;
+      if (granted[t.promo_code_id] === undefined) granted[t.promo_code_id] = t.amount;
     });
     return red.data.map(function(r) {
-      var code = byId[r.promo_code_id] || null;
       return {
-        code: code,
+        code: byId[r.promo_code_id] || null,
         redeemedAt: r.created_at,
-        credits: code && granted[code] !== undefined ? granted[code] : null
+        credits: granted[r.promo_code_id] !== undefined ? granted[r.promo_code_id] : null
       };
     }).filter(function(x) { return x.code; });
   } catch (e) {
@@ -4501,7 +4503,7 @@ app.post('/api/v1/redeem', authV1, rateLimit('redeem', 5, 60 * 60 * 1000), async
 
     var granted = await recordCreditAdd({
       userId: req.user.id, amount: promo.credits, source: 'promo',
-      note: 'Promo code: ' + code
+      note: 'Promo code: ' + code, promoCodeId: promo.id
     });
     if (granted === null) {
       // Both claims are committed. Unwind, or the user has burned a
@@ -5662,7 +5664,8 @@ app.post('/api/redeem', auth, async function(req, res) {
     userId: req.user.id,
     amount: promo.credits,
     source: 'promo',
-    note: 'Promo code: ' + code.toUpperCase()
+    note: 'Promo code: ' + code.toUpperCase(),
+    promoCodeId: promo.id
   });
   if (promoGranted === null) {
     // Both claims (the redemption row and the use counter) are already
