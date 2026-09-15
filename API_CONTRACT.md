@@ -241,6 +241,11 @@ bad connection, one round trip beats five.**
     "creditsNeeded": 95,
     "lowBalance": false
   },
+  "subscription": {
+    "status": "active",
+    "cancelAtPeriodEnd": false,
+    "currentPeriodEnd": "2026-10-15T04:12:00Z"
+  },
   "schedules": [
     {
       "id": "uuid",
@@ -284,6 +289,45 @@ and forgetting lands straight back on "0 days left".
 **`creditsNeeded` stays clamped at 0** and never goes negative: you do not
 need credits for days that have already elapsed. So the two fields diverge
 once the date passes, deliberately.
+
+**`subscription`** `{status, cancelAtPeriodEnd, currentPeriodEnd} | null`
+(2026-09-15, migration 056). `null` means the account has never subscribed.
+Once a subscription has existed the object is always present, including
+after cancellation, because "was a subscriber, now cancelled, still has
+credits" is a state the app has to render.
+
+- **`status`** — `"active"`, `"past_due"`, or `"canceled"` are the values
+  the client branches on. The column stores Stripe's status verbatim, so
+  other Stripe values (`unpaid`, `incomplete`, `trialing`, `paused`) can
+  appear and decode to `unknown(String)` per §1; render those as "check your
+  subscription" with the §4.13b button, never as active.
+- **`cancelAtPeriodEnd`** `bool` — the person has cancelled and keeps access
+  until `currentPeriodEnd`. Render "ends on", not "renews on".
+- **`currentPeriodEnd`** `ISO 8601 | null` — when the current paid period
+  ends: the next renewal for an active subscription, the last day of access
+  for a cancelling one. Written from Stripe on every subscription webhook and
+  backfilled once for subscriptions that predate the column, so a live
+  subscription never carries `null` here. A client must not build a fallback
+  for that state; `null` alongside a non-null `status` is a bug to report.
+
+**Why it is here.** A subscriber whose card fails gets one email, and then
+days later gets paused. Until this field the app could not tell them anything
+in between: `subscription_status` was read in four server paths and returned
+on no route. `past_due` is the app's cue to show "your payment didn't go
+through, update your card" with the §4.13b button, on every screen where the
+balance shows.
+
+**`lowBalance` is a pure fact and stays one: `credits <= 3`.** It is not
+suppression-aware, and it must not be, because the client ORs in its own
+balance check anyway. **The client applies the subscriber rule itself:** show
+the low-balance card only when `lowBalance` is true AND NOT
+(`subscription.status === "active"` AND `cancelAtPeriodEnd === false`). That
+is the same rule the server uses to suppress the low-credit email (§4.13a). An
+active subscriber at two credits sees no amber card; a cancelling or
+`past_due` one does. Until 2026-09-15 the server had stopped emailing active
+subscribers and the app still showed them "nobody is checking the line for
+you" — the exact misreading the suppression was fixing, on the surface they
+look at most.
 
 **`ftbendColor` is sourced from `profiles.user_color`** — the color lives on
 the profile, not the schedule row. The serializer joins it in; clients should
@@ -1618,7 +1662,9 @@ now says so (2026-09-15).** On `invoice.payment_failed` the server sets
 `past_due` and sends **one notice per failed invoice** — subject "Your
 payment didn't go through" — saying the card was declined for the amount,
 Stripe will retry over the next few days, no credits are added until a
-payment succeeds, and to update the card under Manage subscription. Keyed on
+payment succeeds, and to update the card under Manage subscription (§4.13b,
+`POST /billing-portal`, which the app opens; the website has the same portal
+on the dashboard). Keyed on
 the invoice id against the durable notification log, so Stripe's retry
 attempts of the same invoice never repeat it. If the balance then reaches
 zero, the pause notice says the payment failed rather than "add credits". A
@@ -1643,6 +1689,31 @@ the paywall screen appears, not on every render.
 
 `currency` is ISO 4217 lowercase. Everything is USD today; the field exists so
 that is a fact the app reads rather than assumes.
+
+### 4.13b `POST /billing-portal`
+
+→ `{ "url": "https://billing.stripe.com/…" }`
+
+Opens the Stripe Customer Portal for the account's customer: update the
+card, cancel, see invoices. This is the "Manage subscription" the
+failed-payment notice and the pause notice point at (§4.13a). Until
+2026-09-15 only the website had a route to it, so the app was telling people
+to go somewhere it could not take them. The app opens the URL in
+`SFSafariViewController`; the portal returns to `{BASE_URL}/return?to=subscription`,
+the same public page checkout uses (§4.13), which hands the person back to
+the app.
+
+`404 not_found` when the account has no Stripe customer and no subscription —
+never subscribed, nothing to manage. The server checks this itself before
+touching Stripe, because the shared billing helper would otherwise create a
+customer for them, which is right for checkout and wrong for a portal that
+would then open onto nothing. `503 internal`, retryable, when Stripe's portal
+configuration is missing or Stripe is unreachable; the message tells the
+person to try again or contact support, and the server log tells the operator
+which it was. Rate limited like checkout: 10 per 5 minutes.
+
+The website's `/api/subscription/portal` is the same portal returning to the
+dashboard; it stays for the website.
 
 ### 4.14 `GET /referral` · `POST /referral/connect`
 

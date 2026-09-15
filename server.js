@@ -2130,8 +2130,21 @@ app.get('/api/v1/me', authV1, async function(req, res) {
         probationEndDate: probEnd,
         daysRemaining: daysRemaining,
         creditsNeeded: creditsNeeded,
-        lowBalance: (profile.credits || 0) <= 3 // same threshold as the low-credit alert
+        // A PURE fact: credits <= 3. Deliberately NOT suppression-aware — the
+        // client ORs in its own balance check anyway, so it applies the
+        // subscriber rule itself from `subscription` below (§3).
+        lowBalance: (profile.credits || 0) <= 3
       },
+      // §3 subscription (migration 056). null = never subscribed. Present
+      // after cancellation too: "was a subscriber, still has credits" is a
+      // state the app has to render. status is Stripe's verbatim.
+      subscription: (profile.subscription_status || profile.stripe_subscription_id)
+        ? {
+            status: profile.subscription_status || null,
+            cancelAtPeriodEnd: !!profile.subscription_cancel_at_period_end,
+            currentPeriodEnd: profile.subscription_current_period_end || null
+          }
+        : null,
       // Array by contract even though it is one row today; [] = not onboarded.
       schedules: sched.data ? [v1Schedule(sched.data, profile, await loadActiveOfficeIds())] : []
     });
@@ -4512,7 +4525,37 @@ app.post('/api/v1/referral/connect', authV1, rateLimit('connect', 10, 10 * 60 * 
 // fee is coming on remand, and "which purchases started in the app" cannot be
 // reconstructed after the fact. The row is written BEFORE the Stripe call, so
 // a tap that fails to convert is still counted.
-app.post('/api/v1/checkout-link', authV1, rateLimit('checkout', 10, 5 * 60 * 1000), async function(req, res) {
+// §4.13b POST /billing-portal — the Stripe Customer Portal for THIS account:
+// update the card, cancel, see invoices. This is the "Manage subscription"
+// the failed-payment and pause notices point at; until 2026-09-15 only the
+// website had a route to it, so the app was telling people to go somewhere
+// it could not take them. Returns to /return?to=subscription, the same
+// public page checkout uses, which hands the person back to the app.
+//
+// 404 when the account has no Stripe customer AND no subscription: never
+// subscribed, nothing to manage. Checked HERE, because the shared helper
+// would otherwise CREATE a customer for them — right for checkout, wrong for
+// a portal that would then open onto nothing.
+app.post('/api/v1/billing-portal', authV1, rateLimit('portal', 10, 5 * 60 * 1000), async function(req, res) {
+  try {
+    var pr = await supabase.from('profiles').select('*').eq('id', req.user.id).maybeSingle();
+    var profile = pr.data;
+    if (!profile || (!profile.stripe_customer_id && !profile.stripe_subscription_id)) {
+      return v1Error(res, 404, 'not_found', 'There is no subscription on this account to manage.');
+    }
+    var result = await billing.openBillingPortal(profile, process.env.BASE_URL + '/return?to=subscription');
+    return res.json({ url: result.url });
+  } catch (e) {
+    logStripeError('v1 portal (user ' + req.user.id.slice(0, 8) + ')', e);
+    var rawMsg = (e.raw && e.raw.message) || e.message || '';
+    if (rawMsg.indexOf('default configuration has not been created') !== -1 || rawMsg.indexOf('No configuration provided') !== -1) {
+      console.error('[V1-PORTAL] Billing Portal is NOT configured in the Stripe Dashboard — create the default configuration under Settings → Billing → Customer portal.');
+    }
+    return v1Error(res, 503, 'internal', 'Billing management is temporarily unavailable. Please try again shortly, or contact support and we will update your payment method for you.', true);
+  }
+});
+
+app.post('/api/v1/checkout-link', authV1,rateLimit('checkout', 10, 5 * 60 * 1000), async function(req, res) {
   try {
     var intent = String((req.body && req.body.intent) || 'credits');
     if (intent !== 'credits' && intent !== 'subscription') {
@@ -6129,6 +6172,22 @@ async function loadAllSchedules() {
 // nowhere in Stripe; /pricing echoes it as creditsPerPeriod (§4.13a).
 const SUBSCRIPTION_CREDITS_PER_PAYMENT = 31;
 
+// End of the current paid period, as ISO, from Stripe (migration 056, §3
+// subscription.currentPeriodEnd). Never throws: a failed lookup is null,
+// and callers only write the column when it is not null, so a Stripe blip
+// cannot overwrite a good date with nothing.
+async function subscriptionPeriodEndIso(subscriptionOrId) {
+  try {
+    var sub = subscriptionOrId && typeof subscriptionOrId === 'object'
+      ? subscriptionOrId
+      : await stripe.subscriptions.retrieve(String(subscriptionOrId));
+    return sub && sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : null;
+  } catch (e) {
+    console.error('[STRIPE WEBHOOK] period end lookup failed for ' + String(subscriptionOrId && subscriptionOrId.id || subscriptionOrId).slice(0, 40) + ':', e.message);
+    return null;
+  }
+}
+
 // Locate the profile that owns a subscription. Prefer subscription metadata
 // (set at Checkout creation time so it's stable across renewals); fall back
 // to a stripe_customer_id lookup if metadata is missing.
@@ -6161,7 +6220,7 @@ async function handleSubscriptionCheckoutCompleted(s, res) {
       console.error('[STRIPE WEBHOOK] Subscription session missing user_id metadata, session:', s.id);
       return res.json({ received: true, error: 'missing_user_id' });
     }
-    var upd = await supabase.from('profiles').update({
+    var startFields = {
       stripe_customer_id: s.customer,
       stripe_subscription_id: s.subscription,
       subscription_status: 'active',
@@ -6169,7 +6228,10 @@ async function handleSubscriptionCheckoutCompleted(s, res) {
       // residual cancel fields left over from a previous, terminated sub.
       subscription_cancel_at_period_end: false,
       subscription_cancel_at: null
-    }).eq('id', userId);
+    };
+    var startPeriodEnd = await subscriptionPeriodEndIso(s.subscription);
+    if (startPeriodEnd) startFields.subscription_current_period_end = startPeriodEnd;
+    var upd = await supabase.from('profiles').update(startFields).eq('id', userId);
     if (upd.error) {
       console.error('[STRIPE WEBHOOK] Could not save sub IDs on profile', userId, ':', upd.error);
       return res.status(500).json({ error: 'profile_update_failed' });
@@ -6296,11 +6358,15 @@ async function handleSubscriptionInvoicePaid(invoice, res) {
 
     // Non-credit subscription fields (status, customer/sub IDs) updated separately.
     // Credits already granted via RPC; failures here are non-critical.
-    var subFieldsUpd = await supabase.from('profiles').update({
+    var paidFields = {
       subscription_status: 'active',
       stripe_customer_id: profile.stripe_customer_id || invoice.customer,
       stripe_subscription_id: profile.stripe_subscription_id || subId
-    }).eq('id', profile.id);
+    };
+    // The renewal just moved the period; record where it now ends (§3).
+    var paidPeriodEnd = await subscriptionPeriodEndIso(subId);
+    if (paidPeriodEnd) paidFields.subscription_current_period_end = paidPeriodEnd;
+    var subFieldsUpd = await supabase.from('profiles').update(paidFields).eq('id', profile.id);
     if (subFieldsUpd.error) {
       console.error('[STRIPE WEBHOOK] Subscription field update failed (credits already granted) for', profile.id, ':', subFieldsUpd.error);
     }
@@ -6534,11 +6600,15 @@ async function handleSubscriptionUpdated(subscription, res) {
   try {
     var cancelAtEnd = !!subscription.cancel_at_period_end;
     var cancelAtIso = subscription.cancel_at ? new Date(subscription.cancel_at * 1000).toISOString() : null;
-    await applySubscriptionProfileUpdate(subscription, {
+    var updFields = {
       subscription_status: subscription.status,
       subscription_cancel_at_period_end: cancelAtEnd,
       subscription_cancel_at: cancelAtIso
-    }, 'subscription.updated');
+    };
+    // The event carries the subscription, so no extra Stripe call (§3).
+    var updPeriodEnd = await subscriptionPeriodEndIso(subscription);
+    if (updPeriodEnd) updFields.subscription_current_period_end = updPeriodEnd;
+    await applySubscriptionProfileUpdate(subscription, updFields, 'subscription.updated');
     console.log('[STRIPE WEBHOOK] Subscription updated: sub=' + subscription.id + ' status=' + subscription.status + ' cancel_at_period_end=' + cancelAtEnd + (cancelAtIso ? ' cancel_at=' + cancelAtIso : ''));
     return res.json({ received: true });
   } catch (e) {
