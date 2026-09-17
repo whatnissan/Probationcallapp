@@ -264,6 +264,13 @@ bad connection, one round trip beats five.**
   "promo": [
     { "code": "BAILBONDS", "redeemedAt": "2026-09-08T15:02:11Z", "credits": 5 }
   ],
+  "terms": {
+    "currentVersion": "2026-08-24",
+    "requiredVersion": "2025-12-04",
+    "acceptedVersion": "2025-12-04",
+    "acceptedAt": "2025-12-07T02:55:10Z",
+    "needsAcceptance": false
+  },
   "credits": {
     "balance": 47,
     "probationEndDate": "2027-01-02",
@@ -379,6 +386,46 @@ the bootstrap call and must not fail over a cosmetic field, so a database
 error here logs server-side and returns `null`; the app renders nothing
 and does not say "no code applied". `[]` is the only value that means
 that.
+
+**`terms`** `{currentVersion, requiredVersion, acceptedVersion, acceptedAt,
+needsAcceptance} | null` (2026-09-17, migration 061). The account's
+acceptance of the Terms of Service at `/terms`.
+
+**This is the record that matters most in the product.** The Terms hold the
+liability waiver, the assumption of risk, the no-accuracy guarantee and the
+indemnification — the clauses that stand between ProbationCall and a claim
+that a wrong or missing result led to a missed test. They protect nothing
+unless we can show that this person agreed, to which text, and when.
+
+- `currentVersion` — the version `/terms` serves today: its Last Updated
+  date, `YYYY-MM-DD`.
+- `requiredVersion` — the oldest accepted version that still counts. It
+  moves only when an edit changes what a person agrees to. A wording fix
+  moves `currentVersion` and leaves this alone.
+- `acceptedVersion`, `acceptedAt` — the newest acceptance on file, or both
+  `null`. `acceptedAt` is the server's clock when the acceptance was
+  recorded, never the device's.
+- `needsAcceptance` — `acceptedVersion` is `null` or older than
+  `requiredVersion`.
+
+**`terms: null` means the read failed.** The app shows nothing and asks
+again on the next launch; it must never lock someone out of their results
+over a database error.
+
+**No acceptance is ever inferred** — not from a build number, not from a
+finished onboarding, not from a related account. Until 2026-09-17 the app's
+liability step required a tap and recorded nothing, so every account
+onboarded in the app reads `acceptedVersion: null`. Those accounts accept
+on their next launch like anyone else.
+
+When `needsAcceptance` is true the app shows the acceptance screen before
+anything else, for new and long-standing accounts alike, and it cannot be
+dismissed.
+
+**Delivery is not gated on it.** A `needsAcceptance` account keeps being
+called and keeps receiving results. Stopping calls to a person on probation
+until they tap a screen would manufacture the missed test the Terms exist to
+address. The app gates itself; the service does not.
 
 **`subscription`** `{status, cancelAtPeriodEnd, currentPeriodEnd} | null`
 (2026-09-15, migration 056). `null` means the account has never subscribed.
@@ -2139,6 +2186,10 @@ Twilio call recordings.
   defence.
 - `affiliate_earnings` / `referrals` where the deleted person was the
   REFERRED party — reference nulled; it is someone else's money.
+- `terms_acceptances` (2026-09-17) — `user_id` nulled; version, timestamp,
+  source, IP and app build stay, with the SHA-256 of the normalised email
+  written onto each row first. A record with no identifier proves nothing
+  about who agreed.
 
 **Re-signup does not restart the free credits.** A SHA-256 of the normalised
 email is stored on deletion (`deleted_account_tombstones`, migration 042).
@@ -2405,6 +2456,44 @@ answering it may well be a website user opening the app for the first
 time, with a number that predates verification. Verification is not
 weakened by this — the row proves consent, not possession, and nothing
 reads it as possession.
+
+### 4.20 `POST /terms/accept`
+
+```json
+POST /terms/accept   { "version": "2026-08-24" }
+→ { "version": "2026-08-24", "acceptedAt": "2026-09-17T14:02:11Z", "recorded": true }
+```
+
+**`version` is the version the client displayed**, read from `/me`
+`terms.currentVersion`. Only the current version is accepted; anything else
+is `409 terms_version_mismatch` — the Terms changed since `/me` was read, so
+re-read it and ask again. A record must never say someone accepted a
+document they were not shown. Missing or malformed is
+`400 validation_failed`, `field: "version"`. The body has no timestamp
+field: the server stamps the time.
+
+**Idempotent.** If this version is already accepted, nothing is written and
+the response carries the ORIGINAL `acceptedAt` with `recorded: false`.
+Accepting a newer version writes a new record. Records are append-only:
+an older acceptance is never overwritten.
+
+**What the app presents at the moment of acceptance.** The summary stays,
+and the full Terms and Privacy Policy are linked on the same screen, beside
+the checkbox. A summary without the document is a weaker record, and the
+website has always linked it. The button posts this route and advances only
+on a `200`. A failure is an error on this screen, never a silent advance:
+an acceptance the server did not record did not happen.
+
+**The website records into the same place.** Its disclaimer modal posts the
+current version with source `web_modal`; the app's acceptances carry source
+`app`, the IP, and the build number from the User-Agent.
+
+**Existing records.** 28 accounts accepted on the website before this route
+existed, each stamped by the server at the time. They carry the version the
+website served at that moment, proven by git history: `2025-12-04` before
+2026-08-24, when an edit removed WhatsApp from the service description, and
+`2026-08-24` after (25 and 3 accounts). The original server timestamp is
+kept, not the backfill time.
 
 ## 5. Build order
 

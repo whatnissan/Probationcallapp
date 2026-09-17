@@ -43,6 +43,7 @@ const { fallbackFieldsFor } = require('./lib/push');
 const { isValidPin, isValidTimezone, isValidEmail, normalizePhoneE164, isValidSupportSubject, isValidSupportBody } = require('./lib/validation');
 const { toSmsText, smsSegmentInfo, looksLikeEmailContent, renderBrandedEmail, smsStatusTransition } = require('./lib/messaging');
 const stagger = require('./lib/stagger');
+const termsLib = require('./lib/terms');
 const { createBilling, logStripeError } = require('./lib/billing');
 
 
@@ -2139,6 +2140,7 @@ app.get('/api/v1/me', authV1, async function(req, res) {
     var sched = await supabase.from('user_schedules').select('*').eq('user_id', req.user.id).maybeSingle();
     var consentOnFile = await hasSmsConsent(req.user.id);
     var promoRedemptions = await readPromoRedemptions(req.user.id);
+    var termsState = await readTermsForMe(req.user.id);
 
     var probEnd = profile.probation_end_date || null;
     var daysRemaining = null, creditsNeeded = null;
@@ -2179,6 +2181,9 @@ app.get('/api/v1/me', authV1, async function(req, res) {
       // §3 promo — every code the account redeemed, newest first, with the
       // credits the ledger says landed at the time. null = read failed.
       promo: promoRedemptions,
+      // §3 terms — acceptance on record, version, and whether the app must
+      // ask. null = read failed. Delivery is never gated on it.
+      terms: termsState,
       credits: {
         balance: profile.credits || 0,
         probationEndDate: probEnd,
@@ -3508,6 +3513,10 @@ app.delete('/api/v1/account', authV1, rateLimit('account_delete', 5, 60 * 60 * 1
 
     // 5. KEEP, ANONYMISED (the rulings above).
     await step('sms_consents(anonymise)', supabase.from('sms_consents').update({ user_id: null }).eq('user_id', userId));
+    // Terms acceptances keep the email tombstone hash (Dave, 2026-09-17):
+    // a record with no identifier proves nothing about who agreed. user_id
+    // is nulled by the FK when the profile goes.
+    if (h) await step('terms_acceptances(tombstone hash)', supabase.from('terms_acceptances').update({ email_hash: h }).eq('user_id', userId));
     await step('purchases(anonymise)', supabase.from('purchases').update({ user_id: null }).eq('user_id', userId));
     await step('affiliate_earnings(referred, null)', supabase.from('affiliate_earnings').update({ referred_id: null }).eq('referred_id', userId));
     await step('referrals(referred, null)', supabase.from('referrals').update({ referred_id: null }).eq('referred_id', userId));
@@ -5699,18 +5708,91 @@ app.post('/api/affiliate/request-payout', auth, requireAffiliateEnabled, async f
   res.json({ success: true, amount: balance });
 });
 
+// Terms of Service acceptance (§3 terms, §4.20, migration 061). The Terms
+// hold the liability waiver, the assumption of risk, the no-accuracy
+// guarantee and the indemnification — the clauses that matter if a wrong
+// result leads to a missed test — and they protect nothing unless we can
+// show this person agreed, to which text, and when. One path for the
+// website and the app:
+//   - the SERVER's clock, never a client timestamp;
+//   - the version, which the caller must name and which must be current
+//     (a record must never say someone accepted a text they weren't shown);
+//   - append-only and idempotent: unique (user_id, terms_version) makes a
+//     repeat a no-op, and the ORIGINAL acceptance is returned.
+// Returns { version, acceptedAt, recorded } or throws.
+async function recordTermsAcceptance(userId, version, source, req) {
+  var ins = await supabase.from('terms_acceptances').upsert({
+    user_id: userId,
+    terms_version: version,
+    source: source,
+    ip: req ? clientIp(req) : null,
+    app_build: req ? appBuildFromUA(req.headers['user-agent']) : null
+  }, { onConflict: 'user_id,terms_version', ignoreDuplicates: true }).select('terms_version, accepted_at');
+  if (ins.error) throw new Error('terms_acceptances insert: ' + ins.error.message);
+  var recorded = !!(ins.data && ins.data.length);
+  var row = recorded ? ins.data[0] : null;
+  if (!row) {
+    var ex = await supabase.from('terms_acceptances').select('terms_version, accepted_at')
+      .eq('user_id', userId).eq('terms_version', version).maybeSingle();
+    if (ex.error || !ex.data) throw new Error('terms_acceptances re-read: ' + (ex.error ? ex.error.message : 'row missing after conflict'));
+    row = ex.data;
+  }
+  if (recorded) {
+    // Pointer for the admin list and the website's modal check. The table
+    // is the record; a failed pointer write is logged, not fatal.
+    var pu = await supabase.from('profiles')
+      .update({ terms_accepted_at: row.accepted_at, terms_version: row.terms_version })
+      .eq('id', userId);
+    if (pu.error) console.error('[TERMS] pointer update failed for ' + userId.slice(0, 8) + ':', pu.error.message);
+    console.log('[TERMS] ' + userId.slice(0, 8) + ' accepted ' + version + ' via ' + source);
+  }
+  return { version: row.terms_version, acceptedAt: row.accepted_at, recorded: recorded };
+}
+
+async function readTermsForMe(userId) {
+  try {
+    var r = await supabase.from('terms_acceptances').select('terms_version, accepted_at')
+      .eq('user_id', userId).order('terms_version', { ascending: false }).limit(1);
+    if (r.error) throw new Error(r.error.message);
+    return termsLib.termsPayload(r.data && r.data[0] ? r.data[0] : null);
+  } catch (e) {
+    // null = could not be read (§3). The app shows nothing and asks again
+    // next launch; it must not lock someone out over a database hiccup.
+    console.error('[TERMS] /me read failed for ' + userId.slice(0, 8) + ':', e.message);
+    return null;
+  }
+}
+
+// The website's disclaimer modal. It shows the current page, so it records
+// the current version.
 app.post("/api/accept-terms", auth, async function(req, res) { 
   try { 
-    var result = await supabase.from("profiles").update({ terms_accepted_at: new Date().toISOString() }).eq("id", req.user.id);
-    if (result.error) {
-      console.error('[TERMS] Error:', result.error);
-      return res.status(500).json({ error: result.error.message }); 
-    }
+    await recordTermsAcceptance(req.user.id, termsLib.CURRENT_VERSION, 'web_modal', req);
     res.json({ success: true }); 
   } catch (e) { 
-    console.error('[TERMS] Exception:', e);
-    res.status(500).json({ error: e.message }); 
+    console.error('[TERMS] web accept failed for ' + req.user.id.slice(0, 8) + ':', e.message);
+    res.status(500).json({ error: GENERIC_SERVER_ERROR }); 
   } 
+});
+
+// §4.20 — the app's acceptance. Until 2026-09-17 the app's liability step
+// required a tap and posted nothing, so no app-onboarded account had a
+// record. None is inferred for them: they accept on next launch.
+app.post('/api/v1/terms/accept', authV1, async function(req, res) {
+  try {
+    var v = req.body && req.body.version;
+    if (!termsLib.isVersionString(v)) {
+      return v1Error(res, 400, 'validation_failed', 'version must be the Terms version shown, as YYYY-MM-DD.', false, 'version');
+    }
+    if (v !== termsLib.CURRENT_VERSION) {
+      return v1Error(res, 409, 'terms_version_mismatch', 'The Terms have been updated. Please review the current version and accept again.');
+    }
+    var out = await recordTermsAcceptance(req.user.id, v, 'app', req);
+    res.json(out);
+  } catch (e) {
+    console.error('[TERMS] app accept failed for ' + req.user.id.slice(0, 8) + ':', e.message);
+    return v1Error(res, 500, 'internal', 'We could not record your acceptance. Please try again.', true);
+  }
 });
 
 app.post('/api/redeem', auth, async function(req, res) {
@@ -11475,6 +11557,13 @@ app.delete('/api/admin/user/:id', adminAuth, async function(req, res) {
       console.error('[ADMIN] Delete step threw: ' + label, e);
     }
   }
+
+  // Terms acceptances outlive the account with the email tombstone hash
+  // (migration 061); read the email before the profile goes.
+  var delProfile = await supabase.from('profiles').select('email').eq('id', userId).maybeSingle();
+  var delHash = delProfile.data && delProfile.data.email ? emailTombstoneHash(delProfile.data.email) : null;
+  if (delHash) await step('terms_acceptances(tombstone hash)', supabase.from('terms_acceptances').update({ email_hash: delHash }).eq('user_id', userId));
+  else failures.push('terms_acceptances: no email on the profile, acceptance rows will lose their identifier');
 
   await step('user_schedules', supabase.from('user_schedules').delete().eq('user_id', userId));
   await step('call_history', supabase.from('call_history').delete().eq('user_id', userId));
