@@ -419,8 +419,10 @@ onboarded in the app reads `acceptedVersion: null`. Those accounts accept
 on their next launch like anyone else.
 
 When `needsAcceptance` is true the app shows the acceptance screen before
-anything else, for new and long-standing accounts alike, and it cannot be
-dismissed.
+anything else, for new and long-standing accounts alike. It can be
+dismissed — a screen that stands between a person and their morning verdict
+is the missed test the Terms exist to address — and it returns on the next
+launch until accepted.
 
 **Delivery is not gated on it.** A `needsAcceptance` account keeps being
 called and keeps receiving results. Stopping calls to a person on probation
