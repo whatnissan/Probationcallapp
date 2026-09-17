@@ -191,7 +191,13 @@ underneath them after a STOP and re-read `/me`.
 
 **`push` COMPOSES with the others; it does not replace them.** Push is the
 fast path and SMS is the backstop: push fires first, and if it is not
-acknowledged within `PUSH_SMS_FALLBACK_MINUTES` (10) the SMS goes out anyway.
+acknowledged within `PUSH_SMS_FALLBACK_MINUTES` the SMS goes out anyway.
+**That window is a Railway variable, not a constant: 4 minutes since
+2026-09-17 (it was 10), and a future change is an environment edit, not a
+contract edit.** Clients must not hard-code it; the only promise is that the
+text follows an unacknowledged push within a few minutes. In 43 pushes over
+the first fortnight, 2 acks beat the 10-minute timer, so the shorter window
+costs almost nothing and moves every unread morning's text 6 minutes earlier.
 That preserves the delivery guarantee while cutting Twilio spend, which is the
 actual return — a push-only guarantee would be no guarantee at all, because a
 phone can be off.
@@ -1576,7 +1582,10 @@ registration becomes visible to the person who owns it.
 
 The app calls this when the user opens the notification. **This is what
 cancels the SMS fallback**, so it is the difference between one notification
-and two. `deliveryId` arrives in the push payload's custom data:
+and two. The window is `PUSH_SMS_FALLBACK_MINUTES` (§2), a Railway variable
+set to 4 minutes since 2026-09-17; the app does not need to know the number,
+only that an ack after the text has gone returns `fallbackCancelled: false`.
+`deliveryId` arrives in the push payload's custom data:
 
 ```json
 { "aps": { "alert": { "title": "Test required today", "body": "..." },
@@ -1625,8 +1634,9 @@ has until the office closes, and until 2026-09-14 APNs discarded that push
 at noon — six hours before Conroe's 5:45 PM close. A `NO_TEST` push expires
 at the **end of the county's day**, midnight Central: a clearance is a
 statement about today and must not arrive tomorrow. The SMS fallback (§2,
-10 minutes unacknowledged) is the delivery guarantee in both cases; expiry
-only governs what the lock screen shows later.
+`PUSH_SMS_FALLBACK_MINUTES` unacknowledged, 4 today) is the delivery
+guarantee in both cases; expiry only governs what the lock screen shows
+later.
 
 **Collapse (2026-09-14).** The collapse id is per user per result stream,
 not per day, so **tomorrow's push replaces yesterday's** in Notification
