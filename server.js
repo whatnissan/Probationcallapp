@@ -2862,6 +2862,29 @@ async function pruneDeviceToken(token, reason) {
   }
 }
 
+// The email half of a push-first delivery, sent the moment Apple accepts
+// the push. Returns 'sent' | 'failed' | 'none' (schedule does not email, or
+// no message to send). Never throws — the push is already out, and a
+// failure here leaves email_sent_at null so the fallback sweep sends the
+// email at fallback time exactly as it did before migration 060.
+async function sendEmailAlongsidePush(deliveryId, opts) {
+  try {
+    if (!opts.fallbackMessage) return 'none';
+    var sch = await supabase.from('user_schedules')
+      .select('notify_method, notify_email').eq('user_id', opts.userId).maybeSingle();
+    var m = sch.data && sch.data.notify_method;
+    var to = sch.data && sch.data.notify_email;
+    if (!to || (m !== 'email' && m !== 'both')) return 'none';
+    var r = await sendEmail(to, String(opts.fallbackMessage), 'push_email');
+    if (!r || !r.success) return 'failed';
+    await supabase.from('push_deliveries').update({ email_sent_at: new Date().toISOString() }).eq('id', deliveryId);
+    return 'sent';
+  } catch (e) {
+    console.error('[PUSH] email alongside push failed for ' + String(opts.userId).slice(0, 8) + ':', e.message);
+    return 'failed';
+  }
+}
+
 // Attempt push for one morning result. Returns TRUE only if Apple accepted it
 // and an SMS should therefore be held back pending the unread timer.
 async function tryPushFirst(opts) {
@@ -2998,7 +3021,14 @@ async function tryPushFirst(opts) {
         apns_id: accepted.apnsId,
         sent_at: new Date().toISOString()
       }).eq('id', deliveryId);
-      console.log('[PUSH] sent to ' + opts.userId.slice(0, 8) + ' (' + opts.result + '); SMS held for ' + pushFallbackMinutes() + ' min unless acked');
+      // Only the SMS waits on the ack. The email goes now (migration 060):
+      // the grace period avoids a push AND a text for one result, and an
+      // email beside a push is not that duplication. A method-both user
+      // waited ten minutes for an email until 2026-09-17.
+      var emailNow = await sendEmailAlongsidePush(deliveryId, opts);
+      console.log('[PUSH] sent to ' + opts.userId.slice(0, 8) + ' (' + opts.result + '); ' +
+        (emailNow === 'sent' ? 'email sent now; ' : emailNow === 'failed' ? 'email FAILED (sweep will retry); ' : '') +
+        'SMS held for ' + pushFallbackMinutes() + ' min unless acked');
       return true;
     }
 
@@ -3663,7 +3693,7 @@ app.post('/api/v1/push/:deliveryId/ack', authV1, async function(req, res) {
 async function runPushFallbackSweep() {
   try {
     var due = await supabase.from('push_deliveries')
-      .select('id, user_id, result, local_date, fallback_reason, fallback_message')
+      .select('id, user_id, result, local_date, fallback_reason, fallback_message, email_sent_at')
       .lte('fallback_due_at', new Date().toISOString())
       .is('fallback_sent_at', null)
       .is('acked_at', null)
@@ -3690,14 +3720,30 @@ async function runPushFallbackSweep() {
         var msg = d.fallback_message || (d.result === 'MUST_TEST'
           ? '🚨 TEST REQUIRED today.\n\nReport for testing today.\n\n- ProbationCall.com'
           : '✅ No test today.\n\n- ProbationCall.com');
-        var sent = await notify(sched.data.notify_number, sched.data.notify_email, sched.data.notify_method, msg, 'push_fallback');
+        // What is still owed. The email went with the push (migration 060)
+        // when email_sent_at is set, so only the SMS remains — and for an
+        // email-only schedule, nothing. A null email_sent_at is a row from
+        // before the deploy or an email that failed at push time: send the
+        // full method, as the sweep always did. When only the SMS is owed
+        // the email is withheld from notify() on purpose: an opted-out
+        // number must not turn into a second copy of an email already sent.
+        var method = sched.data.notify_method;
+        var owed = !d.email_sent_at ? method
+          : method === 'both' ? 'sms'
+          : method === 'email' ? null
+          : method;
+        var who = d.user_id.slice(0, 8) + ' (' + (d.fallback_reason || 'unread') + ', ' + d.result + ', method=' + (method || 'none') + ')';
+        var sent = null;
+        if (owed) {
+          sent = await notify(sched.data.notify_number, d.email_sent_at ? null : sched.data.notify_email, owed, msg, 'push_fallback');
+        }
         await supabase.from('push_deliveries').update({
           fallback_sent_at: new Date().toISOString(),
           fallback_reason: d.fallback_reason || 'unread'
         }).eq('id', d.id);
         // Log the channel that delivered, not the method: they differ.
-        var who = d.user_id.slice(0, 8) + ' (' + (d.fallback_reason || 'unread') + ', ' + d.result + ', method=' + (sched.data.notify_method || 'none') + ')';
-        if (sent && sent.success) console.log('[PUSH-FALLBACK] ' + sent.channel + ' sent for ' + who);
+        if (!owed) console.log('[PUSH-FALLBACK] nothing owed for ' + who + ' — email went with the push');
+        else if (sent && sent.success) console.log('[PUSH-FALLBACK] ' + sent.channel + ' sent for ' + who + (d.email_sent_at ? ' (email went with the push)' : ''));
         else console.error('[PUSH-FALLBACK] NOTHING delivered for ' + who + ': ' + ((sent && sent.error) || 'unknown'));
       } catch (inner) {
         // One user's failure must not stop the sweep for everyone else.

@@ -196,6 +196,13 @@ That preserves the delivery guarantee while cutting Twilio spend, which is the
 actual return — a push-only guarantee would be no guarantee at all, because a
 phone can be off.
 
+**Only the SMS waits. Email is never held on the ack (2026-09-17).** The
+grace period exists so one result does not arrive as a push AND a text; an
+email beside a push is not that duplication. A schedule that emails gets its
+email the moment the push is accepted, and the ack then cancels only the
+text. Until 2026-09-17 a `both` schedule waited the full window for its
+email as well.
+
 **A dead token does NOT wait out the timer.** If APNs rejects the send
 (`Unregistered`, `BadDeviceToken`), or the user has no live device, or the
 send fails for any other reason, the SMS goes immediately. We already know
