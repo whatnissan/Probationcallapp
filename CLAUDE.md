@@ -74,7 +74,9 @@ DEMO_ACCOUNT_EMAIL (App Review demo account; profiles.is_demo, never dials),
 PHONE_VERIFY_SECRET (≥32 random chars; HMAC for §4.17 codes — verification refuses everything without it),
 STRIPE_CONNECT_WEBHOOK_SECRET (signing secret of the Connect webhook endpoint — connected-account events),
 CONNECT_REQUEST_1099_CAPABILITY (set true only after the tax picture is settled),
-DISABLE_BACKGROUND_JOBS (LOCAL test instances only — never in Railway)
+DISABLE_BACKGROUND_JOBS (LOCAL test instances only — never in Railway),
+PUSH_SMS_FALLBACK_MINUTES (SMS after an unacked push; 4 since 2026-09-17, default 10 in code),
+CALL_STAGGER_SECONDS (spacing between Montgomery dials sharing a call time; default 45 — do not lower to 20 until call_attempts shows no `busy` outcome under 45)
 ```
 
 ---

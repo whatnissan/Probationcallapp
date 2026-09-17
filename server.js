@@ -42,6 +42,7 @@ const apns = require('./lib/apns');
 const { fallbackFieldsFor } = require('./lib/push');
 const { isValidPin, isValidTimezone, isValidEmail, normalizePhoneE164, isValidSupportSubject, isValidSupportBody } = require('./lib/validation');
 const { toSmsText, smsSegmentInfo, looksLikeEmailContent, renderBrandedEmail, smsStatusTransition } = require('./lib/messaging');
+const stagger = require('./lib/stagger');
 const { createBilling, logStripeError } = require('./lib/billing');
 
 
@@ -373,8 +374,14 @@ const GENERIC_SERVER_ERROR = 'Something went wrong on our end — please try aga
 const MIN_HOUR = 6;
 const MAX_HOUR = 14;
 
-// Stagger calls over this many minutes to prevent server overload
+// LEGACY. Until 2026-09-17 every Montgomery user dialled at a fixed offset
+// hashed from their id, anywhere in this window, forever. Calls are now
+// spaced by position within the call-time cohort (lib/stagger,
+// CALL_STAGGER_SECONDS). This constant survives only as the fallback when
+// the cohort query fails at fire time: a hash spread is safer than
+// everyone dialling at once.
 const STAGGER_MINUTES = 15;
+function staggerSpacingSeconds() { return stagger.spacingSecondsFrom(process.env.CALL_STAGGER_SECONDS); }
 
 // Supported Counties Configuration
 const COUNTIES = {
@@ -1367,6 +1374,37 @@ function broadcastToClients(data) {
 }
 
 // Generate consistent random delay based on user ID (same user = same delay each day)
+// Dial delay for one Montgomery user this morning: their position in the
+// cohort sharing their call time, CALL_STAGGER_SECONDS apart, in creation
+// order (lib/stagger). Computed at FIRE time, not when the job is created,
+// so a pause, a resume or a new signup is reflected the next morning
+// without a reload — every member of a cohort runs this at the same
+// instant against the same rows and gets the same order. Falls back to the
+// legacy hash if the query fails: everyone at +0 is the one outcome worse
+// than an unfair spread.
+async function cohortStaggerDelay(userId, sched) {
+  try {
+    var r = await supabase.from('user_schedules')
+      .select('user_id, created_at')
+      .eq('enabled', true)
+      .neq('county', 'ftbend')
+      .eq('hour', sched.hour).eq('minute', sched.minute);
+    if (r.error) throw new Error(r.error.message);
+    var members = r.data || [];
+    // The App Review demo account never dials (profiles.is_demo), so it
+    // must not hold a slot that pushes a real subscriber later.
+    if (members.length > 1) {
+      var demo = await supabase.from('profiles').select('id').in('id', members.map(function(m) { return m.user_id; })).eq('is_demo', true);
+      var demoIds = (demo.data || []).map(function(d) { return d.id; });
+      if (demoIds.length) members = members.filter(function(m) { return demoIds.indexOf(m.user_id) < 0; });
+    }
+    return { ms: stagger.cohortDelayMs(userId, members, staggerSpacingSeconds()), cohort: members.length, source: 'cohort' };
+  } catch (e) {
+    console.error('[SCHED] cohort lookup failed for ' + userId.slice(0, 8) + ' — legacy hash stagger:', e.message);
+    return { ms: getStaggerDelay(userId), cohort: null, source: 'hash' };
+  }
+}
+
 function getStaggerDelay(userId) {
   var hash = 0;
   for (var i = 0; i < userId.length; i++) {
@@ -6218,17 +6256,17 @@ function rescheduleUser(userId, sched) {
   }
   
   var expr = sched.minute + ' ' + sched.hour + ' * * *';
-  var staggerDelay = getStaggerDelay(userId);
-  var staggerMinutes = Math.floor(staggerDelay / 60000);
-  var staggerSeconds = Math.floor((staggerDelay % 60000) / 1000);
-  
   console.log('[SCHED] User ' + userId.slice(0,8) + '...: ' + expr + ' ' + sched.timezone +
-    ' (stagger: +' + staggerMinutes + 'm ' + staggerSeconds + 's)');
+    ' (cohort-spaced ' + staggerSpacingSeconds() + 's apart, position decided at fire time)');
   
   var job = cron.schedule(expr, async function() {
-    // Apply stagger delay to spread out calls
+    // Position in this morning's cohort decides the delay (lib/stagger).
+    var st = await cohortStaggerDelay(userId, sched);
+    var staggerDelay = st.ms;
+    var staggerLabel = '+' + Math.floor(staggerDelay / 60000) + 'm ' + Math.floor((staggerDelay % 60000) / 1000) + 's';
+    console.log('[SCHED] ' + userId.slice(0,8) + ' dials at ' + staggerLabel + (st.source === 'cohort' ? ' (cohort of ' + st.cohort + ')' : ' (LEGACY HASH — cohort lookup failed)'));
     setTimeout(async function() {
-      console.log('[SCHED] Running for ' + userId.slice(0,8) + '... (after ' + staggerMinutes + 'm stagger)');
+      console.log('[SCHED] Running for ' + userId.slice(0,8) + '... (after ' + staggerLabel + ' stagger)');
       try {
         var profileResult = await supabase.from('profiles').select('credits, email, is_disabled, is_demo, subscription_status').eq('id', userId).single();
         var profile = profileResult.data;
@@ -6305,7 +6343,7 @@ async function loadAllSchedules() {
   var result = await supabase.from('user_schedules').select('*').eq('enabled', true);
   if (result.data && result.data.length > 0) {
     result.data.forEach(function(s) { rescheduleUser(s.user_id, s); });
-    console.log('[SCHED] Loaded ' + result.data.length + ' schedules (staggered over ' + STAGGER_MINUTES + ' minutes)');
+    console.log('[SCHED] Loaded ' + result.data.length + ' schedules (cohort-spaced ' + staggerSpacingSeconds() + 's apart; largest Montgomery cohort ' + stagger.maxCohortSize(result.data) + ')');
   }
 }
 
@@ -8471,6 +8509,27 @@ app.post('/webhook/status', validateTwilio, async function(req, res) {
   if (config.failureHandled) return; // idempotency: one notify+insert per call
   config.failureHandled = true;
 
+  // The terminal status itself, as its own call_attempts row (2026-09-17).
+  // Until now busy / no-answer / failed / canceled reached the retry engine
+  // as one generic CALL_FAILED and left no durable trace of WHICH — so the
+  // question "has the hotline ever been busy for us" could not be answered
+  // from data. It can now: outcome = Twilio's word. BUSY is the one that
+  // says the hotline's lines are full, which is what decides whether
+  // CALL_STAGGER_SECONDS can come down.
+  recordCallAttempt({
+    call_id: callId, call_sid: config.callSid || null, user_id: config.userId || null,
+    county: config.isFtbendDaily ? 'ftbend' : (config.county || 'montgomery'),
+    office_id: config.officeId || null,
+    is_scheduled: config.isScheduledMorning === true || config.isFtbendDaily === true,
+    retry_count: config.retryCount || 0,
+    outcome: callStatus, error: null
+  });
+  if (callStatus === 'busy') {
+    console.error('[HOTLINE-BUSY] ' + (config.isFtbendDaily ? 'Fort Bend ' + config.officeId : 'Montgomery') +
+      ' returned BUSY for ' + callId + (config.userId ? ' (user ' + config.userId.slice(0, 8) + ')' : '') +
+      ' — do not lower CALL_STAGGER_SECONDS while this line appears');
+  }
+
   // Ft Bend system calls and manual calls without a userId don't get
   // per-user handling. (Ft Bend failure handling is system-level and
   // outside the scope of this gap fix.)
@@ -9379,7 +9438,13 @@ var adminAlertDate = null;
 // 35-minute window guaranteed alerts on morning-in-progress. 75 minutes
 // clears a full retry sequence, and pending_retries now covers the
 // in-flight case directly rather than relying on the window alone.
-var HEALTH_GRACE_MINUTES = STAGGER_MINUTES + 60;
+// Since 2026-09-17 the stagger part is derived from the busiest cohort
+// (lib/stagger) with a FLOOR of the old 15 minutes, so the alert never
+// gets less patient than it was under the hash — only more, if a cohort
+// ever grows past what 15 minutes of spacing covers.
+function healthGraceMinutes(schedules) {
+  return stagger.staggerWindowMinutes(schedules, staggerSpacingSeconds(), STAGGER_MINUTES) + 60;
+}
 async function checkCallHealth() {
   try {
     var now = new Date();
@@ -9408,9 +9473,10 @@ async function checkCallHealth() {
     if (enabled.length === 0) return;
 
     // Only consider schedules whose target time has passed by ≥ grace.
+    var grace = healthGraceMinutes(enabled);
     var due = enabled.filter(function(s) {
       var schedMinutes = (s.hour || 6) * 60 + (s.minute || 0);
-      return (nowMinutes - schedMinutes) >= HEALTH_GRACE_MINUTES;
+      return (nowMinutes - schedMinutes) >= grace;
     });
     if (due.length === 0) return;
     var dueUserIds = due.map(function(s) { return s.user_id; });
@@ -9603,7 +9669,7 @@ server.listen(PORT, function() {
   console.log('Email: ' + (process.env.BREVO_KEY ? 'Brevo configured' : 'Not configured'));
   console.log('SMS: Messaging Service ' + MESSAGING_SERVICE_SID);
   console.log('Call Hours: ' + MIN_HOUR + ':00 AM - ' + MAX_HOUR + ':59 PM');
-  console.log('Stagger Window: ' + STAGGER_MINUTES + ' minutes');
+  console.log('Call spacing: ' + staggerSpacingSeconds() + 's apart within a call-time cohort (CALL_STAGGER_SECONDS; legacy hash window ' + STAGGER_MINUTES + ' min as fallback only)');
   console.log('Affiliate Commission: ' + AFFILIATE_COMMISSION_PERCENT + '%');
   console.log('Affiliate program: ' + (AFFILIATE_ENABLED ? 'ENABLED' : 'disabled (set AFFILIATE_ENABLED=true to enable)'));
   console.log('Min Payout: $' + (MIN_PAYOUT_CENTS / 100));
@@ -12344,6 +12410,9 @@ cron.schedule('45 * * * *', async function() {
     .neq('county', 'ftbend'); // Ft Bend handled separately
   
   if (!schedResult.data || schedResult.data.length === 0) return;
+  // Stagger window + 5 min buffer, from the busiest cohort (lib/stagger),
+  // never below the old literal 20.
+  var missedWindow = Math.max(20, stagger.staggerWindowMinutes(schedResult.data, staggerSpacingSeconds(), 0) + 5);
   
   for (var i = 0; i < schedResult.data.length; i++) {
     var sched = schedResult.data[i];
@@ -12353,8 +12422,8 @@ cron.schedule('45 * * * *', async function() {
     // Calculate minutes since scheduled time
     var minutesSinceScheduled = (currentHour - schedHour) * 60 + (currentMin - schedMin);
     
-    // Skip if scheduled time hasn't passed OR if within 20-min stagger window
-    if (minutesSinceScheduled < 20) continue;
+    // Skip if scheduled time hasn't passed OR if within the stagger window
+    if (minutesSinceScheduled < missedWindow) continue;
     
     // Check if call was made today
     var callResult = await supabase.from('call_history')
