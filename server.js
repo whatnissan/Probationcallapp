@@ -5758,7 +5758,13 @@ async function readTermsForMe(userId) {
   } catch (e) {
     // null = could not be read (§3). The app shows nothing and asks again
     // next launch; it must not lock someone out over a database hiccup.
-    console.error('[TERMS] /me read failed for ' + userId.slice(0, 8) + ':', e.message);
+    //
+    // Say so LOUDLY and say what it costs, because the symptom is silence:
+    // a null terms object looks exactly like "nothing to ask" from the
+    // client side, so an acceptance the app never collected leaves no other
+    // trace anywhere. Asked for by the iOS side, 2026-09-18.
+    console.error('[TERMS-READ-FAILED] /me served terms=null for ' + userId.slice(0, 8) +
+      ' — the app will NOT prompt for acceptance this launch. Reason: ' + e.message);
     return null;
   }
 }
@@ -9845,7 +9851,7 @@ app.get('/api/admin/dashboard', adminAuth, async function(req, res) {
     // is worth it to stop shipping every column of the profiles table on
     // every refresh.
     var usersResult = await supabase.from('profiles')
-      .select('id, email, credits, referred_by, is_disabled, is_admin, terms_accepted_at, created_at, last_login, referral_code, affiliate_balance_cents, ftbend_access')
+      .select('id, email, credits, referred_by, is_disabled, is_admin, terms_accepted_at, terms_version, created_at, last_login, referral_code, affiliate_balance_cents, ftbend_access')
       .order('created_at', { ascending: false });
     if (usersResult.error) {
       console.error('[ADMIN-DASH] profiles read failed:', usersResult.error.message);
@@ -9941,6 +9947,9 @@ app.get('/api/admin/dashboard', adminAuth, async function(req, res) {
         pendingPayouts: pendingPayoutCount !== null ? pendingPayoutCount : fallbackPending,
         affiliateOwed: owedSum !== null ? owedSum : fallbackOwed,
         termsAgreed: termsCount !== null ? termsCount : fallbackTerms,
+        // So the panel can mark an acceptance of an older document without
+        // hardcoding a version (migration 061, lib/terms).
+        termsVersions: { current: termsLib.CURRENT_VERSION, required: termsLib.REQUIRED_VERSION },
         disabledUsers: disabledCount !== null ? disabledCount : fallbackDisabled
       },
       users: users,

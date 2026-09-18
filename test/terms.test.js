@@ -65,3 +65,21 @@ test('page date parser: the forms the page uses, and garbage', () => {
   assert.equal(terms.lastUpdatedFromTermsHtml('Last Updated: February 30, 2026'), null);
   assert.equal(terms.lastUpdatedFromTermsHtml('no date here'), null);
 });
+
+// The admin panel reads the profile object the dashboard handler hands it,
+// and that handler selects NAMED COLUMNS. A field the panel renders but the
+// select omits is undefined in the UI — which reads as "no acceptance" for
+// every account, indistinguishable from the real thing. Pin both terms
+// columns to the select.
+test('admin: the dashboard select carries both terms columns the panel renders', () => {
+  const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const m = /\.select\('id, email, credits, referred_by[^']*'\)/.exec(server);
+  assert.ok(m, 'the admin dashboard named-column select should still be findable');
+  assert.match(m[0], /terms_accepted_at/);
+  assert.match(m[0], /terms_version/);
+  const admin = fs.readFileSync(path.join(__dirname, '..', 'public', 'admin.html'), 'utf8');
+  assert.match(admin, /function termsCell\(/, 'the panel renders the terms cell through termsCell');
+  assert.match(admin, /u\.terms_version/, 'termsCell shows which document was accepted');
+  assert.ok(!/badge yes'>Yes<\/span>":"<span class='badge no'>No/.test(admin),
+    'the old bare Yes/No terms badge should be gone');
+});
