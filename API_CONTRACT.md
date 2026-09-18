@@ -512,6 +512,10 @@ hours from `/offices`, which is everything render-time resolution needs.
 rule:** when no profile row exists it bootstraps a ZERO-credit one. For an
 iOS-first signup, `/me` IS first touch — refusing to create the profile would
 strand the account. Every other v1 endpoint stays side-effect-free on read.
+It also records the build number from the User-Agent (2026-09-18, as
+`/today` already did): `/me` is the one request every launch makes, so a
+build recorded only by `/today` went stale for anyone who opened the app
+without reaching it. Neither write changes anything the client can see.
 
 **Starter credits come from the database, not the app (2026-09-02, migration
 044).** A trigger on auth user creation creates the profile and grants

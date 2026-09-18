@@ -2106,6 +2106,14 @@ function v1Schedule(row, profile, activeIds) {
 // credits through the ledger) — for an iOS-first signup this IS first touch.
 app.get('/api/v1/me', authV1, async function(req, res) {
   try {
+    // Build visibility (migration 051), the same throttled fire-and-forget
+    // write /today makes. /me is the bootstrap call, so it is the ONE
+    // request every launch makes — and until 2026-09-18 only /today
+    // recorded the build, which left any account that opens the app and
+    // never reaches /today reporting whatever build it last polled with.
+    // Three accounts read as build 16 while TestFlight had them on 17, and
+    // the hour spent on that is the reason this line exists.
+    noteAppBuild(req.user.id, req.headers['user-agent']);
     // maybeSingle, NOT single. single() reports "no rows" as an error, so code
     // that only reads .data cannot tell "this row does not exist" from "the
     // read failed" — a timeout, a dropped connection, a PostgREST schema

@@ -83,3 +83,18 @@ test('admin: the dashboard select carries both terms columns the panel renders',
   assert.ok(!/badge yes'>Yes<\/span>":"<span class='badge no'>No/.test(admin),
     'the old bare Yes/No terms badge should be gone');
 });
+
+// Build visibility (migration 051). /today recorded the build and /me did
+// not, so an account that bootstrapped and never polled /today reported a
+// stale build — which read as "they never installed the new build" while
+// they had. Both entry points record it; neither may quietly stop.
+test('app build: both /me and /today record the build from the User-Agent', () => {
+  const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  function handlerBody(route) {
+    const i = server.indexOf("app.get('" + route + "', authV1");
+    assert.ok(i > 0, route + ' handler should exist');
+    return server.slice(i, i + 1200);
+  }
+  assert.match(handlerBody('/api/v1/me'), /noteAppBuild\(req\.user\.id, req\.headers\['user-agent'\]\)/);
+  assert.match(handlerBody('/api/v1/today'), /noteAppBuild\(req\.user\.id, req\.headers\['user-agent'\]\)/);
+});
