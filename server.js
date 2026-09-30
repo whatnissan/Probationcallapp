@@ -1015,23 +1015,42 @@ async function checkConsecutiveUnknown(userId, lastReason, notifyNumber, notifyE
 // could be a transient mishear; two in a row is a confident signal that
 // the user's ID/PIN is no longer valid at the hotline.
 //
-// Notification policy: silent on the first PIN_EXPIRED; one SMS+email at
-// auto-disable. Counter is reset by deductCreditOnce on any billable
-// MUST_TEST/NO_TEST and by /api/schedule on PIN re-save.
+// Notification policy (2026-09-30): EVERY occurrence tells the person
+// something. Below the threshold it is a hedged "we couldn't confirm your
+// result — call the line yourself", because one occurrence may be a
+// mishear; at the threshold it is the pause notice. The first one used to
+// be silent, which left the person with no verdict and no message that
+// morning — a silent morning is the worst outcome we have. Never pushes and
+// is never quieted: it is an action item (§2). Counter is reset by
+// deductCreditOnce on any billable MUST_TEST/NO_TEST and by /api/schedule
+// on PIN re-save.
 var PIN_EXPIRED_STREAK_THRESHOLD = 2;
+var PIN_EXPIRED_FIRST_NOTICE = '⚠️ We couldn\'t confirm your result today\n\nThe hotline said your PIN has expired. That can be a one-off mishear, so please call the hotline yourself today to check whether you need to test:\n+1 (936) 283-4848\n\nYou were not charged a credit for today. If the hotline says this again on your next check-in, we\'ll pause your daily checks until your PIN is sorted out.\n\n- ProbationCall.com';
 async function handlePinExpiredResult(userId, lastTranscript, notifyNumber, notifyEmail, notifyMethod) {
   var schedRes = await supabase.from('user_schedules')
     .select('consecutive_pin_expired, enabled')
     .eq('user_id', userId)
     .single();
-  if (schedRes.error || !schedRes.data) return;
+  if (schedRes.error || !schedRes.data) {
+    // Without the streak we cannot decide on a pause, but the person must
+    // still hear something this morning. The hedged notice is true on
+    // either count.
+    console.error('[PIN-EXPIRED] Streak read failed for ' + userId.slice(0, 8) + ' — sending the first-occurrence notice:', schedRes.error ? schedRes.error.message : 'no schedule');
+    await notify(notifyNumber, notifyEmail, notifyMethod, PIN_EXPIRED_FIRST_NOTICE, 'pin_expired_first')
+      .catch(function(e) { console.error('[PIN-EXPIRED] first notice failed for ' + userId.slice(0, 8) + ':', e.message); });
+    return;
+  }
   var newCount = (schedRes.data.consecutive_pin_expired || 0) + 1;
   await supabase.from('user_schedules')
     .update({ consecutive_pin_expired: newCount })
     .eq('user_id', userId);
   console.log('[PIN-EXPIRED] User ' + userId.slice(0, 8) + ' consecutive count: ' + newCount + '/' + PIN_EXPIRED_STREAK_THRESHOLD);
 
-  if (newCount < PIN_EXPIRED_STREAK_THRESHOLD) return;
+  if (newCount < PIN_EXPIRED_STREAK_THRESHOLD) {
+    await notify(notifyNumber, notifyEmail, notifyMethod, PIN_EXPIRED_FIRST_NOTICE, 'pin_expired_first')
+      .catch(function(e) { console.error('[PIN-EXPIRED] first notice failed for ' + userId.slice(0, 8) + ':', e.message); });
+    return;
+  }
   if (schedRes.data.enabled === false) {
     // Already disabled (e.g. via the UNKNOWN-streak path or manually). Don't re-notify.
     console.log('[PIN-EXPIRED] Schedule already disabled for ' + userId.slice(0, 8) + ' — skipping re-notify');
@@ -8177,9 +8196,9 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
       if (detectPinExpired(transcript)) {
         result = 'PIN_EXPIRED';
         console.log('[TRANSCRIBE] 🪪 PIN_EXPIRED detected for', callId);
-        // Notification is sent ONLY at auto-disable, not on every occurrence —
-        // a single mishear shouldn't spam the user. handlePinExpiredResult
-        // increments the counter and decides whether to disable + notify.
+        // handlePinExpiredResult increments the counter and sends the
+        // message: a hedged "call the line yourself" below the threshold
+        // (one occurrence may be a mishear), the pause notice at it.
         if (config.userId) {
           handlePinExpiredResult(config.userId, transcript, config.notifyNumber, config.notifyEmail, config.notifyMethod)
             .catch(function(e) { console.error('[PIN-EXPIRED] handler failed:', e.message); });
@@ -8869,6 +8888,7 @@ var EMAIL_SUBJECTS = {
   call_incomplete:    { subject: 'We couldn\'t complete today\'s check — call the hotline', stamp: true, emoji: '⚠️', color: '#f59e0b' },
   dial_failed:        { subject: 'We couldn\'t reach the hotline — trying again within the hour', stamp: true, emoji: '⚠️', color: '#f59e0b' },
   pin_expired_heard:  { subject: 'The hotline says your PIN has expired', stamp: true, emoji: '⚠️', color: '#f59e0b' },
+  pin_expired_first:  { subject: 'We couldn\'t confirm your result today — call the hotline', stamp: true, emoji: '⚠️', color: '#f59e0b' },
   ftbend_final_fail:  { subject: 'We couldn\'t get today\'s Fort Bend color — call the hotline', stamp: true, emoji: '⚠️', color: '#f59e0b' },
   // Internal
   verify_volume_admin:  { subject: 'ADMIN: verification text volume alert', stamp: true, emoji: '🛠' },
