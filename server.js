@@ -22,7 +22,7 @@ const { createClient } = require('@supabase/supabase-js');
 const {
   FTBEND_COLORS, FTBEND_PHASES, FTBEND_MISRECOGNITIONS, KEYWORDS,
   validateFtbendColor, detectColor, detectPhaseColors, detectPinExpired,
-  phoneticMatch, doCrossCheck
+  phoneticMatch, doCrossCheck, setColorVocabulary
 } = require('./lib/detection');
 const { formatLocalDay, todayMD, wouldExceedCutoff, wouldExceedFtbendCutoff, ftbendRetryDelayMs, endOfLocalDayEpochSeconds } = require('./lib/time');
 const { computeTieredPriceCents, creditPricing, MAX_EXACT_CREDITS } = require('./lib/pricing');
@@ -2307,7 +2307,7 @@ app.get('/api/v1/today', authV1, async function(req, res) {
         // Fort Bend morning decode to the app's unknown(String) fallback
         // ("Unrecognized result") from 2026-08-25 until 2026-09-07. The
         // mapper prefers the verdict stored at call time (migration 036).
-        payload.result = v1MapResult(resultRow.result, userColor, resultRow.verdict);
+        payload.result = v1MapResult(resultRow, userColor, resultRow.verdict);
         payload.billed = !!resultRow.billed_at;
         payload.resolvedAt = resultRow.created_at;
         payload.attempt = Math.max(1, (attempts.data || []).length);
@@ -2395,26 +2395,52 @@ var V1_RESULT_PASSTHROUGH = /^(MUST_TEST|NO_TEST|UNKNOWN|HOTLINE_DOWN|CALL_FAILE
 // because 1 would be a number we made up.
 var V1_ATTEMPTS_LOGGED_SINCE = '2026-08-15T00:00:00.000Z';
 
+// LEGACY ONLY: rows written before migration 062 carry the announcement as a
+// formatted string and nothing else. The old capture was /P\d:\s*([^P]+)/,
+// which stops at the next capital P — so 'P1:Phase 1 b P2:Phase 3' produced
+// an EMPTY list and the row summary read "Nothing announced" on a genuine
+// phase day, while 'P1:Gray P2:?' produced ['Gray', '?'] and put a literal
+// '?' where §4.1 promises a colour or a phase group. Split on the segment
+// marker instead, and drop a '?' placeholder rather than passing it on.
 function v1ParseAnnouncement(raw) {
-  var r = String(raw || '');
+  var r = String(raw || '').trim();
   var m = r.match(/^COLOR:\s*(.+)$/i);
   if (m) return { colors: [m[1].trim()], phases: null };
-  if (/^P1:/i.test(r)) {
-    var phases = [];
-    r.replace(/P\d:\s*([^P]+)/gi, function(_, v) { phases.push(v.trim()); return ''; });
-    phases = phases.filter(Boolean);
+  if (/^P\d+:/i.test(r)) {
+    var phases = r.split(/\s*\bP\d+:\s*/i).map(function(v) { return v.trim(); })
+      .filter(function(v) { return v.length > 0 && v !== '?'; })
+      .map(function(v) { return v.replace(/^phase\s*/i, '').trim(); })
+      .filter(Boolean);
     return { colors: null, phases: phases };
   }
   return null;
 }
 
-function v1MapResult(raw, userColor, storedVerdict) {
-  var r = String(raw || '');
+// What the office announced for one call row. Structured columns first
+// (migration 062) — never re-parse a string we wrote ourselves, which is the
+// same lesson as the email subject sniff, the office note keyword match and
+// the promo ledger note. The string is the fallback for older rows.
+function v1AnnouncementOf(row) {
+  if (!row) return null;
+  var announced = Array.isArray(row.announced) ? row.announced.filter(Boolean) : null;
+  var phases = Array.isArray(row.phases) ? row.phases.filter(Boolean) : null;
+  if ((announced && announced.length) || (phases && phases.length)) {
+    return { colors: announced && announced.length ? announced : null,
+             phases: phases && phases.length ? phases : null };
+  }
+  return v1ParseAnnouncement(row.result);
+}
+
+// `row` may be a full call row (preferred — it carries the structured
+// announcement) or, for callers that only hold the string, an object with
+// just `result`.
+function v1MapResult(row, userColor, storedVerdict) {
+  var r = String((row && row.result !== undefined ? row.result : row) || '');
   if (V1_RESULT_PASSTHROUGH.test(r)) return r;
   if (r === 'RETRY_PENDING') return 'IN_PROGRESS';
   if (r === 'NO_CREDITS') return 'NOT_CALLED';       // skipped, no call placed
   if (r === 'TRANSCRIBER_DOWN' || r === 'RECORDING_UNAVAILABLE') return 'UNKNOWN';
-  var ann = v1ParseAnnouncement(r);
+  var ann = (row && row.result !== undefined) ? v1AnnouncementOf(row) : v1ParseAnnouncement(r);
   if (ann) {
     // Recorded at call time (migration 036) — the truth, not a reconstruction.
     if (storedVerdict) return storedVerdict;
@@ -2446,7 +2472,7 @@ function v1Summary(row) {
     ? ((FTBEND_OFFICE_META[row.ftbend_office] || {}).name || 'Fort Bend')
     : 'Montgomery County';
   if (row.result === 'NO_CREDITS') return 'Skipped — out of credits · ' + place;
-  var ann = v1ParseAnnouncement(row.result);
+  var ann = v1AnnouncementOf(row);
   if (ann) {
     var what = (ann.colors || ann.phases || []).join(' / ');
     return (what ? what + ' announced' : 'Nothing announced') + ' · ' + place;
@@ -2535,7 +2561,7 @@ app.get('/api/v1/history', authV1, async function(req, res) {
       lastSeen = rows[rows.length - 1];
       before = lastSeen.created_at;
       rows.forEach(function(r) {
-        var mapped = v1MapResult(r.result, userColor, r.verdict);
+        var mapped = v1MapResult(r, userColor, r.verdict);
         if (filter && mapped !== filter) return;
         if (picked.length < limit) picked.push({ row: r, mapped: mapped });
       });
@@ -3890,7 +3916,31 @@ async function loadColorCatalog() {
   (aliases.data || []).forEach(function(a) { aliasMap[a.alias] = a.color_name; });
   _colorCache = { byName: byName, aliasMap: aliasMap };
   _colorCacheAt = now;
+  // The catalogue IS the detector's vocabulary (2026-09-29). Nickel and Iron
+  // were catalogue rows that detection did not know, so a Nickel morning
+  // resolved only because the cross-check fell back to finishprobation.com.
+  // Union, never replacement — see setColorVocabulary.
+  try {
+    var v = setColorVocabulary({ colors: Object.keys(byName), aliases: aliasMap });
+    console.log('[FTBEND-VOCAB] catalogue loaded: ' + Object.keys(byName).length + ' colours, ' +
+      Object.keys(aliasMap).length + ' aliases -> detection knows ' + v.colors + ' colours (+' +
+      v.colorsAdded + ' from the catalogue) and ' + v.aliases + ' aliases (+' + v.aliasesAdded + ')' +
+      (v.codeOnly.length ? '; known to the code but NOT in the catalogue: ' + v.codeOnly.join(', ') : ''));
+  } catch (e) {
+    console.error('[FTBEND-VOCAB] could not apply the catalogue to detection:', e.message);
+  }
   return _colorCache;
+}
+
+// Load the catalogue so detection has it before anything dials. Called at
+// boot and at the top of the morning Fort Bend run: a stale vocabulary is
+// how a catalogue colour goes unrecognised for a whole morning.
+async function warmColorVocabulary(why) {
+  try {
+    await loadColorCatalog();
+  } catch (e) {
+    console.error('[FTBEND-VOCAB] catalogue read failed (' + why + ') — detection keeps its built-in list:', e.message);
+  }
 }
 
 // §4.11 `recent` — 90 days of announcements for all three Fort Bend offices.
@@ -9771,6 +9821,7 @@ server.listen(PORT, function() {
   console.log('Min Payout: $' + (MIN_PAYOUT_CENTS / 100));
   console.log('========================================');
   loadAllSchedules();
+  warmColorVocabulary('boot');
   checkMigrationDrift().catch(function(e) {
     console.error('[MIGRATION-CHECK] threw (non-fatal):', e.message);
   });
@@ -11629,6 +11680,8 @@ app.get('/admin', function(req, res) {
 
 // Call all 3 Fort Bend offices
 async function ftbendDailyColorCall() {
+  // Fresh vocabulary before the first dial of the morning.
+  await warmColorVocabulary('ftbend daily run');
   console.log('[FTBEND] Starting daily color detection for ALL offices...');
   
   var offices = Object.keys(FTBEND_OFFICES);
@@ -12088,10 +12141,19 @@ async function deliverFtbendNotification(row) {
     if (dcs.data && dcs.data.transcript) ftTranscript = dcs.data.transcript;
   } catch (e) { /* transcript is evidence, not delivery-critical */ }
 
+  // ONE classifier, shared with the office board (lib/ftbend). The format
+  // follows the ANNOUNCEMENT, not the office: Rosenberg 2 is flagged as a
+  // phases office, so a day it announced a plain colour used to be written
+  // 'P1:Gray P2:?' — five days in September 2026. The structured columns
+  // (migration 062) are what every reader uses; the string stays for the
+  // year of history that predates them.
+  var ftAnn = ftbend.classifyAnswer(row.result);
   var ftRow = {
     user_id: userId,
     target_number: FTBEND_OFFICES[oid] ? FTBEND_OFFICES[oid].number : COUNTIES.ftbend.number,
-    result: row.has_phases ? 'P1:' + (row.phase1 || '?') + ' P2:' + (row.phase2 || '?') : 'COLOR:' + row.result,
+    result: ftbend.resultStringFor(row.result),
+    announced: ftAnn.announced,
+    phases: ftAnn.phases,
     transcript: ftTranscript,
     county: 'ftbend',
     ftbend_office: oid,
