@@ -845,6 +845,18 @@ today's — the server must not accept a time it cannot honour. Fort Bend's
 office call is fixed at 5:05, so the user's time is only when they are told.
 Onboarding should offer a picker with 06:00 preselected, not a fixed default.
 
+**Every writer enforces the Fort Bend floor (2026-09-30).** The website's own
+save had no Fort Bend floor and its pickers offered 5:00 and 5:05, so it
+stored times this endpoint refuses. PUT is a full replace that sends the
+stored time back, so every save from those subscribers failed naming
+`callTime`, from every build — they could not change how they are told or
+their end date. The website now refuses the same times, and migration 064
+moves every Fort Bend schedule stored below `05:10` to `05:10`. That delays a
+message by at most five minutes: a time already past when the result lands
+means "send now". Once 064 has run, no stored Fort Bend time is below the
+floor, so a client never has to special-case a stored time it cannot send
+back.
+
 **`timezone` is written as the county's zone, not the device's (2026-09-10).**
 A device zone shifted the dial, the cutoff, and `/today`'s day boundary
 together — one hour late by the county's clock for a traveller in Mountain

@@ -515,7 +515,7 @@ select option { background: #1a1a2e; color: #fff; }
           <div class="time-note" id="schedTimeNote">⏰ Calls can only be scheduled between <strong>6:00 AM</strong> and <strong>2:59 PM</strong></div>
           <div class="time-note" id="schedFtbendNote" style="display:none;background:rgba(0,255,136,0.1);border-color:rgba(0,255,136,0.3);color:#00ff88">📱 Fort Bend: Color is detected at 5:05 AM. Choose when to receive your notification:</div>
         <div id="ftbendTimeSelect" style="display:none;margin-top:10px">
-          <select id="ftbendNotifyHour" style="width:100px">
+          <select id="ftbendNotifyHour" style="width:100px" onchange="applyFtbendFloor(this, document.getElementById('ftbendNotifyMin'), true)">
             <option value="5">5 AM</option><option value="6">6 AM</option><option value="7">7 AM</option><option value="8">8 AM</option><option value="9">9 AM</option>
           </select>
           <span style="padding:10px">:</span>
@@ -1417,11 +1417,18 @@ function loadUser() {
           document.getElementById('ftbendTabBtn').style.display = 'block';
         }
         document.getElementById('schedPin').value = d.schedule.pin;
-        document.getElementById('schedHour').value = d.schedule.hour;
-        document.getElementById('schedMin').value = d.schedule.minute;
+        if (d.schedule.county !== 'ftbend') {
+          setPickerValue(document.getElementById('schedHour'), d.schedule.hour, hourLabel(d.schedule.hour));
+          setPickerValue(document.getElementById('schedMin'), d.schedule.minute, pad2(d.schedule.minute));
+        }
         if (d.schedule.county === 'ftbend') {
-          document.getElementById('ftbendNotifyHour').value = d.schedule.hour || 5;
-          document.getElementById('ftbendNotifyMin').value = d.schedule.minute || 10;
+          // `d.schedule.minute || 10` showed a stored :00 as :10, so the next
+          // save moved the time. Only a MISSING value takes the default.
+          var ftH = d.schedule.hour == null ? 5 : d.schedule.hour;
+          var ftM = d.schedule.minute == null ? 10 : d.schedule.minute;
+          setPickerValue(document.getElementById('ftbendNotifyHour'), ftH, hourLabel(ftH));
+          setPickerValue(document.getElementById('ftbendNotifyMin'), ftM, pad2(ftM));
+          applyFtbendFloor(document.getElementById('ftbendNotifyHour'), document.getElementById('ftbendNotifyMin'), true);
           window.myFtbendColor = d.userColor || null;
           if (document.getElementById('schedColor')) fillColorPickers(window.myFtbendColor);
           if (document.getElementById('ftbendOffice')) {
@@ -2046,6 +2053,44 @@ document.getElementById('callForm').onsubmit = function(e) {
   });
 };
 
+// A picker must be able to show the time that is stored. A stored value with
+// no matching <option> left the select blank, and the save then fell back to
+// a default — silently moving the person's time (an app-set 10:00 Fort Bend
+// time would have saved as 5:10). Add the stored value, in order, instead.
+function hourLabel(h) { return (h % 12 || 12) + (h < 12 ? ' AM' : ' PM'); }
+function pad2(n) { return (n < 10 ? '0' : '') + n; }
+function setPickerValue(sel, value, label) {
+  if (!sel || value === null || value === undefined || value === '') return;
+  var v = String(value);
+  var opts = Array.prototype.slice.call(sel.options);
+  if (!opts.some(function (o) { return o.value === v; })) {
+    var opt = document.createElement('option');
+    opt.value = v;
+    opt.textContent = label;
+    var after = opts.filter(function (o) { return parseInt(o.value, 10) > parseInt(v, 10); })[0];
+    sel.insertBefore(opt, after || null);
+  }
+  sel.value = v;
+}
+
+// §4.7: Fort Bend results can be sent from 5:10. The office call runs at
+// 5:05 and the server refuses anything earlier — so at 5 AM the minutes
+// before :10 are not offered, and a selection below the floor moves up.
+function applyFtbendFloor(hourSel, minSel, isFtbend) {
+  if (!hourSel || !minSel) return;
+  var h = parseInt(hourSel.value, 10);
+  Array.prototype.forEach.call(minSel.options, function (o) {
+    var early = !!isFtbend && h * 60 + parseInt(o.value, 10) < 5 * 60 + 10;
+    o.disabled = early;
+    o.hidden = early;
+  });
+  var picked = minSel.options[minSel.selectedIndex];
+  if (picked && picked.disabled) {
+    var first = Array.prototype.filter.call(minSel.options, function (o) { return !o.disabled; })[0];
+    if (first) minSel.value = first.value;
+  }
+}
+
 document.getElementById('scheduleForm').onsubmit = function(e) {
   e.preventDefault();
   var method = document.getElementById('schedMethod').value;
@@ -2057,8 +2102,16 @@ document.getElementById('scheduleForm').onsubmit = function(e) {
   var hour, minute;
   
   if (county === 'ftbend') {
-    hour = parseInt(document.getElementById('ftbendNotifyHour').value) || 5;
-    minute = parseInt(document.getElementById('ftbendNotifyMin').value) || 10;
+    // NOT `|| 10`: :00 parses to 0, which is falsy, so every round hour a
+    // Fort Bend user picked (6:00, 7:00…) was saved ten minutes later.
+    hour = parseInt(document.getElementById('ftbendNotifyHour').value, 10);
+    minute = parseInt(document.getElementById('ftbendNotifyMin').value, 10);
+    if (isNaN(hour)) hour = 5;
+    if (isNaN(minute)) minute = 10;
+    if (hour * 60 + minute < 5 * 60 + 10) {
+      alert('Fort Bend results can be sent from 5:10 AM — the office call runs at 5:05.');
+      return;
+    }
   } else {
     hour = parseInt(document.getElementById('schedHour').value) || 6;
     minute = parseInt(document.getElementById('schedMin').value) || 0;
@@ -2318,6 +2371,9 @@ function applyOnboardCountyUI() {
       document.getElementById('onboardHour').value = '6';
     }
   }
+  // At 5 AM, Fort Bend's :00 is below the 5:10 floor (§4.7); re-evaluate on
+  // every county change so switching back to Montgomery re-enables it.
+  applyFtbendFloor(document.getElementById('onboardHour'), document.getElementById('onboardMinute'), ftbend);
 }
 
 function onboardNext(step) {
@@ -3216,7 +3272,7 @@ function sendSupportMessage(){
       <div class="form-group">
         <label id="onboardTimeLabel">Call time</label>
         <div style="display:flex;gap:10px;align-items:center">
-          <select id="onboardHour" style="flex:1">
+          <select id="onboardHour" style="flex:1" onchange="applyFtbendFloor(this, document.getElementById('onboardMinute'), document.getElementById('onboardCounty').value === 'ftbend')">
             <!-- 5 AM is Fort Bend only: their result comes from the 5:05 AM
                  system call, so an earlier notification is meaningful. It is
                  hidden for Montgomery, whose own /api/schedule rejects

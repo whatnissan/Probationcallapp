@@ -6276,6 +6276,20 @@ app.post('/api/notify-method', auth, async function(req, res) {
 });
 
 app.post('/api/schedule', auth, async function(req, res) {
+  // §4.7 call-time floor for Fort Bend, the same one PUT /api/v1/schedule
+  // applies. The website had none and its pickers offered 5:00 and 5:05, so
+  // it stored times the app's save then refused on EVERY edit (PUT is a full
+  // replace and sends the stored time back) — those subscribers could change
+  // nothing from the app. Migration 064 moved the stored rows to 05:10.
+  // Checked FIRST: the colour block below writes the profile, and a refused
+  // save must not change anything.
+  if ((req.body.county || 'montgomery') === 'ftbend') {
+    var ftFloorHour = parseInt(req.body.hour) || 6;
+    var ftFloorMin = parseInt(req.body.minute) || 0;
+    if (ftFloorHour < 5 || (ftFloorHour === 5 && ftFloorMin < 10)) {
+      return res.status(400).json({ error: 'Fort Bend results can be sent from 5:10 AM — the office call runs at 5:05.', field: 'callTime' });
+    }
+  }
   // §4.7 (2026-09-30): Fort Bend needs a colour, and on the website the
   // colour is a SEPARATE request (POST /api/profile/color) that simply never
   // came on 2026-09-30 — the schedule saved fine and delivered a verdictless
