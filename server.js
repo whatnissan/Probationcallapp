@@ -12314,6 +12314,29 @@ cron.schedule('5 5 * * *', function() {
   ftbendDailyColorCall();
 }, { timezone: 'America/Chicago' });
 
+// The colour CATALOGUE for the website (the daily announcements are
+// /api/ftbend/colors below). The schedule form needs it so a Fort Bend
+// schedule can be saved with a colour in one request: until 2026-09-30 the
+// colour lived only on the Ft Bend tab, the form had no picker, and the save
+// refused — a dead end a real user would abandon. Free text is how 'blueish'
+// got on an account and never matched an announcement.
+app.get('/api/ftbend/catalog', auth, async function(req, res) {
+  try {
+    var catalog = await loadColorCatalog();
+    var out = Object.keys(catalog.byName).map(function(n) {
+      var c = catalog.byName[n];
+      return { name: c.name, displayName: c.display_name, hex: c.hex, isProgram: c.is_program === true };
+    }).sort(function(a, b) {
+      if (a.isProgram !== b.isProgram) return a.isProgram ? 1 : -1;   // colours first, Prep designations last
+      return a.displayName.localeCompare(b.displayName);
+    });
+    res.json({ colors: out });
+  } catch (e) {
+    console.error('[FTBEND] catalogue read failed for the web form:', e.message);
+    res.status(500).json({ error: GENERIC_SERVER_ERROR });
+  }
+});
+
 app.get("/api/ftbend/colors", auth, async function(req, res) {
   // Get colors from all Fort Bend offices
   var result = await supabase.from("daily_county_status")

@@ -56,3 +56,37 @@ test('NO_COLOR never pushes — it is an action item, like UNKNOWN', () => {
   const i = server.indexOf("if (ftVerdict === 'MUST_TEST' || ftVerdict === 'NO_TEST')");
   assert.ok(i > 0, 'the push gate should still name only the two verdicts that push');
 });
+
+// The dead end this closes (2026-09-30): the server refuses a Fort Bend
+// schedule with no colour, the website's schedule form had no colour field,
+// and the colour lived on a different tab — so the form could not save at
+// all. Onboarding had the same shape: schedule first, colour after, which
+// would now fail at the first step.
+test('the website saves the colour WITH the schedule, in one request', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'public', 'dashboard.html'), 'utf8');
+  assert.match(dash, /id="schedColorGroup"/, 'the schedule form has a colour group');
+  assert.match(dash, /id="schedColor"/, 'with a picker, not free text');
+  // Both POSTs to /api/schedule carry the colour.
+  // Every place that sends a schedule BODY must send the colour with it.
+  const posts = dash.split("fetch('/api/schedule'").slice(1)
+    .map(function (chunk) { return chunk.slice(0, 1600); })
+    .filter(function (chunk) { return /body: JSON\.stringify\(\{[\s\S]{0,80}county:/.test(chunk); });
+  assert.strictEqual(posts.length, 2, 'the schedule form and onboarding are the two schedule writes');
+  posts.forEach(function (chunk, i) {
+    assert.match(chunk, /ftbendColor/, 'schedule POST #' + (i + 1) + ' sends the colour');
+  });
+  // The picker is filled from the catalogue, so 'blueish' cannot be typed in.
+  assert.match(dash, /\/api\/ftbend\/catalog/);
+  assert.match(dash, /function fillColorPickers/);
+  // And the group follows the county, like the office select.
+  assert.match(dash, /schedColorGroup\.style\.display = isFtbend/);
+});
+
+test('the catalogue endpoint serves the picker, colours before program rows', () => {
+  const server2 = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const i = server2.indexOf("app.get('/api/ftbend/catalog'");
+  assert.ok(i > 0, 'the web catalogue endpoint exists');
+  const ep = server2.slice(i, i + 1200);
+  assert.match(ep, /loadColorCatalog\(\)/, 'one source: the same catalogue detection uses');
+  assert.match(ep, /isProgram \? 1 : -1/, 'Prep designations sort last');
+});

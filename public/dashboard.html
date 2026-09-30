@@ -491,6 +491,7 @@ select option { background: #1a1a2e; color: #fff; }
       <form id="scheduleForm">
         <div class="form-group"><label>County</label><select id="schedCounty"><option value="montgomery">Montgomery County</option><option value="ftbend">Fort Bend County</option></select></div>
         <div class="form-group" id="ftbendOfficeGroup" style="display:none"><label>Fort Bend Office</label><select id="ftbendOffice"><option value="missouri">Missouri City</option><option value="rosenberg">Rosenberg (3669)</option><option value="rosenberg2">Rosenberg 2 (3671)</option></select><small style="display:block;margin-top:5px;color:#8892b0">Select the office/hotline you call</small></div>
+        <div class="form-group" id="schedColorGroup" style="display:none"><label>Your Assigned Color</label><select id="schedColor"><option value="">Choose your colour…</option></select><small style="display:block;margin-top:5px;color:#8892b0">The colour your officer assigned you. We compare it to the colour announced each morning and tell you whether it's your day. Saved with this form — you don't need the Ft Bend tab.</small></div>
         <div class="form-group"><label>6-Digit PIN</label><input type="text" id="schedPin" maxlength="6" placeholder="123456" required></div>
         <div class="form-group">
           <label>Notification Method</label>
@@ -1134,6 +1135,36 @@ function renderColorAnalytics(data) {
 }
 
 
+// The colour catalogue for the schedule form's picker and the onboarding
+// suggestions. One request, cached for the session; the picker stays empty
+// rather than wrong if it fails, and the server validates whatever is sent.
+var _ftbendCatalog = null;
+function loadFtbendCatalog() {
+  if (_ftbendCatalog) return Promise.resolve(_ftbendCatalog);
+  return fetch('/api/ftbend/catalog', { headers: { Authorization: 'Bearer ' + token } })
+    .then(function(r) { return r.json(); })
+    .then(function(d) { _ftbendCatalog = (d && d.colors) || []; return _ftbendCatalog; })
+    .catch(function(e) { console.error('[FTBEND] catalogue load failed', e); return []; });
+}
+
+function fillColorPickers(selected) {
+  return loadFtbendCatalog().then(function(colors) {
+    var sel = document.getElementById('schedColor');
+    if (sel && colors.length) {
+      var want = String(selected || sel.value || '').toLowerCase();
+      sel.innerHTML = '<option value="">Choose your colour…</option>' + colors.map(function(c) {
+        return '<option value="' + c.name + '"' + (c.name === want ? ' selected' : '') + '>' +
+          c.displayName + (c.isProgram ? ' (program)' : '') + '</option>';
+      }).join('');
+    }
+    var list = document.getElementById('ftbendColorList');
+    if (list && colors.length) {
+      list.innerHTML = colors.map(function(c) { return '<option value="' + c.displayName + '"></option>'; }).join('');
+    }
+    return colors;
+  });
+}
+
 function renderFtbendHistory(filter) {
   var el = document.getElementById("colorHistory");
   var colors = window.ftbendColorData || [];
@@ -1390,6 +1421,8 @@ function loadUser() {
         if (d.schedule.county === 'ftbend') {
           document.getElementById('ftbendNotifyHour').value = d.schedule.hour || 5;
           document.getElementById('ftbendNotifyMin').value = d.schedule.minute || 10;
+          window.myFtbendColor = d.userColor || null;
+          if (document.getElementById('schedColor')) fillColorPickers(window.myFtbendColor);
           if (document.getElementById('ftbendOffice')) {
             document.getElementById('ftbendOffice').value = d.schedule.ftbend_office || 'missouri';
           }
@@ -2049,6 +2082,10 @@ document.getElementById('scheduleForm').onsubmit = function(e) {
       timezone: document.getElementById('schedTZ').value,
       quietMode: document.getElementById('schedQuiet') ? document.getElementById('schedQuiet').checked : false,
       ftbend_office: document.getElementById('ftbendOffice') ? document.getElementById('ftbendOffice').value : 'missouri',
+      // Saved in the SAME request as the schedule (2026-09-30). The server
+      // refuses a Fort Bend schedule without a colour, and sending it from a
+      // separate tab afterwards meant this form could never save on its own.
+      ftbendColor: document.getElementById('schedColor') ? document.getElementById('schedColor').value : '',
       smsConsent: document.getElementById('schedSmsConsent').checked
     })
   }).then(function(r) { return r.json(); }).then(function(d) {
@@ -2250,6 +2287,7 @@ function applyOnboardCountyUI() {
   var ftbend = document.getElementById('onboardCounty').value === 'ftbend';
   document.getElementById('onboardPinGroup').style.display = ftbend ? 'none' : 'block';
   document.getElementById('onboardColorGroup').style.display = ftbend ? 'block' : 'none';
+  if (ftbend) fillColorPickers(null);
 
   // Fort Bend users are NOT called individually — the 5:05 AM system call
   // reads the county hotline and their chosen time is when we notify them.
@@ -2422,6 +2460,10 @@ async function completeOnboarding() {
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
       body: JSON.stringify({
         county: county,
+        // In the SAME request: the server refuses a Fort Bend schedule with
+        // no colour, and onboarding saved the schedule first and the colour
+        // after — which would now fail at the first step.
+        ftbendColor: county === 'ftbend' ? color : undefined,
         pin: county === 'ftbend' ? '' : pin,
         notifyNumber: phone || '',
         notifyEmail: userEmail,
@@ -2444,14 +2486,8 @@ async function completeOnboarding() {
     return fail('We couldn\'t reach the server. Check your connection and try again.');
   }
 
-  // Fort Bend colour — non-fatal, the schedule is already saved.
-  if (county === 'ftbend' && color) {
-    await fetch('/api/profile/color', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
-      body: JSON.stringify({ color: color })
-    }).catch(function(e) { console.error('[ONBOARD] color save failed', e); });
-  }
+  // The colour went with the schedule above, so there is nothing to save
+  // here any more. The standalone endpoint stays for the Ft Bend tab.
 
   // Probation end date — optional and non-fatal.
   if (endDate) {
@@ -2605,6 +2641,11 @@ function updateCountyUI(selectId, pinId) {
   var callFtbendOfficeGroup = document.getElementById("callFtbendOfficeGroup");
   if (callFtbendOfficeGroup) callFtbendOfficeGroup.style.display = isFtbend ? "block" : "none";
   if (ftbendOfficeGroup) ftbendOfficeGroup.style.display = isFtbend ? "block" : "none";
+  var schedColorGroup = document.getElementById("schedColorGroup");
+  if (schedColorGroup) {
+    schedColorGroup.style.display = isFtbend ? "block" : "none";
+    if (isFtbend) fillColorPickers(window.myFtbendColor || null);
+  }
   
   if (ftbendNote) ftbendNote.style.display = isFtbend ? 'block' : 'none';
   if (ftbendTime) ftbendTime.style.display = isFtbend ? 'flex' : 'none';
@@ -3127,7 +3168,8 @@ function sendSupportMessage(){
       </div>
       <div class="form-group" id="onboardColorGroup" style="display:none">
         <label>Your Assigned Color</label>
-        <input type="text" id="onboardColor" placeholder="e.g. Blue, Red, Green" style="font-size:1.1rem">
+        <input type="text" id="onboardColor" list="ftbendColorList" placeholder="e.g. Blue, Red, Green" style="font-size:1.1rem" autocomplete="off">
+        <datalist id="ftbendColorList"></datalist>
         <small style="display:block;margin-top:8px;color:#8892b0">The colour your probation officer assigned you. We compare it to the colour announced each morning and tell you whether it's your day.</small>
       </div>
       <div class="status error" id="onboardErr2" style="display:none;margin-bottom:10px"></div>
