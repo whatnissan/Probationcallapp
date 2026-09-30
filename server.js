@@ -2230,7 +2230,7 @@ app.get('/api/v1/me', authV1, async function(req, res) {
 // kinds require a call_events table (backlogged, not built) and are not
 // emitted — synthesizing them would narrate a call from data we never
 // stored.
-var V1_USABLE_TODAY = /^(MUST_TEST|NO_TEST|PIN_EXPIRED|UNKNOWN|HOTLINE_DOWN|CALL_FAILED|TRANSCRIBER_DOWN|RECORDING_UNAVAILABLE|COLOR:|P1:)/;
+var V1_USABLE_TODAY = /^(MUST_TEST|NO_TEST|NO_COLOR|PIN_EXPIRED|UNKNOWN|HOTLINE_DOWN|CALL_FAILED|TRANSCRIBER_DOWN|RECORDING_UNAVAILABLE|COLOR:|P1:)/;
 app.get('/api/v1/today', authV1, async function(req, res) {
   try {
     // Build visibility (migration 051): which build this person is on, from
@@ -2389,7 +2389,7 @@ app.get('/api/v1/today', authV1, async function(req, res) {
 // for Fort Bend it stores what the hotline ANNOUNCED ("COLOR:Turquoise"), not
 // the user's verdict. Every typed field a client sees goes through this
 // mapper so a legacy value can never leak out as if it were an enum member.
-var V1_RESULT_PASSTHROUGH = /^(MUST_TEST|NO_TEST|UNKNOWN|HOTLINE_DOWN|CALL_FAILED|PIN_EXPIRED|WRONG_PIN|IN_PROGRESS|NOT_CALLED|SCHEDULED)$/;
+var V1_RESULT_PASSTHROUGH = /^(MUST_TEST|NO_TEST|NO_COLOR|UNKNOWN|HOTLINE_DOWN|CALL_FAILED|PIN_EXPIRED|WRONG_PIN|IN_PROGRESS|NOT_CALLED|SCHEDULED)$/;
 // call_attempts (migration 032) began recording on this date. Rows older than
 // it have no attempt data at all — `attempts` is null there rather than 1,
 // because 1 would be a number we made up.
@@ -4353,6 +4353,22 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
       ftbendColorName = resolved.name;
     }
 
+    // §4.7 (2026-09-30): a Fort Bend schedule without a colour bills a credit
+    // a day to announce a colour and say nothing about the subscriber's own
+    // test. One was created on 2026-09-30 and every morning since read
+    // "couldn't tell yet". A colour already on file satisfies this, so a
+    // client changing only the call time need not resend it.
+    if (county === 'ftbend' && !ftbendColorName) {
+      var haveColor = await supabase.from('profiles').select('user_color').eq('id', req.user.id).maybeSingle();
+      if (haveColor.error) {
+        console.error('[V1-SCHEDULE] colour check failed for ' + req.user.id.slice(0, 8) + ':', haveColor.error.message);
+        return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+      }
+      if (!haveColor.data || !haveColor.data.user_color) {
+        return v1Error(res, 400, 'ftbend_color_required', 'Choose your assigned Fort Bend colour — without it we cannot tell you whether you have to test.', false, 'ftbendColor');
+      }
+    }
+
     // §4.7 testingOfficeId (migration 054). The ONE field here that is not
     // full-replace: omitted means unchanged, explicit null clears. PUT
     // rewrites the whole schedule, and a client that does not know the
@@ -6211,6 +6227,35 @@ app.post('/api/notify-method', auth, async function(req, res) {
 });
 
 app.post('/api/schedule', auth, async function(req, res) {
+  // §4.7 (2026-09-30): Fort Bend needs a colour, and on the website the
+  // colour is a SEPARATE request (POST /api/profile/color) that simply never
+  // came on 2026-09-30 — the schedule saved fine and delivered a verdictless
+  // announcement every morning. Accept a colour inline if the form sends one,
+  // otherwise require one already on file.
+  if ((req.body.county || 'montgomery') === 'ftbend') {
+    var rawColor = req.body.ftbendColor || req.body.ftbend_color || req.body.color || null;
+    var haveColorRow = await supabase.from('profiles').select('user_color').eq('id', req.user.id).maybeSingle();
+    if (haveColorRow.error) {
+      console.error('[SCHEDULE] colour check failed for ' + req.user.id.slice(0, 8) + ':', haveColorRow.error.message);
+      return res.status(500).json({ error: GENERIC_SERVER_ERROR });
+    }
+    var onFile = haveColorRow.data && haveColorRow.data.user_color;
+    if (rawColor && String(rawColor).trim() !== '') {
+      var schedCatalog = await loadColorCatalog().catch(function() { return null; });
+      var schedResolved = schedCatalog ? resolveColor(schedCatalog, rawColor) : null;
+      if (!schedResolved) {
+        return res.status(400).json({ error: '"' + String(rawColor).slice(0, 30) + '" is not a Fort Bend colour we recognise.', field: 'ftbendColor' });
+      }
+      var colorSave = await supabase.from('profiles').update({ user_color: schedResolved.name }).eq('id', req.user.id);
+      if (colorSave.error) {
+        console.error('[SCHEDULE] colour save failed for ' + req.user.id.slice(0, 8) + ':', colorSave.error.message);
+        return res.status(500).json({ error: GENERIC_SERVER_ERROR });
+      }
+      console.log('[SCHEDULE] ' + req.user.id.slice(0, 8) + ' colour set to ' + schedResolved.name + ' with the schedule save');
+    } else if (!onFile) {
+      return res.status(400).json({ error: 'Choose your assigned Fort Bend colour — without it we cannot tell you whether you have to test.', field: 'ftbendColor' });
+    }
+  }
   var hour = parseInt(req.body.hour) || 6;
   var minute = parseInt(req.body.minute) || 0;
   
@@ -12057,10 +12102,13 @@ async function deliverFtbendNotification(row) {
     ftVerdict = 'NO_TEST';
     personalMsg = '✅ No test today!\n\nToday\'s color is ' + todayDisplay + '.\nYour color (' + userColor.charAt(0).toUpperCase() + userColor.slice(1) + ') was NOT called. Enjoy your day!\n\n- ProbationCall.com';
   } else {
-    // No color on file: we showed them the announcement and asked them to
-    // check it themselves, so we did not reach a verdict either.
-    ftVerdict = 'UNKNOWN';
-    personalMsg = '🎨 Today\'s Color: ' + todayDisplay + '\n\nFort Bend ' + office.name + '\n\nCheck if this is your assigned color.\n\n- ProbationCall.com';
+    // No colour on file. NOT 'UNKNOWN' (§2, 2026-09-30): UNKNOWN means the
+    // recording could not be read, and the app renders it as exactly that —
+    // so a subscriber with no colour was told our recording was unclear on a
+    // morning it was perfect. The announcement was heard and recorded; what
+    // is missing is a setting on the account, and the message says so.
+    ftVerdict = 'NO_COLOR';
+    personalMsg = '🎨 Today\'s Color: ' + todayDisplay + '\n\nFort Bend ' + office.name + '\n\nYou have no colour saved, so we can\'t tell you whether you must test. Set your colour at probationcall.com and tomorrow\'s answer is yours.\n\n- ProbationCall.com';
   }
   if (row.verified_via_finishprobation) {
     personalMsg = personalMsg.replace(/\n\n- ProbationCall\.com$/, '\n\n(Verified via finishprobation.com -- our call could not confirm today. Verify by phone if uncertain.)\n\n- ProbationCall.com');
@@ -12356,7 +12404,18 @@ app.post('/api/profile/probation-end', auth, async function(req, res) {
 // Save user's assigned color (for Ft Bend)
 app.post('/api/profile/color', auth, async function(req, res) {
   var color = req.body.color;
-  if (!color) return res.status(400).json({ error: 'Color required' });
+  if (!color || String(color).trim() === '') {
+    return res.status(400).json({ error: 'Choose your assigned Fort Bend colour — without it we cannot tell you whether you have to test.', field: 'ftbendColor' });
+  }
+  // Validate against the catalogue (2026-09-30). An unrecognised colour is
+  // worse than none: it never matches an announcement, so every morning
+  // reads NO_TEST — a confident wrong answer instead of a visible gap.
+  var colorCatalog = await loadColorCatalog().catch(function() { return null; });
+  var colorResolvedRow = colorCatalog ? resolveColor(colorCatalog, color) : null;
+  if (colorCatalog && !colorResolvedRow) {
+    return res.status(400).json({ error: '"' + String(color).slice(0, 30) + '" is not a Fort Bend colour we recognise.', field: 'ftbendColor' });
+  }
+  if (colorResolvedRow) color = colorResolvedRow.name;
 
   // The result was previously discarded and success returned unconditionally.
   // For Fort Bend the colour is not optional decoration — without it

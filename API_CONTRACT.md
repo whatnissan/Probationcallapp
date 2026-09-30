@@ -77,8 +77,8 @@ the request: `"callTime"`, `"notifyMethods"`, `"notifyNumber"`,
 or an input; it never keyword-matches `message`, which is display copy and
 may change. Absent when the refusal is about the request as a whole. Carried
 on every `validation_failed`, and on `phone_not_verified`,
-`sms_consent_required` and the verification-time `sms_opted_out`, which each
-concern one field. Additive: older clients ignore it.
+`sms_consent_required`, `ftbend_color_required` and the verification-time
+`sms_opted_out`, which each concern one field. Additive: older clients ignore it.
 **Never leak Postgres errors or schema details into `message`.** The backend
 already learned this the hard way with the Fort Bend `pin` not-null constraint.
 
@@ -87,7 +87,8 @@ Standard codes: `unauthenticated`, `forbidden`, `not_found`, `validation_failed`
 `internal`, `billing_cancel_failed`, `unpaid_affiliate_earnings`,
 `account_deletion_blocked` (all three §4.15), `phone_not_verified` (§4.7),
 `referral_already_applied`, `referral_after_purchase` (both §4.14),
-`sms_opted_out`, `sms_consent_required` (§4.7, §4.17), `sms_send_failed`, `verification_not_found`,
+`sms_opted_out`, `sms_consent_required` (§4.7, §4.17), `ftbend_color_required` (§4.7),
+`sms_send_failed`, `verification_not_found`,
 `verification_expired`, `verification_locked`, `verification_incorrect`
 (§4.17).
 
@@ -121,6 +122,7 @@ The outcome of a day's call.
 | `MUST_TEST` | User must report today | Yes |
 | `NO_TEST` | User is not required today | Yes |
 | `UNKNOWN` | Transcription unusable | **No** |
+| `NO_COLOR` | Announcement heard and recorded, but the account has no colour on file, so no verdict is possible. Fort Bend only | Yes |
 | `HOTLINE_DOWN` | Hotline unreachable | **No** |
 | `CALL_FAILED` | Call never connected | **No** |
 | `PIN_EXPIRED` | PIN no longer valid at the hotline. Montgomery only | **No** |
@@ -132,6 +134,30 @@ The outcome of a day's call.
 `SCHEDULED` and `NOT_CALLED` are deliberately separate states: overloading
 `NOT_CALLED` for "enabled but not yet called" renders the paused card — with a
 Resume affordance — at 5:02 AM on a perfectly healthy schedule.
+
+**`NO_COLOR` is not `UNKNOWN` (2026-09-30).** `UNKNOWN` means the recording
+could not be read. `NO_COLOR` means it was read perfectly and the account is
+missing a setting: the office announced Ruby, we recorded Ruby, and with no
+colour on the profile there is nothing to compare it against. Until
+2026-09-30 this was sent as `UNKNOWN`, and a subscriber whose Fort Bend
+schedule had no colour was told the recording was unclear on a morning it was
+not — a false statement about our own reliability, every morning, for as long
+as the colour was missing.
+
+The announcement is on the row (`announced` / `phases`), so the client has
+the fact even without a verdict. Render it as the fact plus the fix, never as
+a failure: **"Today's colour is Ruby. Set your colour to get a verdict."**
+with an affordance that opens the colour picker. Do not show a retry, do not
+say anything could not be read, and do not render the UNKNOWN card.
+
+`NO_COLOR` **bills**, like `MUST_TEST` and `NO_TEST`: the call was placed and
+the announcement delivered. The credit pays for the call, not for the verdict
+the account's own settings made impossible.
+
+It cannot occur on a new Fort Bend schedule — §4.7 refuses one without a
+colour — so it means either a schedule that predates that rule or a colour
+cleared afterwards. `NO_COLOR` never pushes, for the same reason `UNKNOWN`
+does not: it is an action item, and it goes out by SMS and email.
 
 `billed: bool | null` is returned explicitly per call — the client displays
 "you were not charged" from `billed === false`, never inferring it from the
@@ -810,6 +836,19 @@ consent. Clients branch on the code and route to the consent step; the
 message is display copy and may change. Until 2026-09-10 this was a
 `validation_failed` whose only signal was the words "SMS consent" in the
 prose.
+
+**A Fort Bend schedule requires a colour (2026-09-30).** If `county` is
+`ftbend` and neither `ftbendColor` is sent nor a colour is already on the
+account, the write is refused with `400 ftbend_color_required`,
+`field: "ftbendColor"`. Without a colour the morning announcement cannot
+become a verdict, so the schedule would bill a credit a day to tell the
+subscriber a colour and nothing about their own test — which is what happened
+on 2026-09-30, and it was created on the website, where the colour was a
+separate request that simply never came. Every writer enforces this: v1
+`PUT /schedule`, the website's own schedule save, and any admin path that
+creates a Fort Bend schedule. A colour already on file satisfies it, so a
+client that is only changing the call time need not resend it. Clearing a
+colour while a Fort Bend schedule is enabled is refused the same way.
 
 **SMS requires a verified number (2026-09-02, v1 only).** If `notifyMethods`
 includes `sms`, `notifyNumber` must equal `/me`'s `phone.verifiedNumber`, or
