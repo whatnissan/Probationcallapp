@@ -791,11 +791,37 @@ who actually drove to the office — worth more than it looks.
 ### 4.7 `PUT /schedule`
 
 Full replace, mirroring the existing `/api/schedule` upsert. Body is the schedule
-object from §3 minus server-owned fields (`id`, `pauseReason`, counters).
+object from §3 minus server-owned fields (`id`, `enabled`, `pauseReason`,
+counters).
 
-Server-side rules that already exist and must be preserved: re-saving forces
-`enabled: true`, clears `consecutive_pin_expired`, and clears `paused_reason`.
-Montgomery writes `pin` and null office/color; Fort Bend writes null `pin`.
+Server-side rules that already exist and must be preserved: re-saving clears
+`consecutive_pin_expired`. Montgomery writes `pin` and null office/color; Fort
+Bend writes null `pin`.
+
+**A save does not undo a pause the person chose (2026-09-30).** Until this
+date every save forced `enabled: true` and cleared `paused_reason`. That rule
+predates any user pause: every pause was the server's, and re-saving with a
+new PIN was the only way back. Once §4.8 added pause, a subscriber who paused
+and then changed how they are notified was silently resumed and billed, and
+nothing told them. A save now lifts a pause only when its cause is gone:
+
+| `pauseReason` before the save | After the save |
+|---|---|
+| `user` | **Still paused.** Only `POST /schedule/resume` lifts it |
+| `no_credits` | Still paused at a zero balance (the top-up auto-resumes it); resumed if the account has credits |
+| `sms_opted_out` | Resumed only if the saved channel delivers — `email` in `notifyMethods` with an address, or a number that is not opted out. Otherwise still paused |
+| `pin_expired`, `unknown_streak` | Resumed — saving the new PIN is the remedy |
+| `null` on a paused schedule (untagged; predates tagging) | Resumed |
+| any other value | Still paused. A save never undoes a pause it does not know |
+
+`enabled` is server-owned here: a value in the body is ignored in either
+direction, because the §3 object carries it and a client echoing it back
+would resume a paused schedule on every edit. Pause and resume are §4.8. The
+response echoes `enabled` and `pauseReason` as stored, so a client that saves
+while paused can see the schedule is still paused and should say so ("Saved —
+your checks are still paused") rather than render it as running. A first
+schedule is always created enabled. The website's save follows the same
+rule.
 
 **`callTime` and `notifyMethods` are REQUIRED, and a missing one is a `400`
 naming the field — never a default.** PUT is a full replace, and this endpoint
@@ -907,6 +933,8 @@ only the earned extension.
 
 Pause takes `{"reason":"vacation until 9/2"}` and writes `enabled=false`,
 `paused_reason='user'`. Resume writes `enabled=true, paused_reason=null`.
+Resume is the only way to lift a `user` pause: a `PUT /schedule` leaves it in
+place (§4.7, 2026-09-30).
 
 Resume must **reject with `insufficient_credits`** when balance is zero rather
 than enabling a schedule that will immediately re-pause.

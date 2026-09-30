@@ -38,6 +38,7 @@ const wsTicketLib = require('./lib/ws-ticket');
 const connectRefresh = require('./lib/connect-refresh');
 const { createThrottle } = require('./lib/write-throttle');
 const { constructEventWithSecrets } = require('./lib/stripe-webhook');
+const { pauseStateOnSave } = require('./lib/schedule-pause');
 const apns = require('./lib/apns');
 const { fallbackFieldsFor } = require('./lib/push');
 const { isValidPin, isValidTimezone, isValidEmail, normalizePhoneE164, isValidSupportSubject, isValidSupportBody } = require('./lib/validation');
@@ -4178,6 +4179,34 @@ app.get('/api/v1/county-stats', authV1, async function(req, res) {
   }
 });
 
+// The facts lib/schedule-pause needs to decide whether a save may lift a
+// pause — read only for the two reasons that depend on them. A failed read
+// leaves the fact out, and a missing fact never resumes.
+async function pauseContextForSave(userId, existing, saved) {
+  var ctx = {};
+  if (!existing || existing.enabled !== false) return ctx;
+  if (existing.paused_reason === 'no_credits') {
+    var pc = await supabase.from('profiles').select('credits').eq('id', userId).maybeSingle();
+    if (pc.error) console.error('[SCHEDULE] credits read failed for ' + userId.slice(0, 8) + ' — keeping the no_credits pause:', pc.error.message);
+    else if (pc.data) ctx.credits = pc.data.credits || 0;
+  } else if (existing.paused_reason === 'sms_opted_out' && saved.notify_number) {
+    ctx.numberOptedOut = await isSmsOptedOut(saved.notify_number);
+  }
+  return ctx;
+}
+
+// Apply pauseStateOnSave to a schedule about to be written, and say so in
+// the log when a save leaves a pause in place or lifts one.
+async function applyPauseOnSave(userId, existing, data, tag) {
+  var st = pauseStateOnSave(existing, data, await pauseContextForSave(userId, existing, data));
+  data.enabled = st.enabled;
+  data.paused_reason = st.paused_reason;
+  if (existing && existing.enabled === false) {
+    console.log(tag + ' ' + userId.slice(0, 8) + ' saved while paused (' + (existing.paused_reason || 'untagged') + ') — ' +
+      (st.enabled ? 'save removed the cause, resumed' : 'pause kept'));
+  }
+}
+
 // §4.7 PUT /schedule — full replace, mirroring POST /api/schedule exactly.
 // Every server-side rule the web path enforces is preserved here, including
 // SMS consent: the app must not become a way around A2P.
@@ -4348,10 +4377,10 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
       timezone: tz,
       quiet_mode: b.quietMode || false,
       ftbend_office: county === 'ftbend' ? (b.ftbendOffice || b.ftbend_office || 'missouri') : 'missouri',
-      // Re-saving re-enables, so any pause reason is spent, and a fresh PIN
-      // means the expiry streak starts over. Same three rules as the web path.
-      enabled: true,
-      paused_reason: null,
+      // A fresh PIN means the expiry streak starts over. enabled and
+      // paused_reason are set by applyPauseOnSave once the existing row is
+      // read: a save no longer undoes a pause the person chose (§4.7).
+      // b.enabled is ignored — resuming is POST /schedule/resume.
       consecutive_pin_expired: 0
     };
 
@@ -4422,11 +4451,12 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
     // degrade — it writes the wrong thing. maybeSingle already returns null
     // without an error when the row is genuinely absent, so any .error here
     // means the read failed and we must not conclude there is no schedule.
-    var existing = await supabase.from('user_schedules').select('id').eq('user_id', req.user.id).maybeSingle();
+    var existing = await supabase.from('user_schedules').select('id, enabled, paused_reason').eq('user_id', req.user.id).maybeSingle();
     if (existing.error) {
       console.error('[V1-SCHEDULE] existing-schedule read failed for ' + req.user.id.slice(0, 8) + ' — refusing to guess insert vs update:', existing.error.message);
       return v1Error(res, 503, 'internal', 'Could not save your schedule. Please try again.', true);
     }
+    await applyPauseOnSave(req.user.id, existing.data, data, '[V1-SCHEDULE]');
     var result = existing.data
       ? await supabase.from('user_schedules').update(data).eq('user_id', req.user.id)
       : await supabase.from('user_schedules').insert(data);
@@ -6357,11 +6387,10 @@ app.post('/api/schedule', auth, async function(req, res) {
     timezone: tz,
     quiet_mode: req.body.quietMode || false,
     ftbend_office: req.body.ftbend_office || 'missouri',
-    enabled: true,
-    // Re-saving the schedule re-enables it, so any pause reason is spent —
-    // clear it. Leaving a stale 'pin_expired'/'unknown_streak' on an enabled
-    // row would mislabel the account the next time it's read.
-    paused_reason: null,
+    // enabled and paused_reason are set by applyPauseOnSave once the
+    // existing row is read. A save lifts a pause only when its cause is
+    // gone (a new PIN, credits, a working channel) and never undoes a pause
+    // the person chose in the app (§4.7, lib/schedule-pause.js).
     // Re-saving the schedule (typically to update a fresh PIN) clears the
     // PIN_EXPIRED streak so the auto-disable logic starts over.
     consecutive_pin_expired: 0
@@ -6372,11 +6401,12 @@ app.post('/api/schedule', auth, async function(req, res) {
   // had one AND send them the first-time welcome SMS again. maybeSingle
   // returns null with no error when the row really is absent, so .error here
   // means the read failed and nothing should be written on a guess.
-  var existingResult = await supabase.from('user_schedules').select('id').eq('user_id', req.user.id).maybeSingle();
+  var existingResult = await supabase.from('user_schedules').select('id, enabled, paused_reason').eq('user_id', req.user.id).maybeSingle();
   if (existingResult.error) {
     console.error('[SCHEDULE] existing-schedule read failed for ' + req.user.id.slice(0, 8) + ' — refusing to guess insert vs update:', existingResult.error.message);
     return res.status(503).json({ error: 'Could not save your schedule. Please try again.' });
   }
+  await applyPauseOnSave(req.user.id, existingResult.data, data, '[SCHEDULE]');
   
   var result;
   if (existingResult.data) {
@@ -6413,7 +6443,9 @@ app.post('/api/schedule', auth, async function(req, res) {
   }
 
   rescheduleUser(req.user.id, data);
-  res.json({ success: true });
+  // enabled/pausedReason tell the form when a save left the checks paused,
+  // so "saved" is never read as "running".
+  res.json({ success: true, enabled: data.enabled, pausedReason: data.paused_reason });
 });
 
 app.delete('/api/schedule', auth, async function(req, res) {

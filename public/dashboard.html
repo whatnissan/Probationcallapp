@@ -1402,8 +1402,9 @@ function loadUser() {
           no_credits: '⏸ Checks paused — out of credits',
           unknown_streak: '⏸ Checks paused — recent calls got no result',
           pin_expired: '⏸ Checks paused — your PIN expired',
-          sms_opted_out: '⏸ Checks paused — you stopped texts and we have no email for you. Add an email below to resume.',
-          user: '⏸ Checks paused'
+          sms_opted_out: '⏸ Checks paused — you stopped texts and we have no email for you. Add an email below and choose Email or Both to resume.',
+          // Only the app can pause, and a save here does not undo it (§4.7).
+          user: '⏸ Checks paused — you paused them in the app. Resume them there.'
         };
         document.getElementById('schedStatusHeading').textContent =
           d.schedule.enabled !== false ? '✅ Schedule Active'
@@ -2090,7 +2091,15 @@ document.getElementById('scheduleForm').onsubmit = function(e) {
     })
   }).then(function(r) { return r.json(); }).then(function(d) {
     btn.disabled = false;
-    if (d.success) { alert('✅ Schedule saved!'); loadUser(); }
+    // A save no longer resumes a pause the person chose, or one whose cause
+    // is still there — so say when the checks are still off (§4.7).
+    var STILL_PAUSED = {
+      user: 'You paused them in the ProbationCall app — resume them there.',
+      no_credits: 'Add credits and they restart automatically.',
+      sms_opted_out: 'Texts are stopped for this number — add an email and choose Email or Both to resume.'
+    };
+    if (d.success && d.enabled === false) { alert('✅ Schedule saved — your daily checks are still paused.' + (STILL_PAUSED[d.pausedReason] ? '\n\n' + STILL_PAUSED[d.pausedReason] : '')); loadUser(); }
+    else if (d.success) { alert('✅ Schedule saved!'); loadUser(); }
     else { alert('Error: ' + (d.error || 'Unknown')); }
   });
 };
