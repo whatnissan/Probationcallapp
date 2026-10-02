@@ -57,3 +57,12 @@ test('the hourly job uses these rules before it reads anything', () => {
   assert.match(job, /recovery\.recoveryDecision\(now, sched, \{ tz: 'America\/Chicago', missedWindowMinutes: missedWindow \}\)/);
   assert.ok(job.indexOf('recoveryDecision') < job.indexOf('initiateCall('), 'decided before any dial');
 });
+
+test('website "Call Now" is refused outside the same window, before anything is dialled', () => {
+  const start = server.indexOf("app.post('/api/call', auth");
+  const handler = server.slice(start, server.indexOf('\n});', start));
+  const guard = handler.indexOf("county !== 'ftbend' && !recovery.insideHotlineWindow(new Date(), 'America/Chicago')");
+  assert.ok(guard > 0, 'Call Now checks the hotline window');
+  assert.ok(guard < handler.indexOf('initiateCall('), 'before it dials');
+  assert.match(handler.slice(guard, guard + 400), /6:00 AM and 2:00 PM Central/);
+});

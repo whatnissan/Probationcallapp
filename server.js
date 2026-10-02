@@ -7620,8 +7620,14 @@ app.post('/api/call', auth, async function(req, res) {
   if (!req.profile.isDev && req.profile.credits < 1) {
     return res.status(402).json({ error: 'No credits' });
   }
-  
+
   var county = req.body.county || "montgomery"; var targetNumber = getCountyConfig(county).number;
+  // Montgomery's hotline window, the same one the missed-call recovery keeps
+  // (lib/recovery.js, 2026-10-02): "Call Now" outside it placed a real call
+  // at night and billed it — the same harm as the recovery bug.
+  if (county !== 'ftbend' && !recovery.insideHotlineWindow(new Date(), 'America/Chicago')) {
+    return res.status(400).json({ error: 'The Montgomery hotline can only be checked between 6:00 AM and 2:00 PM Central. Try again then — your daily check still runs at its usual time.' });
+  }
   var pin = req.body.pin;
   var notifyNumber = req.body.notifyNumber;
   var notifyEmail = req.body.notifyEmail;
