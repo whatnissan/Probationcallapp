@@ -39,6 +39,7 @@ const connectRefresh = require('./lib/connect-refresh');
 const { createThrottle } = require('./lib/write-throttle');
 const { constructEventWithSecrets } = require('./lib/stripe-webhook');
 const { pauseStateOnSave } = require('./lib/schedule-pause');
+const recovery = require('./lib/recovery');
 const apns = require('./lib/apns');
 const { fallbackFieldsFor } = require('./lib/push');
 const { isValidPin, isValidTimezone, isValidEmail, normalizePhoneE164, isValidSupportSubject, isValidSupportBody } = require('./lib/validation');
@@ -12860,12 +12861,16 @@ module.exports = app;
 // ========== MISSED CALL RECOVERY ==========
 // Runs every hour to catch any missed scheduled calls
 cron.schedule('45 * * * *', async function() {
-  console.log('[RECOVERY] Checking for missed calls...');
-  
   var now = new Date();
+  // Never outside the hotline window (lib/recovery.js, 2026-10-02): this job
+  // runs every hour around the clock, and used to dial evening signups at
+  // :45 past every hour until 23:45 — and bill them.
+  if (!recovery.insideHotlineWindow(now, 'America/Chicago')) {
+    console.log('[RECOVERY] Outside the hotline window (06:00–14:00 Central) — no recovery dials');
+    return;
+  }
+  console.log('[RECOVERY] Checking for missed calls...');
   var cst = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
-  var currentHour = cst.getHours();
-  var currentMin = cst.getMinutes();
   var todayStart = new Date(cst);
   todayStart.setHours(0, 0, 0, 0);
   
@@ -12884,12 +12889,16 @@ cron.schedule('45 * * * *', async function() {
     var sched = schedResult.data[i];
     var schedHour = sched.hour || 6;
     var schedMin = sched.minute || 0;
-    
-    // Calculate minutes since scheduled time
-    var minutesSinceScheduled = (currentHour - schedHour) * 60 + (currentMin - schedMin);
-    
-    // Skip if scheduled time hasn't passed OR if within the stagger window
-    if (minutesSinceScheduled < missedWindow) continue;
+
+    // Due, inside the window, and not a schedule created at or after its own
+    // call time today (its first call is tomorrow) — lib/recovery.js.
+    var decision = recovery.recoveryDecision(now, sched, { tz: 'America/Chicago', missedWindowMinutes: missedWindow });
+    if (!decision.dial) {
+      if (decision.reason === 'created_after_call_time') {
+        console.log('[RECOVERY] ' + sched.user_id.slice(0, 8) + '... created today after its ' + schedHour + ':' + String(schedMin).padStart(2, '0') + ' call time — first call is tomorrow, not dialling');
+      }
+      continue;
+    }
     
     // Check if call was made today
     var callResult = await supabase.from('call_history')
