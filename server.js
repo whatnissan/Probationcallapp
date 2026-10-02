@@ -7812,26 +7812,14 @@ async function processRecording(callId, recordingUrl, recordingDurationSeconds) 
 
   if (!config) return;
 
-  // Save recording URL first
-  if (config.isFtbendDaily) {
-    var today = formatLocalDay(new Date(), 'America/Chicago');
-    var countyKey = 'ftbend_' + (config.officeId || 'missouri');
-    var ftUpd = await supabase.from('daily_county_status')
-      .update({ recording_url: mp3Url })
-      .eq('county', countyKey)
-      .eq('date', today)
-      .select('id');
-    if (ftUpd.error) {
-      console.error('[RECORDING] Fort Bend daily update FAILED for', countyKey, today, ':', ftUpd.error.message);
-    } else if ((ftUpd.data || []).length) {
-      console.log('[RECORDING] Fort Bend ' + countyKey + ' ' + today + ' — recording attached');
-    } else {
-      // Unlike Montgomery, the daily row is created by detection BEFORE the
-      // recording webhook fires, so nothing to update means something is
-      // genuinely wrong and the audio is now unreachable from the UI.
-      console.warn('[RECORDING] Fort Bend ' + countyKey + ' ' + today + ' — NO daily_county_status row to attach the recording to');
-    }
-  } else if (config.callSid) {
+  // Save recording URL first — Montgomery only. A Fort Bend office call's
+  // recording is NOT attached here: this ran before detection had created
+  // the office row, so it matched nothing (recording_url was null on every
+  // office row on 2026-10-01), and once the row existed a later call that
+  // day overwrote the audio while the transcript stayed from another call.
+  // storeFtbendColor now writes this call's URL, duration and transcript in
+  // one write, from the call that produced the announcement (§4.4).
+  if (!config.isFtbendDaily && config.callSid) {
     // Only updates a row that ALREADY exists (a retry landing on a row an
     // earlier attempt created). Zero rows is the normal case, not an error —
     // the insert paths below carry the duration themselves.
@@ -8067,7 +8055,18 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
     
     if (config.isFtbendDaily) {
       // Fort Bend - detect color and phases
-      var officeId = config.officeId || 'missouri';
+      // NO default office. This used to read `config.officeId || 'missouri'`,
+      // so a call that lost its office would have filed its announcement,
+      // transcript and (now) recording as Missouri City's — the one way one
+      // office's audio could reach another office's subscribers. Every Fort
+      // Bend call is created with its office and the office survives a
+      // restart (lib/pending.js), so this never fires; if it ever does, the
+      // office's own retries and the pre-cutoff sweep recover the morning.
+      var officeId = config.officeId;
+      if (!FTBEND_OFFICES[officeId]) {
+        console.error('[FTBEND] Recording for call ' + callId + ' has no known office ("' + officeId + '") — not stored under any office');
+        return;
+      }
       var detectedColor = detectColor(lower);
       var phases = (typeof detectPhaseColors === 'function') ? detectPhaseColors(transcript) : { phase1: null, phase2: null };
 
@@ -8125,7 +8124,10 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
           || crossCheck.match_method === 'phonetic') {
         // CONFIRMED — notify, store, delete retry row if it exists.
         config.result = crossCheck.final_answer;
-        await storeFtbendColor(crossCheck.final_answer, transcript, officeId, phases.phase1, phases.phase2);
+        // THIS call's recording, written with THIS call's transcript: the
+        // one path where our own call produced the announcement (§4.4).
+        await storeFtbendColor(crossCheck.final_answer, transcript, officeId, phases.phase1, phases.phase2,
+          { url: mp3Url, durationSeconds: recordingDurationSeconds });
         await notifyFtbendOfficeUsers(officeId, config);
         if (existingRetry) {
           await supabase.from('fort_bend_retries').delete().eq('id', existingRetry.id).then(function() {}, function(e) {
@@ -8180,7 +8182,9 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
             config.phase1 = cutoffGT[0];
             config.phase2 = cutoffGT[1] || null;
             config.verifiedViaFinishProbation = true;
-            await storeFtbendColor(joined, transcript, officeId, cutoffGT[0], cutoffGT[1] || null);
+            // Resolved from finishprobation.com, not by this call: no
+            // recording (§4.4) — our audio did not produce this answer.
+            await storeFtbendColor(joined, transcript, officeId, cutoffGT[0], cutoffGT[1] || null, null);
             await notifyFtbendOfficeUsers(officeId, config);
             loggedMethod = 'cutoff_with_ground_truth';
             loggedGroundTruth = joined;
@@ -8640,22 +8644,28 @@ async function runDailyIntegrityDigest() {
 }
 cron.schedule('30 7 * * *', runDailyIntegrityDigest, { timezone: 'America/Chicago' });
 
-cron.schedule('0 3 * * *', async function() {
-  console.log('[CLEANUP] Deleting recordings older than 30 days...');
+// 30-day recording deletion, for one table. Since migration 065 it covers
+// the Fort Bend office rows too (their audio was never deleted from Twilio)
+// and stamps recording_deleted_at on every row it clears, which is what lets
+// §4.1-§4.3 say "expired" only for a recording that really existed.
+// Subscribers' Fort Bend rows share their office's Twilio recording: the
+// first row deletes it, the rest get Twilio's 404, which is already treated
+// as gone — so every copy clears and is stamped.
+async function deleteExpiredRecordings(table) {
   var cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - 30);
 
-  var old = await supabase.from('call_history')
+  var old = await supabase.from(table)
     .select('id, recording_url')
     .lt('created_at', cutoff.toISOString())
     .not('recording_url', 'is', null);
 
   if (old.error) {
-    console.error('[CLEANUP] Could not list old recordings:', old.error);
+    console.error('[CLEANUP] Could not list old recordings in ' + table + ':', old.error);
     return;
   }
   if (!old.data || old.data.length === 0) {
-    console.log('[CLEANUP] Nothing to delete');
+    console.log('[CLEANUP] ' + table + ': nothing to delete');
     return;
   }
 
@@ -8689,10 +8699,18 @@ cron.schedule('0 3 * * *', async function() {
 
   var toNull = deletedIds.concat(alreadyGoneIds);
   if (toNull.length > 0) {
-    var upd = await supabase.from('call_history').update({ recording_url: null }).in('id', toNull);
-    if (upd.error) console.error('[CLEANUP] Null update failed:', upd.error);
+    var upd = await supabase.from(table)
+      .update({ recording_url: null, recording_deleted_at: new Date().toISOString() })
+      .in('id', toNull);
+    if (upd.error) console.error('[CLEANUP] Null update failed in ' + table + ':', upd.error);
   }
-  console.log('[CLEANUP] Done. Deleted: ' + deletedIds.length + ', already-gone: ' + alreadyGoneIds.length + ', retried: ' + (old.data.length - toNull.length));
+  console.log('[CLEANUP] ' + table + ' done. Deleted: ' + deletedIds.length + ', already-gone: ' + alreadyGoneIds.length + ', retried: ' + (old.data.length - toNull.length));
+}
+
+cron.schedule('0 3 * * *', async function() {
+  console.log('[CLEANUP] Deleting recordings older than 30 days...');
+  await deleteExpiredRecordings('call_history');
+  await deleteExpiredRecordings('daily_county_status');
 }, { timezone: 'America/Chicago' });
 
 // Gap 1: on a terminal Twilio failure, notify the user AND write a
@@ -11259,7 +11277,8 @@ async function populateFtbendOfficeFromTruth(officeId) {
     return { office: officeId, status: 'no_ground_truth', detail: gt && gt.error };
   }
   var joined = groups.join(', ');
-  await storeFtbendColor(joined, gt.transcript || '(finishprobation.com)', officeId, groups[0], groups[1] || null);
+  // No call of ours behind this answer, so no recording (§4.4).
+  await storeFtbendColor(joined, gt.transcript || '(finishprobation.com)', officeId, groups[0], groups[1] || null, null);
   await notifyFtbendOfficeUsers(officeId, {
     result: joined,
     phase1: groups[0],
@@ -11956,7 +11975,13 @@ async function fetchFinishProbationGroundTruth(officeId) {
 
 // phoneticMatch and doCrossCheck moved to lib/detection.js
 
-async function storeFtbendColor(color, transcript, officeId, phase1, phase2) {
+// `recording` is { url, durationSeconds } of the call that produced this
+// announcement, or null when no call of ours did (finishprobation.com). It
+// is written in the SAME write as the transcript, always — null included —
+// so an office row's audio and transcript can never come from two calls
+// (§4.4, migration 065). Subscribers' rows copy both through
+// ftbend.officeRecordingFor.
+async function storeFtbendColor(color, transcript, officeId, phase1, phase2, recording) {
   var today = formatLocalDay(new Date(), 'America/Chicago');
 
   var office = FTBEND_OFFICES[officeId] || { name: officeId };
@@ -11978,8 +12003,9 @@ async function storeFtbendColor(color, transcript, officeId, phase1, phase2) {
       transcript: transcript,
       phase1_color: phase1,
       phase2_color: phase2,
-      office_name: office.name
-      
+      office_name: office.name,
+      recording_url: recording && recording.url ? recording.url : null,
+      recording_duration_seconds: recording && typeof recording.durationSeconds === 'number' ? recording.durationSeconds : null
     };
     
     var result;
@@ -12241,19 +12267,28 @@ async function deliverFtbendNotification(row) {
         .catch(function(e) { console.error('[FTBEND] billing alert failed:', e.message); });
     }
   }
-  // Copy the office's announcement onto the user's row. The daily transcript
-  // lives in daily_county_status, but those rows aren't user-joined — the
-  // per-user copy is what made the Montgomery PIN_EXPIRED audit possible,
-  // and Fort Bend deserves the same evidence trail. Best-effort.
-  var ftTranscript = null;
+  // Copy the office call's recording and transcript onto the user's row
+  // (§4.4, 2026-10-01): one office call serves every subscriber at that
+  // office, and the row's own id is what /calls/{id}/recording plays, with
+  // the same ownership check and 30-day deletion as Montgomery. They come
+  // TOGETHER through ftbend.officeRecordingFor, which refuses any row that
+  // is not this subscriber's office on this date, and copies nothing when no
+  // call of ours produced the answer (finishprobation.com) — that site's
+  // text is not presented as a recording transcript. The office row keeps
+  // its transcript either way. Best-effort: evidence, not delivery.
+  var ftRec = null;
   try {
     var dcs = await supabase.from('daily_county_status')
-      .select('transcript')
+      .select('county, date, transcript, recording_url, recording_duration_seconds')
       .eq('county', 'ftbend_' + oid)
       .eq('date', todayDate)
       .maybeSingle();
-    if (dcs.data && dcs.data.transcript) ftTranscript = dcs.data.transcript;
-  } catch (e) { /* transcript is evidence, not delivery-critical */ }
+    ftRec = ftbend.officeRecordingFor(dcs.data, oid, todayDate);
+    if (dcs.data && !ftRec) {
+      console.log('[FTBEND] No recording copied to ' + userId.slice(0, 8) + '/' + oid + ' ' + todayDate +
+        (dcs.data.recording_url ? ' — office row did not match (' + dcs.data.county + ' ' + dcs.data.date + ')' : ' — answer not from our own call'));
+    }
+  } catch (e) { /* recording is evidence, not delivery-critical */ }
 
   // ONE classifier, shared with the office board (lib/ftbend). The format
   // follows the ANNOUNCEMENT, not the office: Rosenberg 2 is flagged as a
@@ -12268,7 +12303,9 @@ async function deliverFtbendNotification(row) {
     result: ftbend.resultStringFor(row.result),
     announced: ftAnn.announced,
     phases: ftAnn.phases,
-    transcript: ftTranscript,
+    transcript: ftRec ? ftRec.transcript : null,
+    recording_url: ftRec ? ftRec.recording_url : null,
+    recording_duration_seconds: ftRec ? ftRec.recording_duration_seconds : null,
     county: 'ftbend',
     ftbend_office: oid,
     // What it MEANT for this user, plus the colour that decision was made
@@ -12972,7 +13009,8 @@ cron.schedule('* * * * *', async function() {
         var ftbCutoffGT = (ftbLastFetch && ftbLastFetch.testGroups && ftbLastFetch.testGroups.length > 0) ? ftbLastFetch.testGroups : null;
         if (ftbCutoffGT) {
           var ftbJoined = ftbCutoffGT.join(', ');
-          await storeFtbendColor(ftbJoined, ftbRow.last_transcript || '', ftbOfficeId, ftbCutoffGT[0], ftbCutoffGT[1] || null);
+          // Resolved from finishprobation.com at cutoff: no recording (§4.4).
+          await storeFtbendColor(ftbJoined, ftbRow.last_transcript || '', ftbOfficeId, ftbCutoffGT[0], ftbCutoffGT[1] || null, null);
           await notifyFtbendOfficeUsers(ftbOfficeId, {
             result: ftbJoined,
             phase1: ftbCutoffGT[0],
