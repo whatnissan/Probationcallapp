@@ -607,6 +607,7 @@ app can poll cheaply during the retry window.
     "durationSeconds": 14,
     "transcript": "Client four eight two nine one three is required to report..."
   },
+  "recordingStatus": "available",
   "fortBend": null
 }
 ```
@@ -686,6 +687,7 @@ Cursor pagination — offset pagination breaks when rows land mid-scroll.
       "summary": "PIN called · Conroe",
       "attempts": 1,
       "hasRecording": true,
+      "recordingStatus": "available",
       "durationSeconds": 14,
       "userConfirmedTested": true
     }
@@ -728,7 +730,8 @@ guessing.** The backend never invents a value to satisfy a type:
 - **`userConfirmedTested` is always `null`** until §4.5 ships; nothing stores
   a confirmation yet.
 - **`hasRecording` is usually `false`** on older rows — see the 30-day
-  retention note in §4.4.
+  retention note in §4.4. `recordingStatus` (§4.4) says why: `expired` or
+  `none`.
 
 **Filtering by `result` can return an empty page with `hasMore: true`.**
 Because the enum value is computed rather than stored, the filter cannot run
@@ -738,7 +741,8 @@ page is not the end of the list — keep following `nextCursor` until
 
 ### 4.3 `GET /calls/{callId}`
 
-Full detail for one past call: same shape as `/today`'s `callLog` + `recording`.
+Full detail for one past call: same shape as `/today`'s `callLog` + `recording`
++ `recordingStatus`.
 
 ### 4.4 `GET /calls/{callId}/recording`
 
@@ -768,6 +772,48 @@ until 2026-08-27 and were deleted.)
 **Recordings are deleted from Twilio after 30 days.** Most history therefore
 has no audio: `hasRecording` is `false` on those rows and this endpoint
 returns `404 not_found`. That is the honest answer, not an error to retry.
+Whether to say "expired" is decided by `recordingStatus`, never by the 404.
+
+**`recordingStatus` (2026-10-01)** — on `/today` (§4.1), every `/history` row
+(§4.2) and `/calls/{id}` (§4.3): `"available"` | `"expired"` | `"none"`.
+- `available`: this endpoint will return audio.
+- `expired`: there was a recording and the 30-day deletion removed it. This
+  is the ONLY value a client may render as "expired".
+- `none`: there never was a recording we can stand behind — no call was
+  placed, the call failed before audio, the answer came from
+  finishprobation.com, or a Fort Bend row from before 2026-10-01.
+
+Rows whose audio was deleted before this shipped are `expired` only where the
+server can tell a recording existed (a stored duration, written since
+2026-08-25); otherwise `none`. `hasRecording` stays and equals
+`recordingStatus == "available"`.
+
+**Fort Bend recordings (2026-10-01).** A Fort Bend row's `recording` is the
+recording of the call we placed to THAT ROW'S OFFICE on THAT ROW'S DATE — the
+call whose announcement produced the row. One office call serves every
+subscriber at that office: every Rosenberg 2 row for a date plays the same
+audio. Fort Bend hotline audio carries no PIN and nothing about the
+subscriber, which is why it can be shared. Montgomery recordings are never
+shared — they contain the PIN.
+
+- **Never another office's audio.** The server attaches a recording only when
+  its office and date match the row's. When it cannot establish that,
+  `recording` is null. No audio is better than the wrong office's.
+- **`recording.transcript` is the transcript of that same call.** Audio and
+  transcript are written together from one call, never assembled from two.
+- **No call of our own, no recording.** When an office is resolved from
+  finishprobation.com after our calls failed, there is no audio of ours, and
+  that site's text is not presented as a recording transcript: `recording` is
+  null and `recordingStatus` is `"none"`.
+- **Same 30-day retention as Montgomery**, counted from the office call. After
+  that the audio is deleted, `recording` is null, and `recordingStatus` is
+  `"expired"`.
+- Playback is unchanged: this endpoint with the row's own `callId`, the same
+  token, the same `audio/mpeg`.
+
+What an office announces can name another office — on 2026-10-01 the
+Missouri City line itself said "report to the Rosenberg office". That is
+the office's own recording saying so, not a crossed wire.
 
 `durationSeconds` is `int | null` — null for calls recorded before 2026-08-25,
 when duration capture began (§4.1).

@@ -2282,6 +2282,8 @@ app.get('/api/v1/today', authV1, async function(req, res) {
       pauseReason: null,
       callLog: [],
       recording: null,
+      // "none" until a resolved row says otherwise (§4.1).
+      recordingStatus: 'none',
       fortBend: null
     };
 
@@ -2333,6 +2335,7 @@ app.get('/api/v1/today', authV1, async function(req, res) {
         payload.attempt = Math.max(1, (attempts.data || []).length);
         payload.maxAttempts = payload.attempt;
         payload.callLog.push({ at: resultRow.created_at, kind: 'result', text: resultRow.result });
+        payload.recordingStatus = v1RecordingStatus(resultRow);
         if (resultRow.transcript || resultRow.recording_url) {
           payload.recording = {
             callId: resultRow.id,
@@ -2532,6 +2535,17 @@ function v1CallLogFor(row, attempts, county) {
   return log;
 }
 
+// §4.1-§4.3 recordingStatus (2026-10-01). "expired" ONLY when a recording
+// existed and the 30-day deletion removed it (recording_deleted_at,
+// migration 065) — a row that never had audio is "none", so a client never
+// tells someone their recording expired when there was never one.
+function v1RecordingStatus(row) {
+  if (!row) return 'none';
+  if (row.recording_url) return 'available';
+  if (row.recording_deleted_at) return 'expired';
+  return 'none';
+}
+
 function v1RecordingFor(row) {
   if (!row.transcript && !row.recording_url) return null;
   return {
@@ -2611,6 +2625,7 @@ app.get('/api/v1/history', authV1, async function(req, res) {
         // null = this call predates dial-time logging, not "zero attempts".
         attempts: instrumented ? (count || null) : null,
         hasRecording: !!r.recording_url,
+        recordingStatus: v1RecordingStatus(r),
         durationSeconds: typeof r.recording_duration_seconds === 'number' ? r.recording_duration_seconds : null,
         // §4.5 POST /calls/{id}/tested is not built and nothing stores a
         // confirmation, so this is null for every row until it is.
@@ -2656,7 +2671,8 @@ app.get('/api/v1/calls/:callId', authV1, async function(req, res) {
     }
     res.json({
       callLog: v1CallLogFor(row.data, attempts, v1County(row.data)),
-      recording: v1RecordingFor(row.data)
+      recording: v1RecordingFor(row.data),
+      recordingStatus: v1RecordingStatus(row.data)
     });
   } catch (e) {
     console.error('[V1-CALL] failed:', e.message);
