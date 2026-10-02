@@ -3,7 +3,6 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 const ftbend = require('../lib/ftbend');
-const { formatLocalDay } = require('../lib/time');
 const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
 
 // 2026-10-02: a Fort Bend schedule created after its office's answer was
@@ -49,15 +48,10 @@ test('a signup-day answer comes only from a confirmed answer of our own call', (
   assert.strictEqual(ftbend.signupDayAnswer(row({ date: '2026-10-01' }), 'rosenberg2', DATE), null, "never another day's");
 });
 
-test('the window closes at UTC midnight, so a row can never read as tomorrow\'s', () => {
-  const at = (iso) => { const d = new Date(iso); return ftbend.signupDayWindowOpen(d, formatLocalDay(d, 'America/Chicago')); };
-  assert.strictEqual(at('2026-10-02T11:00:00Z'), true, '6 AM CDT');
-  assert.strictEqual(at('2026-10-02T23:59:00Z'), true, '6:59 PM CDT');
-  assert.strictEqual(at('2026-10-03T00:00:00Z'), false, '7:00 PM CDT — still Oct 2 in Texas, Oct 3 in UTC');
-  assert.strictEqual(at('2026-10-03T04:59:00Z'), false, '11:59 PM CDT');
-  assert.strictEqual(at('2026-10-03T05:00:00Z'), true, 'midnight CDT — both Oct 3');
-  assert.strictEqual(at('2026-12-02T23:59:00Z'), true, '5:59 PM CST — both Dec 2');
-  assert.strictEqual(at('2026-12-03T00:00:00Z'), false, '6:00 PM CST in winter');
+test('signup day runs any time of the Texas day — the 7 PM cutoff is gone', () => {
+  // Removed 2026-10-02 once every "today's row" reader used the county's day.
+  assert.strictEqual(ftbend.signupDayWindowOpen, undefined, 'no UTC-midnight guard any more');
+  assert.ok(!/signupDayWindowOpen/.test(server), 'and nothing calls one');
 });
 
 function fnBody(name, len) {
@@ -72,10 +66,10 @@ test('the writer is free, in-app only, marked, and idempotent', () => {
   assert.ok(!/deductCreditOnce|billed_at:/.test(fn), 'never billed');
   assert.match(fn, /origin: 'signup_day'/);
   assert.match(fn, /ftbend\.signupDayAnswer\(dcs\.data, oid, todayDate\)/);
-  assert.match(fn, /ftbend\.signupDayWindowOpen\(now, todayDate\)/);
+  assert.match(fn, /var todayBounds = localDayBoundsUtc\(todayDate, 'America\/Chicago'\);/);
   assert.match(fn, /ftbend\.verdictFor\(userColor, answer\.todayColors, false\)/);
   // The same per-user/office/day check the morning delivery uses.
-  const dedupe = /\.from\('call_history'\)\s*\.select\('id'\)\s*\.eq\('user_id', userId\)\s*\.eq\('county', 'ftbend'\)\s*\.eq\('ftbend_office', oid\)\s*\.gte\('created_at', todayDate \+ 'T00:00:00'\)\s*\.lte\('created_at', todayDate \+ 'T23:59:59'\)/;
+  const dedupe = /\.from\('call_history'\)\s*\.select\('id'\)\s*\.eq\('user_id', userId\)\s*\.eq\('county', 'ftbend'\)\s*\.eq\('ftbend_office', oid\)\s*\.gte\('created_at', todayBounds\.start\)\s*\.lt\('created_at', todayBounds\.end\)/;
   assert.match(fn, dedupe, 'signup day checks before writing');
   assert.match(fnBody('deliverFtbendNotification', 900), dedupe, 'and the morning run checks the same way, so it skips a day already answered');
 });

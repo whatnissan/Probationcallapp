@@ -24,7 +24,7 @@ const {
   validateFtbendColor, detectColor, detectPhaseColors, detectPinExpired,
   phoneticMatch, doCrossCheck, setColorVocabulary
 } = require('./lib/detection');
-const { formatLocalDay, todayMD, wouldExceedCutoff, wouldExceedFtbendCutoff, ftbendRetryDelayMs, endOfLocalDayEpochSeconds } = require('./lib/time');
+const { formatLocalDay, localDayBoundsUtc, todayMD, wouldExceedCutoff, wouldExceedFtbendCutoff, ftbendRetryDelayMs, endOfLocalDayEpochSeconds } = require('./lib/time');
 const { computeTieredPriceCents, creditPricing, MAX_EXACT_CREDITS } = require('./lib/pricing');
 const { resolveBearerUser, emailTombstoneHash } = require('./lib/auth');
 const demoAccount = require('./lib/demo');
@@ -2263,6 +2263,9 @@ app.get('/api/v1/today', authV1, async function(req, res) {
     var county = row.county || 'montgomery';
     var tz = row.timezone || 'America/Chicago';
     var today = formatLocalDay(new Date(), tz);
+    // The county's day, not UTC's: a row written after 7 PM CDT is still
+    // today's here, and never tomorrow's (lib/time.localDayBoundsUtc).
+    var todayBounds = localDayBoundsUtc(today, tz);
 
     var payload = {
       date: today,
@@ -2301,13 +2304,13 @@ app.get('/api/v1/today', authV1, async function(req, res) {
     } else {
       var calls = await supabase.from('call_history').select('*')
         .eq('user_id', req.user.id)
-        .gte('created_at', today + 'T00:00:00')
-        .lte('created_at', today + 'T23:59:59')
+        .gte('created_at', todayBounds.start)
+        .lt('created_at', todayBounds.end)
         .order('created_at', { ascending: true });
       var attempts = await supabase.from('call_attempts').select('*')
         .eq('user_id', req.user.id)
-        .gte('created_at', today + 'T00:00:00')
-        .lte('created_at', today + 'T23:59:59')
+        .gte('created_at', todayBounds.start)
+        .lt('created_at', todayBounds.end)
         .order('created_at', { ascending: true });
       var retry = await supabase.from('pending_retries').select('*')
         .eq('user_id', req.user.id).maybeSingle();
@@ -10222,7 +10225,9 @@ app.get('/api/admin/reliability', adminAuth, async function(req, res) {
     var emailOf = {};
     profiles.forEach(function(p) { emailOf[p.id] = p.email; });
 
-    function day(ts) { return String(ts).slice(0, 10); }
+    // The county's day, not the UTC date (2026-10-02): an evening row — a
+    // signup-day answer, a Call Now — belongs to the Texas day it happened on.
+    function day(ts) { return formatLocalDay(new Date(ts), 'America/Chicago'); }
     var todayStr = day(new Date().toISOString());
 
     // Per user-day chain state.
@@ -10255,7 +10260,7 @@ app.get('/api/admin/reliability', adminAuth, async function(req, res) {
     });
 
     function windowMetrics(days) {
-      var start = new Date(Date.now() - (days - 1) * 86400000).toISOString().slice(0, 10);
+      var start = day(new Date(Date.now() - (days - 1) * 86400000).toISOString());
       var rows = Object.values(chain).filter(function(s) { return s.day >= start; });
       var callRows = calls.filter(function(c) { return day(c.created_at) >= start; });
 
@@ -12143,14 +12148,17 @@ async function deliverFtbendNotification(row) {
   var userId = row.user_id;
   var office = FTBEND_OFFICES[oid] || { name: oid };
   var todayDate = row.notify_date;
+  // The Texas day, not the UTC one — shared with the billing check below and
+  // with the signup-day writer, so all three agree on what "today" is.
+  var todayBounds = localDayBoundsUtc(todayDate, 'America/Chicago');
 
   var existing = await supabase.from('call_history')
     .select('id')
     .eq('user_id', userId)
     .eq('county', 'ftbend')
     .eq('ftbend_office', oid)
-    .gte('created_at', todayDate + 'T00:00:00')
-    .lte('created_at', todayDate + 'T23:59:59')
+    .gte('created_at', todayBounds.start)
+    .lt('created_at', todayBounds.end)
     .limit(1);
   if (existing.error) throw new Error('idempotency check failed: ' + existing.error.message);
   if (existing.data && existing.data.length > 0) {
@@ -12276,8 +12284,8 @@ async function deliverFtbendNotification(row) {
           .eq('user_id', userId)
           .eq('county', 'ftbend')
           .eq('ftbend_office', oid)
-          .gte('created_at', todayDate + 'T00:00:00')
-          .lte('created_at', todayDate + 'T23:59:59')
+          .gte('created_at', todayBounds.start)
+          .lt('created_at', todayBounds.end)
           .not('billed_at', 'is', null)
           .limit(1);
         if (r.error) throw r.error;
@@ -12357,11 +12365,10 @@ async function deliverFtbendNotification(row) {
 // - Idempotent: the same per-user/office/day check deliverFtbendNotification
 //   uses, so a second save writes nothing and the morning run skips a day
 //   this already answered.
-// - Only while the Central date equals the UTC date (before 7 PM CDT /
-//   6 PM CST). /today and the morning run's duplicate check both find
-//   "today's" row with a naive UTC-day window on created_at; a row written
-//   after UTC midnight would read as TOMORROW's answer and make tomorrow's
-//   delivery skip this person — a silent morning.
+// - Any time of the Texas day. Until 2026-10-02 it stopped at 7 PM CDT,
+//   because /today and the duplicate checks found "today's" row by UTC date
+//   and a later row read as tomorrow's; they now use the county's day
+//   (lib/time.localDayBoundsUtc), so the cutoff is gone.
 // Never throws: a failure here must not fail the schedule save.
 async function writeFtbendSignupDayVerdict(userId, schedule) {
   try {
@@ -12370,10 +12377,7 @@ async function writeFtbendSignupDayVerdict(userId, schedule) {
     if (!FTBEND_OFFICES[oid]) return;
     var now = new Date();
     var todayDate = formatLocalDay(now, 'America/Chicago');
-    if (!ftbend.signupDayWindowOpen(now, todayDate)) {
-      console.log('[SIGNUP-DAY] ' + userId.slice(0, 8) + '/' + oid + ' — past UTC midnight for ' + todayDate + '; the morning run answers tomorrow');
-      return;
-    }
+    var todayBounds = localDayBoundsUtc(todayDate, 'America/Chicago');
     var dcs = await supabase.from('daily_county_status')
       .select('county, date, color, phase1_color, phase2_color, transcript, recording_url, recording_duration_seconds')
       .eq('county', 'ftbend_' + oid)
@@ -12397,8 +12401,8 @@ async function writeFtbendSignupDayVerdict(userId, schedule) {
       .eq('user_id', userId)
       .eq('county', 'ftbend')
       .eq('ftbend_office', oid)
-      .gte('created_at', todayDate + 'T00:00:00')
-      .lte('created_at', todayDate + 'T23:59:59')
+      .gte('created_at', todayBounds.start)
+      .lt('created_at', todayBounds.end)
       .limit(1);
     if (existing.error) {
       console.error('[SIGNUP-DAY] idempotency check failed for ' + userId.slice(0, 8) + ':', existing.error.message);
