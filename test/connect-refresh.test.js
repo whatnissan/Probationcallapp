@@ -28,8 +28,14 @@ test('it expires', function() {
 test('tampering, wrong key and junk all fail closed', function() {
   const t = cr.mintToken(UID, SECRET, NOW);
   assert.strictEqual(cr.readToken(t, 'b'.repeat(48), NOW), null);          // wrong secret
-  assert.strictEqual(cr.readToken(t.slice(0, -2) + 'AA', SECRET, NOW), null); // flipped ciphertext
-  assert.strictEqual(cr.readToken('A' + t.slice(1), SECRET, NOW), null);   // flipped iv
+  // Always a DIFFERENT character: writing a fixed 'A' over a random token
+  // left it unchanged about 1 run in 64 (first char already 'A'), and the
+  // suite failed at random. The last base64url char can hold padding bits,
+  // so the body flip is in the middle, where every bit is real.
+  const other = function(c) { return c === 'A' ? 'B' : 'A'; };
+  const mid = Math.floor(t.length / 2);
+  assert.strictEqual(cr.readToken(t.slice(0, mid) + other(t[mid]) + t.slice(mid + 1), SECRET, NOW), null); // flipped tag/ciphertext
+  assert.strictEqual(cr.readToken(other(t[0]) + t.slice(1), SECRET, NOW), null);   // flipped iv
   ['', null, undefined, 'not-a-token', '....', 'a'.repeat(200)].forEach(function(bad) {
     assert.strictEqual(cr.readToken(bad, SECRET, NOW), null, 'accepted: ' + bad);
   });
