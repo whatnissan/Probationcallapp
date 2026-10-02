@@ -8159,7 +8159,7 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
         // THIS call's recording, written with THIS call's transcript: the
         // one path where our own call produced the announcement (§4.4).
         await storeFtbendColor(crossCheck.final_answer, transcript, officeId, phases.phase1, phases.phase2,
-          { url: mp3Url, durationSeconds: recordingDurationSeconds });
+          { url: mp3Url, durationSeconds: recordingDurationSeconds }, 'call');
         await notifyFtbendOfficeUsers(officeId, config);
         if (existingRetry) {
           await supabase.from('fort_bend_retries').delete().eq('id', existingRetry.id).then(function() {}, function(e) {
@@ -8216,7 +8216,7 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
             config.verifiedViaFinishProbation = true;
             // Resolved from finishprobation.com, not by this call: no
             // recording (§4.4) — our audio did not produce this answer.
-            await storeFtbendColor(joined, transcript, officeId, cutoffGT[0], cutoffGT[1] || null, null);
+            await storeFtbendColor(joined, transcript, officeId, cutoffGT[0], cutoffGT[1] || null, null, 'finishprobation');
             await notifyFtbendOfficeUsers(officeId, config);
             loggedMethod = 'cutoff_with_ground_truth';
             loggedGroundTruth = joined;
@@ -8676,6 +8676,79 @@ async function runDailyIntegrityDigest() {
 }
 cron.schedule('30 7 * * *', runDailyIntegrityDigest, { timezone: 'America/Chicago' });
 
+// ---- 10:00 AM Fort Bend recording check (2026-10-02) ----
+// After the 9:25 safety net and the 9:30 retry cutoff, and after every Fort
+// Bend send time the pickers offer (app to 09:00, website to 9:55). Rules in
+// lib/ftbend.recordingCheck; this only reads and reports. A problem emails
+// ALERT_EMAIL (Dave) that morning — not a digest. A clean morning only logs.
+async function runFtbendRecordingCheck() {
+  var day = formatLocalDay(new Date(), 'America/Chicago');
+  var bounds = localDayBoundsUtc(day, 'America/Chicago');
+  var offices = await supabase.from('daily_county_status')
+    .select('county, resolved_by, recording_url')
+    .like('county', 'ftbend_%')
+    .eq('date', day);
+  var subs = await supabase.from('call_history')
+    .select('user_id, ftbend_office, result, recording_url')
+    .eq('county', 'ftbend')
+    .gte('created_at', bounds.start)
+    .lt('created_at', bounds.end);
+  if (offices.error || subs.error) {
+    return { day: day, problems: ['The check could not read its data: ' + (offices.error || subs.error).message], summary: null };
+  }
+  var names = {};
+  Object.keys(FTBEND_OFFICES).forEach(function(o) { names[o] = FTBEND_OFFICES[o].name; });
+  var out = ftbend.recordingCheck(offices.data, subs.data, names);
+  out.day = day;
+  return out;
+}
+
+async function alertFtbendRecordingProblems(out) {
+  var text = '⚠️ Fort Bend recordings — ' + out.day + '\n\n' +
+    out.problems.length + ' problem(s) at the 10:00 AM check:\n\n' +
+    out.problems.map(function(p) { return '• ' + p; }).join('\n') +
+    (out.summary ? '\n\nChecked ' + out.summary.offices + ' office row(s) and ' + out.summary.subscriberRows +
+      ' subscriber row(s). Wrong-office audio: ' + out.summary.wrongOffice + '. Missing audio: ' + out.summary.missingAudio + '.' : '') +
+    '\n\n- ProbationCall';
+  var to = process.env.ALERT_EMAIL;
+  if (to) {
+    await sendEmail(to, text, 'ftbend_recording_check');
+    return;
+  }
+  // Never silent: with no ALERT_EMAIL set, every admin gets it and is told why.
+  console.error('[FTBEND-REC-CHECK] ALERT_EMAIL is not set — sending to all admins instead');
+  var admins = await supabase.from('profiles').select('email').eq('is_admin', true);
+  var list = (admins.data || []).filter(function(a) { return a.email; });
+  for (var i = 0; i < list.length; i++) {
+    await sendEmail(list[i].email, text + '\n\n(ALERT_EMAIL is not set in Railway, so this went to every admin.)', 'ftbend_recording_check')
+      .catch(function(e) { console.error('[FTBEND-REC-CHECK] email failed:', e.message); });
+  }
+}
+
+cron.schedule('0 10 * * *', async function() {
+  try {
+    var out = await runFtbendRecordingCheck();
+    if (out.problems.length) {
+      console.error('[FTBEND-REC-CHECK] ' + out.problems.length + ' problem(s) for ' + out.day + ' — emailing');
+      await alertFtbendRecordingProblems(out);
+    } else {
+      console.log('[FTBEND-REC-CHECK] clean for ' + out.day + ': ' + JSON.stringify(out.summary));
+    }
+  } catch (e) {
+    console.error('[FTBEND-REC-CHECK] failed:', e.message);
+  }
+}, { timezone: 'America/Chicago' });
+
+// The same check on demand, read-only: no email.
+app.get('/api/admin/ftbend-recording-check', adminAuth, async function(req, res) {
+  try {
+    res.json(await runFtbendRecordingCheck());
+  } catch (e) {
+    console.error('[FTBEND-REC-CHECK] on-demand run failed:', e.message);
+    res.status(500).json({ error: GENERIC_SERVER_ERROR });
+  }
+});
+
 // 30-day recording deletion, for one table. Since migration 065 it covers
 // the Fort Bend office rows too (their audio was never deleted from Twilio)
 // and stamps recording_deleted_at on every row it clears, which is what lets
@@ -8985,6 +9058,7 @@ var EMAIL_SUBJECTS = {
   dial_failed:        { subject: 'We couldn\'t reach the hotline — trying again within the hour', stamp: true, emoji: '⚠️', color: '#f59e0b' },
   pin_expired_heard:  { subject: 'The hotline says your PIN has expired', stamp: true, emoji: '⚠️', color: '#f59e0b' },
   pin_expired_first:  { subject: 'We couldn\'t confirm your result today — call the hotline', stamp: true, emoji: '⚠️', color: '#f59e0b' },
+  ftbend_recording_check: { subject: 'ALERT: Fort Bend recordings — problems at the 10:00 check', stamp: true, emoji: '⚠️' },
   ftbend_final_fail:  { subject: 'We couldn\'t get today\'s Fort Bend color — call the hotline', stamp: true, emoji: '⚠️', color: '#f59e0b' },
   // Internal
   verify_volume_admin:  { subject: 'ADMIN: verification text volume alert', stamp: true, emoji: '🛠' },
@@ -11314,7 +11388,7 @@ async function populateFtbendOfficeFromTruth(officeId) {
   }
   var joined = groups.join(', ');
   // No call of ours behind this answer, so no recording (§4.4).
-  await storeFtbendColor(joined, gt.transcript || '(finishprobation.com)', officeId, groups[0], groups[1] || null, null);
+  await storeFtbendColor(joined, gt.transcript || '(finishprobation.com)', officeId, groups[0], groups[1] || null, null, 'finishprobation');
   await notifyFtbendOfficeUsers(officeId, {
     result: joined,
     phase1: groups[0],
@@ -12011,13 +12085,14 @@ async function fetchFinishProbationGroundTruth(officeId) {
 
 // phoneticMatch and doCrossCheck moved to lib/detection.js
 
+// `resolvedBy` is 'call' or 'finishprobation' (migration 068).
 // `recording` is { url, durationSeconds } of the call that produced this
 // announcement, or null when no call of ours did (finishprobation.com). It
 // is written in the SAME write as the transcript, always — null included —
 // so an office row's audio and transcript can never come from two calls
 // (§4.4, migration 065). Subscribers' rows copy both through
 // ftbend.officeRecordingFor.
-async function storeFtbendColor(color, transcript, officeId, phase1, phase2, recording) {
+async function storeFtbendColor(color, transcript, officeId, phase1, phase2, recording, resolvedBy) {
   var today = formatLocalDay(new Date(), 'America/Chicago');
 
   var office = FTBEND_OFFICES[officeId] || { name: officeId };
@@ -12041,8 +12116,14 @@ async function storeFtbendColor(color, transcript, officeId, phase1, phase2, rec
       phase2_color: phase2,
       office_name: office.name,
       recording_url: recording && recording.url ? recording.url : null,
-      recording_duration_seconds: recording && typeof recording.durationSeconds === 'number' ? recording.durationSeconds : null
+      recording_duration_seconds: recording && typeof recording.durationSeconds === 'number' ? recording.durationSeconds : null,
+      // How this answer was reached, declared by the caller (migration 068):
+      // what the 10:00 AM recording check compares the audio against.
+      resolved_by: resolvedBy === 'call' ? 'call' : 'finishprobation'
     };
+    if (resolvedBy === 'call' && !data.recording_url) {
+      console.error('[FTBEND] ' + office.name + ' resolved by our call but no recording reached the office row — the 10:00 check will report it');
+    }
     
     var result;
     if (existing.data) {
@@ -13142,7 +13223,7 @@ cron.schedule('* * * * *', async function() {
         if (ftbCutoffGT) {
           var ftbJoined = ftbCutoffGT.join(', ');
           // Resolved from finishprobation.com at cutoff: no recording (§4.4).
-          await storeFtbendColor(ftbJoined, ftbRow.last_transcript || '', ftbOfficeId, ftbCutoffGT[0], ftbCutoffGT[1] || null, null);
+          await storeFtbendColor(ftbJoined, ftbRow.last_transcript || '', ftbOfficeId, ftbCutoffGT[0], ftbCutoffGT[1] || null, null, 'finishprobation');
           await notifyFtbendOfficeUsers(ftbOfficeId, {
             result: ftbJoined,
             phase1: ftbCutoffGT[0],

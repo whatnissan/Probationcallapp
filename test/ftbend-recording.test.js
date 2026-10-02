@@ -77,11 +77,12 @@ test('only the confirmed path stores a recording; every finishprobation path sto
     .map((c) => c.slice(0, c.indexOf(');')))
     .filter((args) => !/^color, transcript, officeId/.test(args));   // drop the definition
   assert.strictEqual(sites.length, 4, 'four call sites');
-  const withRecording = sites.filter((a) => /\{ url: mp3Url, durationSeconds: recordingDurationSeconds \}$/.test(a));
-  const withNull = sites.filter((a) => /,\s*null$/.test(a));
-  assert.strictEqual(withRecording.length, 1, 'exactly one: the confirmed call');
+  // Since migration 068 each call also declares how it was resolved.
+  const withRecording = sites.filter((a) => /\{ url: mp3Url, durationSeconds: recordingDurationSeconds \}, 'call'$/.test(a));
+  const withNull = sites.filter((a) => /,\s*null, 'finishprobation'$/.test(a));
+  assert.strictEqual(withRecording.length, 1, 'exactly one: the confirmed call, declared resolved by our call');
   assert.ok(/^crossCheck\.final_answer, transcript, officeId/.test(withRecording[0]), 'and it is the confirmed branch');
-  assert.strictEqual(withNull.length, 3, 'cutoff, poller cutoff and the populate path pass null');
+  assert.strictEqual(withNull.length, 3, 'cutoff, poller cutoff and the populate path pass null, declared finishprobation');
 });
 
 test('the office row writes URL, duration and transcript in one write', () => {
