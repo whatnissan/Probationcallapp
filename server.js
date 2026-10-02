@@ -4501,6 +4501,9 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
       await supabase.from('profiles').update(profUpdate).eq('id', req.user.id)
         .then(function() {}, function(e) { console.error('[V1-SCHEDULE] profile update failed:', e.message); });
     }
+    // A first Fort Bend schedule gets today's confirmed answer now, free and
+    // in-app only — after the colour above is saved. Never fails the save.
+    if (!existing.data) await writeFtbendSignupDayVerdict(req.user.id, data);
     rescheduleUser(req.user.id, data);
 
     var saved = await supabase.from('user_schedules').select('*').eq('user_id', req.user.id).maybeSingle();
@@ -6472,6 +6475,9 @@ app.post('/api/schedule', auth, async function(req, res) {
     });
   }
 
+  // A first Fort Bend schedule gets today's confirmed answer now, free and
+  // in-app only (the colour was saved at the top). Never fails the save.
+  if (!existingResult.data) await writeFtbendSignupDayVerdict(req.user.id, data);
   rescheduleUser(req.user.id, data);
   // enabled/pausedReason tell the form when a save left the checks paused,
   // so "saved" is never read as "running".
@@ -10443,7 +10449,7 @@ app.get('/api/admin/user/:id/detail', adminAuth, async function(req, res) {
     var sched = await supabase.from('user_schedules').select('*').eq('user_id', uid).maybeSingle();
     var purch = await supabase.from('purchases').select('*').eq('user_id', uid).order('created_at', { ascending: false });
     var ledger = await supabase.from('credit_transactions').select('*').eq('user_id', uid).order('created_at', { ascending: false }).limit(50);
-    var calls = await supabase.from('call_history').select('result, billed_at, created_at').eq('user_id', uid).order('created_at', { ascending: false }).limit(500);
+    var calls = await supabase.from('call_history').select('result, billed_at, created_at, origin').eq('user_id', uid).order('created_at', { ascending: false }).limit(500);
 
     // Every non-result message we sent this user: low-credit warnings, pause
     // and PIN notices, opt-out confirmations, mass sends, support replies.
@@ -10487,7 +10493,9 @@ app.get('/api/admin/user/:id/detail', adminAuth, async function(req, res) {
         billable_total: billable.length,
         // Unbilled billable results are the residue of the 015 outage; showing
         // it per user makes any future recurrence visible from the panel.
-        billable_unbilled: billable.filter(function(c) { return !c.billed_at; }).length,
+        // Signup-day answers are free by design (origin 'signup_day',
+        // migration 066), not billing failures.
+        billable_unbilled: billable.filter(function(c) { return !c.billed_at && c.origin !== 'signup_day'; }).length,
         last_result: rows.length ? rows[0].result : null,
         last_call_at: rows.length ? rows[0].created_at : null
       },
@@ -12061,12 +12069,8 @@ async function notifyFtbendOfficeUsers(officeId, config) {
   console.log('[FTBEND] Notifying ' + result.data.length + ' users for ' + office.name);
   
   // Determine today's color(s)
-  var todayColors = [];
-  if (config.phase1) todayColors.push(config.phase1.toLowerCase());
-  if (config.phase2) todayColors.push(config.phase2.toLowerCase());
-  if (config.result && config.result !== 'UNKNOWN' && config.result !== 'PHASES' && todayColors.length === 0) {
-    todayColors.push(config.result.toLowerCase());
-  }
+  // Shared with the signup-day answer (lib/ftbend.todayColorsFor).
+  var todayColors = ftbend.todayColorsFor(config.result, config.phase1, config.phase2);
   var todayDisplay = todayColors.map(function(c) { return c.charAt(0).toUpperCase() + c.slice(1); }).join(' & ');
   var isUnknown = todayColors.length === 0;
   
@@ -12198,16 +12202,15 @@ async function deliverFtbendNotification(row) {
   // user is told, and written to call_history (migration 036). Deriving it
   // later from the announcement and their CURRENT color is wrong the moment
   // anyone's color changes — and this is a compliance record.
-  var ftVerdict;
+  // ONE verdict rule, shared with the signup-day answer (lib/ftbend.verdictFor),
+  // so a first-day answer can never disagree with the morning's.
+  var ftVerdict = ftbend.verdictFor(userColor, todayColors, isUnknown);
   var personalMsg;
-  if (isUnknown) {
-    ftVerdict = 'UNKNOWN';
+  if (ftVerdict === 'UNKNOWN') {
     personalMsg = '⚠️ Could not detect today\'s color.\n\nPlease call the hotline to verify:\n' + (FTBEND_OFFICES[oid] ? FTBEND_OFFICES[oid].number : '+12812383668') + '\n\n- ProbationCall.com';
-  } else if (userColor && todayColors.indexOf(userColor) >= 0) {
-    ftVerdict = 'MUST_TEST';
+  } else if (ftVerdict === 'MUST_TEST') {
     personalMsg = '🚨 TEST REQUIRED! 🚨\n\nToday\'s color is ' + todayDisplay + '.\n\nYour color (' + userColor.charAt(0).toUpperCase() + userColor.slice(1) + ') was called. You MUST test today.\n\n- ProbationCall.com';
-  } else if (userColor) {
-    ftVerdict = 'NO_TEST';
+  } else if (ftVerdict === 'NO_TEST') {
     personalMsg = '✅ No test today!\n\nToday\'s color is ' + todayDisplay + '.\nYour color (' + userColor.charAt(0).toUpperCase() + userColor.slice(1) + ') was NOT called. Enjoy your day!\n\n- ProbationCall.com';
   } else {
     // No colour on file. NOT 'UNKNOWN' (§2, 2026-09-30): UNKNOWN means the
@@ -12215,7 +12218,7 @@ async function deliverFtbendNotification(row) {
     // so a subscriber with no colour was told our recording was unclear on a
     // morning it was perfect. The announcement was heard and recorded; what
     // is missing is a setting on the account, and the message says so.
-    ftVerdict = 'NO_COLOR';
+    // (verdictFor returns 'NO_COLOR' here.)
     personalMsg = '🎨 Today\'s Color: ' + todayDisplay + '\n\nFort Bend ' + office.name + '\n\nYou have no colour saved, so we can\'t tell you whether you must test. Set your colour at probationcall.com and tomorrow\'s answer is yours.\n\n- ProbationCall.com';
   }
   if (row.verified_via_finishprobation) {
@@ -12331,6 +12334,100 @@ async function deliverFtbendNotification(row) {
   };
   if (shouldMarkFtBilled) ftRow.billed_at = new Date().toISOString();
   await supabase.from('call_history').insert(ftRow);
+}
+
+// Signup-day verdict (2026-10-02). A Fort Bend schedule created after its
+// office's morning answer was confirmed gets a real call_history row for
+// today at once — so /today, History and playback work on day one — instead
+// of nothing until tomorrow. Rules (Dave, 2026-10-02):
+// - Only from an answer our own call CONFIRMED (ftbend.signupDayAnswer).
+//   Not confirmed yet → nothing; the morning run includes this schedule
+//   when it resolves, because it fans out to every enabled schedule.
+// - Not billed: the office call already happened. origin = 'signup_day'
+//   (migration 066) says so, and keeps the row out of the admin panel's
+//   billable_unbilled outage counter.
+// - In-app only: no SMS, email or push. The person is in the app.
+// - Idempotent: the same per-user/office/day check deliverFtbendNotification
+//   uses, so a second save writes nothing and the morning run skips a day
+//   this already answered.
+// - Only while the Central date equals the UTC date (before 7 PM CDT /
+//   6 PM CST). /today and the morning run's duplicate check both find
+//   "today's" row with a naive UTC-day window on created_at; a row written
+//   after UTC midnight would read as TOMORROW's answer and make tomorrow's
+//   delivery skip this person — a silent morning.
+// Never throws: a failure here must not fail the schedule save.
+async function writeFtbendSignupDayVerdict(userId, schedule) {
+  try {
+    if (!userId || !schedule || schedule.county !== 'ftbend' || schedule.enabled === false) return;
+    var oid = schedule.ftbend_office;
+    if (!FTBEND_OFFICES[oid]) return;
+    var now = new Date();
+    var todayDate = formatLocalDay(now, 'America/Chicago');
+    if (!ftbend.signupDayWindowOpen(now, todayDate)) {
+      console.log('[SIGNUP-DAY] ' + userId.slice(0, 8) + '/' + oid + ' — past UTC midnight for ' + todayDate + '; the morning run answers tomorrow');
+      return;
+    }
+    var dcs = await supabase.from('daily_county_status')
+      .select('county, date, color, phase1_color, phase2_color, transcript, recording_url, recording_duration_seconds')
+      .eq('county', 'ftbend_' + oid)
+      .eq('date', todayDate)
+      .maybeSingle();
+    if (dcs.error) {
+      console.error('[SIGNUP-DAY] office read failed for ' + oid + ':', dcs.error.message);
+      return;
+    }
+    var answer = ftbend.signupDayAnswer(dcs.data, oid, todayDate);
+    if (!answer) {
+      console.log('[SIGNUP-DAY] ' + userId.slice(0, 8) + '/' + oid + ' — no confirmed answer for ' + todayDate + ' yet; nothing written');
+      return;
+    }
+    var prof = await supabase.from('profiles').select('user_color, is_disabled').eq('id', userId).maybeSingle();
+    if (prof.error || !prof.data || prof.data.is_disabled) return;
+    var userColor = prof.data.user_color ? prof.data.user_color.toLowerCase() : null;
+
+    var existing = await supabase.from('call_history')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('county', 'ftbend')
+      .eq('ftbend_office', oid)
+      .gte('created_at', todayDate + 'T00:00:00')
+      .lte('created_at', todayDate + 'T23:59:59')
+      .limit(1);
+    if (existing.error) {
+      console.error('[SIGNUP-DAY] idempotency check failed for ' + userId.slice(0, 8) + ':', existing.error.message);
+      return;
+    }
+    if (existing.data && existing.data.length > 0) {
+      console.log('[SIGNUP-DAY] ' + userId.slice(0, 8) + '/' + oid + ' already has ' + todayDate + ' — nothing written');
+      return;
+    }
+
+    var verdict = ftbend.verdictFor(userColor, answer.todayColors, false);
+    var ann = ftbend.classifyAnswer(answer.result);
+    var ins = await supabase.from('call_history').insert({
+      user_id: userId,
+      target_number: FTBEND_OFFICES[oid].number,
+      result: ftbend.resultStringFor(answer.result),
+      announced: ann.announced,
+      phases: ann.phases,
+      transcript: answer.recording.transcript,
+      recording_url: answer.recording.recording_url,
+      recording_duration_seconds: answer.recording.recording_duration_seconds,
+      county: 'ftbend',
+      ftbend_office: oid,
+      verdict: verdict,
+      verdict_color: userColor || null,
+      // No billed_at: free. The origin marker is what says so.
+      origin: 'signup_day'
+    });
+    if (ins.error) {
+      console.error('[SIGNUP-DAY] insert failed for ' + userId.slice(0, 8) + ':', ins.error.message);
+      return;
+    }
+    console.log('[SIGNUP-DAY] ' + userId.slice(0, 8) + '/' + oid + ' ' + todayDate + ' — ' + verdict + ' written (free, in-app only)');
+  } catch (e) {
+    console.error('[SIGNUP-DAY] failed for ' + String(userId).slice(0, 8) + ':', e.message);
+  }
 }
 
 // Queue (or advance) a fort_bend_retries row for an office whose call

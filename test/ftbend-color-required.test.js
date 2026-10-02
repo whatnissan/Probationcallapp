@@ -34,7 +34,12 @@ test('no colour on file reports NO_COLOR, never UNKNOWN', () => {
   const i = server.indexOf('No colour on file.');
   assert.ok(i > 0, 'the no-colour branch should be findable');
   const branch = server.slice(i, i + 1400);
-  assert.match(branch, /ftVerdict = 'NO_COLOR'/);
+  // The verdict comes from the ONE shared rule (2026-10-02), which the
+  // morning delivery and the signup-day answer both call.
+  const { verdictFor } = require('../lib/ftbend');
+  assert.strictEqual(verdictFor(null, ['gray'], false), 'NO_COLOR', 'no colour on file is NO_COLOR');
+  assert.strictEqual(verdictFor('', ['gray'], false), 'NO_COLOR');
+  assert.match(server, /var ftVerdict = ftbend\.verdictFor\(userColor, todayColors, isUnknown\);/, 'delivery uses it');
   assert.ok(!/ftVerdict = 'UNKNOWN'/.test(branch), 'the branch must not fall back to UNKNOWN');
   // Only the MESSAGE, not the comment above it, which quotes the old wording.
   const msg = /personalMsg = ('(?:[^'\\]|\\.)*'(?:\s*\+\s*[^;]+)?);/.exec(branch);

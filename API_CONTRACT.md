@@ -978,6 +978,19 @@ out on the channels just chosen ("Your daily check-in is now active…"). It
 used to live only in the website's route, so app signups got nothing. A
 re-save is not a first schedule and sends nothing.
 
+**A first Fort Bend schedule gets today's answer at once (2026-10-02).** When
+the schedule is created after its office's morning answer was confirmed by
+our own call, the server writes that day's row immediately: the subscriber's
+verdict against today's announcement, with the office recording and
+transcript (§4.4). `/today`, History and playback show it with no client
+change. It is **free** — `billed: false`, so the not-charged chip is correct
+— and **in-app only**: no SMS, email or push. Nothing is written when today
+is not confirmed yet (the morning run includes the new schedule when it
+resolves), when the answer came from finishprobation.com, or after 7 PM CDT
+/ 6 PM CST (a row written after UTC midnight would read as the next day's).
+A second save the same day writes nothing, and the morning run never adds a
+second row for a day this already answered. Website signups get it too.
+
 **Shared phone numbers are flagged, never refused (2026-09-02).** A notify
 number already on another account's schedule opens a review flag for the
 daily admin digest. The schedule saves normally and the client sees nothing
