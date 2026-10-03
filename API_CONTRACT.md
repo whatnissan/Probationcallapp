@@ -319,7 +319,7 @@ bad connection, one round trip beats five.**
       "testingOfficeId": "conroe",
       "callTime": "06:05",
       "timezone": "America/Chicago",
-      "callWindow": { "opensAt": "06:00", "closesAt": "14:59", "retryCutoff": "14:00" },
+      "callWindow": { "opensAt": "06:00", "closesAt": "13:55", "retryCutoff": "14:00" },
       "enabled": true,
       "pauseReason": null,
       "noCreditSkipCount": 0,
@@ -883,13 +883,23 @@ present.
 `callTime` is `"HH:MM"` and is validated: a malformed string or an impossible
 time is a `400` naming `callTime`, not a silent fallback.
 
-**Call-time floors (2026-09-02).** Montgomery accepts `06:00`–`14:59` only;
-Fort Bend accepts `05:10` or later. Outside that is a `400` naming
+**Call-time floors (2026-09-02).** Montgomery accepts `06:00`–`13:55` only
+(the latest was `14:59` until 2026-10-02; see below); Fort Bend accepts
+`05:10` or later. Outside that is a `400` naming
 `callTime`. Before 6:00 a Montgomery call would reach the hotline before the
 county records the day's announcement and report yesterday's answer as
 today's — the server must not accept a time it cannot honour. Fort Bend's
 office call is fixed at 5:05, so the user's time is only when they are told.
 Onboarding should offer a picker with 06:00 preselected, not a fixed default.
+
+**Montgomery's latest call time is 13:55 (2026-10-02).** The hotline window
+closes at 2:00 PM — the retry cutoff and the missed-call recovery both stop
+there — but schedules were accepted up to 14:59, so a 14:30 schedule's own
+call dialled half an hour after close. Calls that share a time are dialled
+45 seconds apart, so 13:55 leaves the last subscriber in a shared slot still
+dialling before 2 PM. `callWindow.closesAt` says `13:55`; a later time is a
+`400` naming `callTime` on every writer. No schedule was later than 13:55
+when this shipped, so none had to move.
 
 **Every writer enforces the Fort Bend floor (2026-09-30).** The website's own
 save had no Fort Bend floor and its pickers offered 5:00 and 5:05, so it

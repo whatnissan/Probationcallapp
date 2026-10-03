@@ -373,9 +373,13 @@ const SUPPORT_REPLY_TO = process.env.SUPPORT_REPLY_TO || 'whatnissan@gmail.com';
 // Validation messages stay specific — those the user can act on.
 const GENERIC_SERVER_ERROR = 'Something went wrong on our end — please try again in a moment.';
 
-// Time restrictions: 6:00 AM to 2:59 PM
+// Time restrictions: 6:00 AM to 1:55 PM (Montgomery). The latest time is
+// 13:55, not 14:59 (2026-10-02): the hotline window closes at 2 PM — the
+// retry cutoff and the recovery window — and calls sharing a time are
+// dialled 45 s apart, so a 13:55 slot still gets its last subscriber in
+// before 2 PM.
 const MIN_HOUR = 6;
-const MAX_HOUR = 14;
+const LATEST_CALL_MINUTES = 13 * 60 + 55;   // 13:55
 
 // LEGACY. Until 2026-09-17 every Montgomery user dialled at a fixed offset
 // hashed from their id, anywhere in this window, forever. Calls are now
@@ -2048,12 +2052,12 @@ function v1NotifyMethods(m) {
 var COUNTY_TIMEZONE = { montgomery: 'America/Chicago', ftbend: 'America/Chicago' };
 
 function v1CallWindow(county) {
-  // Truthful values from the scheduler: Montgomery schedules run 6:00–14:59
+  // Truthful values from the scheduler: Montgomery schedules run 6:00–13:55
   // local with the retry engine cutting off at 14:00; Fort Bend detection
   // starts ~5:05 with the office-retry cutoff at 9:30.
   return county === 'ftbend'
     ? { opensAt: '05:00', closesAt: '09:00', retryCutoff: '09:30' }
-    : { opensAt: '06:00', closesAt: '14:59', retryCutoff: '14:00' };
+    : { opensAt: '06:00', closesAt: '13:55', retryCutoff: '14:00' };
 }
 // Active office ids per county, from the §4.18 directory (migration 049).
 // Shared by the §3 read (retired ids are nulled) and the §4.7 write (ids
@@ -4271,8 +4275,8 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
     // report yesterday's answer as today's — the exact failure this product
     // exists to prevent. Fort Bend's office call is fixed at 5:05; the
     // user's time is only when they are told, so 5:10 is the floor there.
-    if (county !== 'ftbend' && (hour < MIN_HOUR || hour > MAX_HOUR || (hour === MAX_HOUR && minute > 59))) {
-      return v1Error(res, 400, 'validation_failed', 'callTime must be between 06:00 and 14:59 for Montgomery County.', false, 'callTime');
+    if (county !== 'ftbend' && (hour < MIN_HOUR || hour * 60 + minute > LATEST_CALL_MINUTES)) {
+      return v1Error(res, 400, 'validation_failed', 'callTime must be between 06:00 and 13:55 for Montgomery County.', false, 'callTime');
     }
     if (county === 'ftbend' && (hour < 5 || (hour === 5 && minute < 10))) {
       return v1Error(res, 400, 'validation_failed', 'callTime must be 05:10 or later for Fort Bend County.', false, 'callTime');
@@ -6352,8 +6356,8 @@ app.post('/api/schedule', auth, async function(req, res) {
   var county = req.body.county || 'montgomery';
   
   // Fort Bend has different time restrictions
-  if (county !== 'ftbend' && (hour < MIN_HOUR || hour > MAX_HOUR || (hour === MAX_HOUR && minute > 59))) {
-    return res.status(400).json({ error: 'Schedule time must be between 6:00 AM and 2:59 PM' });
+  if (county !== 'ftbend' && (hour < MIN_HOUR || hour * 60 + minute > LATEST_CALL_MINUTES)) {
+    return res.status(400).json({ error: 'Schedule time must be between 6:00 AM and 1:55 PM', field: 'callTime' });
   }
 
   // Validate every user-writable field BEFORE it reaches storage. These land
@@ -10055,7 +10059,7 @@ server.listen(PORT, function() {
   console.log('Voice: ' + TWILIO_VOICE_NUMBER);
   console.log('Email: ' + (process.env.BREVO_KEY ? 'Brevo configured' : 'Not configured'));
   console.log('SMS: Messaging Service ' + MESSAGING_SERVICE_SID);
-  console.log('Call Hours: ' + MIN_HOUR + ':00 AM - ' + MAX_HOUR + ':59 PM');
+  console.log('Call Hours: ' + MIN_HOUR + ':00 AM - 1:55 PM (Montgomery; hotline window closes 2:00 PM)');
   console.log('Call spacing: ' + staggerSpacingSeconds() + 's apart within a call-time cohort (CALL_STAGGER_SECONDS; legacy hash window ' + STAGGER_MINUTES + ' min as fallback only)');
   console.log('Affiliate Commission: ' + AFFILIATE_COMMISSION_PERCENT + '%');
   console.log('Affiliate program: ' + (AFFILIATE_ENABLED ? 'ENABLED' : 'disabled (set AFFILIATE_ENABLED=true to enable)'));
