@@ -24,7 +24,7 @@ const {
   validateFtbendColor, detectColor, detectPhaseColors, detectPinExpired,
   phoneticMatch, doCrossCheck, setColorVocabulary
 } = require('./lib/detection');
-const { formatLocalDay, localDayBoundsUtc, todayMD, wouldExceedCutoff, wouldExceedFtbendCutoff, ftbendRetryDelayMs, endOfLocalDayEpochSeconds } = require('./lib/time');
+const { formatLocalDay, localDayBoundsUtc, daysBetweenLocalDays, shiftLocalDay, localWeekday, todayMD, wouldExceedCutoff, wouldExceedFtbendCutoff, ftbendRetryDelayMs, endOfLocalDayEpochSeconds } = require('./lib/time');
 const { computeTieredPriceCents, creditPricing, MAX_EXACT_CREDITS } = require('./lib/pricing');
 const { resolveBearerUser, emailTombstoneHash } = require('./lib/auth');
 const demoAccount = require('./lib/demo');
@@ -1827,7 +1827,7 @@ app.get("/api/admin/montgomery-analytics", adminAuth, async function(req, res) {
     // Day of week analysis
     var dayCount = [0,0,0,0,0,0,0];
     var dayNames = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
-    tests.forEach(function(t) { dayCount[new Date(t.created_at).getDay()]++; });
+    tests.forEach(function(t) { dayCount[localWeekday(new Date(t.created_at), 'America/Chicago')]++; });
     var maxDay = Math.max.apply(null, dayCount);
     var dayPatterns = dayNames.map(function(name, i) {
       return { day: name, count: dayCount[i], pct: ((dayCount[i]/tests.length)*100).toFixed(1), likelihood: dayCount[i] >= maxDay*0.7 ? "high" : dayCount[i] >= maxDay*0.3 ? "medium" : "low" };
@@ -1836,7 +1836,7 @@ app.get("/api/admin/montgomery-analytics", adminAuth, async function(req, res) {
     // Day of month analysis
     var domCount = {};
     tests.forEach(function(t) {
-      var dom = new Date(t.created_at).getDate();
+      var dom = parseInt(formatLocalDay(new Date(t.created_at), 'America/Chicago').slice(8, 10), 10);
       domCount[dom] = (domCount[dom] || 0) + 1;
     });
     var domPatterns = Object.keys(domCount).map(function(d) { return { day: parseInt(d), count: domCount[d] }; }).sort(function(a,b) { return b.count - a.count; });
@@ -1844,7 +1844,7 @@ app.get("/api/admin/montgomery-analytics", adminAuth, async function(req, res) {
     // Week of month analysis
     var weekCount = [0,0,0,0,0];
     tests.forEach(function(t) {
-      var dom = new Date(t.created_at).getDate();
+      var dom = parseInt(formatLocalDay(new Date(t.created_at), 'America/Chicago').slice(8, 10), 10);
       var week = Math.min(4, Math.floor((dom-1)/7));
       weekCount[week]++;
     });
@@ -1928,13 +1928,13 @@ async function computeSystemStats() {
     }
     var dateCounts = {};
     tests.forEach(function(t) {
-      var date = t.created_at.substring(0,10);
+      var date = formatLocalDay(new Date(t.created_at), 'America/Chicago');
       if (!dateCounts[date]) dateCounts[date] = [];
       if (dateCounts[date].indexOf(t.user_id) === -1) dateCounts[date].push(t.user_id);
     });
     var confirmedTestingDays = Object.keys(dateCounts).filter(function(d){return dateCounts[d].length >= 2;}).sort();
     var dayCount = [0,0,0,0,0,0,0];
-    tests.forEach(function(t) { dayCount[new Date(t.created_at).getDay()]++; });
+    tests.forEach(function(t) { dayCount[localWeekday(new Date(t.created_at), 'America/Chicago')]++; });
 
     // THE DENOMINATOR. dayOfWeekCounts alone is MUST_TESTs per weekday, and
     // a raw count only means something if we dial the same number of times
@@ -1957,7 +1957,7 @@ async function computeSystemStats() {
         if (demoIds[r.user_id]) return;
         var c = r.county || 'montgomery';
         if (!(c === 'montgomery' || c.indexOf('montgomery') === 0)) return;
-        dayCalls[new Date(r.created_at).getDay()]++;
+        dayCalls[localWeekday(new Date(r.created_at), 'America/Chicago')]++;
         observedUsers[r.user_id] = true;
       });
     }
@@ -2174,13 +2174,14 @@ app.get('/api/v1/me', authV1, async function(req, res) {
     var probEnd = profile.probation_end_date || null;
     var daysRemaining = null, creditsNeeded = null;
     if (probEnd) {
-      var t = new Date(); t.setHours(0, 0, 0, 0);
+      // Today is the county's day (2026-10-02): server midnight is UTC, so
+      // from 7 PM CDT this counted one day too few.
       // NEGATIVE when the end date has passed (-42 = ended 42 days ago).
       // Clamping to 0 made "today is your last day" and "your date passed six
       // weeks ago" identical, and the app rendered the second as "covered
       // through the end". A sign is unmissable; a separate boolean is a field
       // a client can forget to check, which lands back on "0 days left".
-      daysRemaining = Math.ceil((new Date(probEnd) - t) / 86400000);
+      daysRemaining = daysBetweenLocalDays(formatLocalDay(new Date(), 'America/Chicago'), probEnd);
       creditsNeeded = Math.max(0, daysRemaining); // never need credits for elapsed days
     }
     var meta = req.user.user_metadata || {};
@@ -4009,7 +4010,8 @@ async function loadFtbendRecent() {
     if (hasToday || (Date.now() - _ftbendRecentAt) < RECENT_PENDING_TTL_MS) return _ftbendRecent;
   }
 
-  var since = new Date(Date.now() - RECENT_HISTORY_DAYS * 86400000).toISOString().slice(0, 10);
+  // daily_county_status.date is the county's day; so is this bound.
+  var since = shiftLocalDay(formatLocalDay(new Date(), 'America/Chicago'), -RECENT_HISTORY_DAYS);
   var q = await supabase.from('daily_county_status')
     .select('county, date, color, phase1_color, phase2_color')
     .in('county', ['ftbend_missouri', 'ftbend_rosenberg', 'ftbend_rosenberg2'])
@@ -4116,8 +4118,8 @@ app.get('/api/v1/county-stats', authV1, async function(req, res) {
     function daysSince(dates) {
       if (!dates || !dates.length) return null;
       var latest = dates.slice().sort().pop();
-      var t = new Date(); t.setHours(0, 0, 0, 0);
-      return Math.max(0, Math.round((t - new Date(latest + 'T00:00:00')) / 86400000));
+      // Both sides are the county's calendar day (2026-10-02).
+      return Math.max(0, daysBetweenLocalDays(latest, formatLocalDay(new Date(), 'America/Chicago')));
     }
 
     var mostCalled = names.map(function(n) {
@@ -5628,7 +5630,9 @@ async function applyReferralForUser(userId, rawCode, opts) {
     var capRaw = await getAppSetting('affiliate_max_attributions_per_day', 25);
     var cap = parseInt(capRaw, 10);
     if (Number.isFinite(cap) && cap > 0) {
-      var since = formatLocalDay(new Date(), 'America/Chicago') + 'T00:00:00';
+      // Central midnight as an instant. '<day>T00:00:00' is UTC midnight,
+      // so the "day" started at 7 PM CDT the evening before (2026-10-02).
+      var since = localDayBoundsUtc(formatLocalDay(new Date(), 'America/Chicago'), 'America/Chicago').start;
       var todayCount = await supabase.from('referrals')
         .select('id', { count: 'exact', head: true })
         .eq('referrer_id', referrer.id).gte('created_at', since);
@@ -9862,13 +9866,15 @@ async function checkCallHealth() {
     if (due.length === 0) return;
     var dueUserIds = due.map(function(s) { return s.user_id; });
 
+    // Today is the county's day, not the UTC date (2026-10-02).
+    var healthBounds = localDayBoundsUtc(today, 'America/Chicago');
     // "Ran" = any call_history row for this user today, regardless of result.
     // NO_CREDITS users were intentionally skipped and were notified — those
     // count as handled. Only RETRY_PENDING means "still in flight".
     var callResult = await supabase.from('call_history')
       .select('user_id, result')
-      .gte('created_at', today + 'T00:00:00')
-      .lte('created_at', today + 'T23:59:59')
+      .gte('created_at', healthBounds.start)
+      .lt('created_at', healthBounds.end)
       .in('user_id', dueUserIds);
     var calls = callResult.data || [];
     var ranUserIds = {};
@@ -12772,11 +12778,10 @@ app.get('/api/calculate-credits', auth, async function(req, res) {
   var endDate = req.query.endDate;
   if (!endDate) return res.status(400).json({ error: 'End date required' });
 
-  var end = new Date(endDate);
-  var today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  var daysRemaining = Math.ceil((end - today) / (1000 * 60 * 60 * 24));
+  // Calendar days from the county's today to the end date (2026-10-02):
+  // server midnight is UTC, which counted one day too few from 7 PM CDT.
+  var daysRemaining = daysBetweenLocalDays(formatLocalDay(new Date(), 'America/Chicago'), endDate);
+  if (daysRemaining === null) return res.status(400).json({ error: 'End date must be a date like 2027-03-15' });
   if (daysRemaining < 0) daysRemaining = 0;
 
   var creditsNeeded = daysRemaining;
@@ -12961,9 +12966,11 @@ cron.schedule('45 * * * *', async function() {
     return;
   }
   console.log('[RECOVERY] Checking for missed calls...');
-  var cst = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
-  var todayStart = new Date(cst);
-  todayStart.setHours(0, 0, 0, 0);
+  // "Today" is the county's day (2026-10-02). The old start was UTC midnight
+  // of the Central date — 7 PM CDT the evening before — so an evening Call
+  // Now counted as the next morning's call and that morning's missed
+  // scheduled call was never recovered.
+  var recoveryBounds = localDayBoundsUtc(formatLocalDay(now, 'America/Chicago'), 'America/Chicago');
   
   // Get all enabled schedules that should have run by now
   var schedResult = await supabase.from('user_schedules')
@@ -12995,7 +13002,8 @@ cron.schedule('45 * * * *', async function() {
     var callResult = await supabase.from('call_history')
       .select('id')
       .eq('user_id', sched.user_id)
-      .gte('created_at', todayStart.toISOString())
+      .gte('created_at', recoveryBounds.start)
+      .lt('created_at', recoveryBounds.end)
       .limit(1);
 
     if (callResult.data && callResult.data.length > 0) continue; // Already called today

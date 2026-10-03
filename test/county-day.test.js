@@ -35,3 +35,32 @@ test('every "today\'s row" reader uses the county\'s day', () => {
   assert.match(fn('async function writeFtbendSignupDayVerdict(', 1500), /var todayBounds = localDayBoundsUtc\(todayDate, 'America\/Chicago'\);/);
   assert.match(server, /function day\(ts\) \{ return formatLocalDay\(new Date\(ts\), 'America\/Chicago'\); \}/, 'reliability buckets by the Texas day');
 });
+
+// ---- commit 3: the rest of the inventory ----
+const { daysBetweenLocalDays, shiftLocalDay, localWeekday } = require('../lib/time');
+
+test('calendar helpers do date arithmetic, not clock arithmetic', () => {
+  assert.strictEqual(daysBetweenLocalDays('2026-10-02', '2026-10-05'), 3);
+  assert.strictEqual(daysBetweenLocalDays('2026-10-02', '2026-10-02'), 0, 'today is the last day: 0, not -1');
+  assert.strictEqual(daysBetweenLocalDays('2026-10-02', '2026-08-21'), -42, 'ended six weeks ago stays negative');
+  assert.strictEqual(daysBetweenLocalDays('2026-10-31', '2026-11-02'), 2, 'across the DST change');
+  assert.strictEqual(daysBetweenLocalDays('2026-10-02', 'junk'), null);
+  assert.strictEqual(shiftLocalDay('2026-10-02', -30), '2026-09-02');
+  assert.strictEqual(localWeekday(new Date('2026-10-03T01:30:00Z'), TZ), 5, '8:30 PM CDT Fri Oct 2 is a Friday, not Saturday');
+});
+
+test('days remaining at 8 PM CDT counts from the Texas day', () => {
+  // At 2026-10-03T01:00Z the server's UTC midnight is Oct 3; Texas is Oct 2.
+  const texasToday = formatLocalDay(new Date('2026-10-03T01:00:00Z'), TZ);
+  assert.strictEqual(daysBetweenLocalDays(texasToday, '2026-10-10'), 8, 'not 7');
+});
+
+test('no reader is left on the UTC day', () => {
+  assert.ok(!/['"]T23:59:59['"]\)/.test(server), 'no UTC end-of-day bound');
+  assert.ok(!/setHours\(0, 0, 0, 0\)/.test(server), 'no server-midnight "today"');
+  assert.ok(!/created_at\.substring\(0, ?10\)/.test(server), 'no UTC date slice of created_at');
+  assert.ok(!/new Date\((t|r)\.created_at\)\.get(Day|Date)\(\)/.test(server), 'no UTC weekday/day-of-month of a row');
+  assert.ok(!/formatLocalDay\(new Date\(\), 'America\/Chicago'\) \+ 'T00:00:00'/.test(server), 'no Central date read as UTC midnight');
+  const rec = server.slice(server.indexOf('// ========== MISSED CALL RECOVERY =========='));
+  assert.match(rec.slice(0, 4000), /\.gte\('created_at', recoveryBounds\.start\)\s*\.lt\('created_at', recoveryBounds\.end\)/, 'recovery: called today on the Texas day');
+});
