@@ -4514,6 +4514,9 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
     // A first Fort Bend schedule gets today's confirmed answer now, free and
     // in-app only — after the colour above is saved. Never fails the save.
     if (!existing.data) await writeFtbendSignupDayVerdict(req.user.id, data);
+    // Montgomery: created after its call time inside the window → dialled
+    // once now. Not awaited: it may wait out a busy slot.
+    if (!existing.data) startMontgomeryFirstDayCall(req.user.id, data).catch(function() {});
     rescheduleUser(req.user.id, data);
 
     var saved = await supabase.from('user_schedules').select('*').eq('user_id', req.user.id).maybeSingle();
@@ -6490,6 +6493,9 @@ app.post('/api/schedule', auth, async function(req, res) {
   // A first Fort Bend schedule gets today's confirmed answer now, free and
   // in-app only (the colour was saved at the top). Never fails the save.
   if (!existingResult.data) await writeFtbendSignupDayVerdict(req.user.id, data);
+  // Montgomery: created after its call time inside the window → dialled
+  // once now. Not awaited: it may wait out a busy slot.
+  if (!existingResult.data) startMontgomeryFirstDayCall(req.user.id, data).catch(function() {});
   rescheduleUser(req.user.id, data);
   // enabled/pausedReason tell the form when a save left the checks paused,
   // so "saved" is never read as "running".
@@ -7715,7 +7721,7 @@ async function alertAdminDemoTripwire(userId, targetNumber) {
   }
 }
 
-async function initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notifyMethod, userId, retryCount, county, isScheduledMorning) {
+async function initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notifyMethod, userId, retryCount, county, isScheduledMorning, opts) {
   if (String(pin) === demoAccount.DEMO_PIN) {
     console.error('[DEMO] TRIPWIRE: refused to dial ' + targetNumber + ' with the demo PIN (user ' + String(userId || '?').slice(0, 8) + '). Nothing was dialled.');
     alertAdminDemoTripwire(userId, targetNumber).catch(function() {});
@@ -7736,6 +7742,11 @@ async function initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notify
     userId: userId,
     retryCount: retryCount,
     isScheduledMorning: isScheduledMorning === true,
+    // Which path placed the call, written onto its result row
+    // (call_history.origin, migration 066). Only 'first_day' today. Not
+    // persisted to pending_calls: a restart mid-call loses the label, not
+    // the call (Dave, 2026-10-02 — no migration for it).
+    origin: (opts && opts.origin) || null,
     result: null
   });
   
@@ -8411,6 +8422,7 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
           recording_duration_seconds: recordingDurationSeconds,
           created_at: new Date().toISOString()
         };
+        if (config.origin) row.origin = config.origin;
         if (shouldMarkBilled) row.billed_at = new Date().toISOString();
         var insertResult = await supabase.from('call_history').insert(row);
         if (insertResult.error) {
@@ -9067,6 +9079,7 @@ var EMAIL_SUBJECTS = {
   pin_expired_heard:  { subject: 'The hotline says your PIN has expired', stamp: true, emoji: '⚠️', color: '#f59e0b' },
   pin_expired_first:  { subject: 'We couldn\'t confirm your result today — call the hotline', stamp: true, emoji: '⚠️', color: '#f59e0b' },
   ftbend_recording_check: { subject: 'ALERT: Fort Bend recordings — problems at the 10:00 check', stamp: true, emoji: '⚠️' },
+  first_day_failed:   { subject: 'We couldn\'t reach the hotline for your first check — call it today', stamp: true, emoji: '⚠️', color: '#f59e0b' },
   ftbend_final_fail:  { subject: 'We couldn\'t get today\'s Fort Bend color — call the hotline', stamp: true, emoji: '⚠️', color: '#f59e0b' },
   // Internal
   verify_volume_admin:  { subject: 'ADMIN: verification text volume alert', stamp: true, emoji: '🛠' },
@@ -12529,6 +12542,78 @@ async function writeFtbendSignupDayVerdict(userId, schedule) {
     console.log('[SIGNUP-DAY] ' + userId.slice(0, 8) + '/' + oid + ' ' + todayDate + ' — ' + verdict + ' written (free, in-app only)');
   } catch (e) {
     console.error('[SIGNUP-DAY] failed for ' + String(userId).slice(0, 8) + ':', e.message);
+  }
+}
+
+// Montgomery first-day call (Dave, 2026-10-02). A schedule created inside
+// 06:00–13:55 Central at or after its own call time has already missed
+// today's scheduled call — its cron fires tomorrow — so it is dialled once
+// now, as that day's real call: billed normally, its result delivered by the
+// chosen methods, a no-result entering the normal retry sequence. Rules in
+// lib/recovery.firstDayDecision. Started WITHOUT await by the schedule
+// writers, so a wait or a Twilio error never slows or fails the save.
+// - Never twice: the writers call it on first creation only; it refuses if
+//   anything is already logged for this person today (a call row, a dial, a
+//   pending retry) — which covers delete-and-recreate the same day — and the
+//   missed-call recovery skips schedules created after their call time.
+// - Spaced like a cohort: if any Montgomery dial went out within
+//   CALL_STAGGER_SECONDS, it waits that long first (busy signals).
+// - A rejected dial tells the person once and is not billed.
+async function startMontgomeryFirstDayCall(userId, sched) {
+  try {
+    var now = new Date();
+    var decision = recovery.firstDayDecision(now, sched, 'America/Chicago');
+    if (!decision.dial) {
+      if (sched && (sched.county || 'montgomery') !== 'ftbend') {
+        console.log('[FIRST-DAY] ' + String(userId).slice(0, 8) + ' — no first-day call (' + decision.reason + ')');
+      }
+      return;
+    }
+    var prof = await supabase.from('profiles').select('credits, email, is_disabled, is_demo').eq('id', userId).maybeSingle();
+    if (prof.error || !prof.data) return;
+    if (prof.data.is_demo || prof.data.is_disabled) return;
+    if (!isDev(prof.data.email || '') && (prof.data.credits || 0) < 1) {
+      console.log('[FIRST-DAY] ' + userId.slice(0, 8) + ' — no credits, first call is tomorrow');
+      return;
+    }
+
+    var b = localDayBoundsUtc(formatLocalDay(now, 'America/Chicago'), 'America/Chicago');
+    var rows = await supabase.from('call_history').select('id').eq('user_id', userId)
+      .gte('created_at', b.start).lt('created_at', b.end).limit(1);
+    var dials = await supabase.from('call_attempts').select('id').eq('user_id', userId)
+      .gte('created_at', b.start).lt('created_at', b.end).limit(1);
+    var retry = await supabase.from('pending_retries').select('id').eq('user_id', userId).limit(1);
+    if (rows.error || dials.error || retry.error) {
+      console.error('[FIRST-DAY] ' + userId.slice(0, 8) + ' — could not confirm nothing ran today; not dialling');
+      return;
+    }
+    if ((rows.data || []).length || (dials.data || []).length || (retry.data || []).length) {
+      console.log('[FIRST-DAY] ' + userId.slice(0, 8) + ' — already called today; not dialling again');
+      return;
+    }
+
+    var spacingMs = staggerSpacingSeconds() * 1000;
+    var recent = await supabase.from('call_attempts').select('created_at').eq('county', 'montgomery')
+      .gte('created_at', new Date(Date.now() - spacingMs).toISOString())
+      .order('created_at', { ascending: false }).limit(1);
+    if (!recent.error && recent.data && recent.data.length) {
+      var waitMs = Math.max(0, spacingMs - (Date.now() - Date.parse(recent.data[0].created_at)));
+      if (waitMs > 0) await new Promise(function(r) { setTimeout(r, waitMs); });
+    }
+
+    console.log('[FIRST-DAY] ' + userId.slice(0, 8) + ' — created after its ' + sched.hour + ':' + String(sched.minute || 0).padStart(2, '0') + ' call time, dialling once now');
+    try {
+      await initiateCall(sched.target_number, sched.pin, sched.notify_number, sched.notify_email, sched.notify_method,
+        userId, 0, 'montgomery', true, { origin: 'first_day' });
+    } catch (e) {
+      console.error('[FIRST-DAY] dial rejected for ' + userId.slice(0, 8) + ':', e.message);
+      await notify(sched.notify_number, sched.notify_email, sched.notify_method,
+        '⚠️ We couldn\'t reach the hotline for your first check.\n\nPlease call the hotline yourself today to check whether you need to test:\n+1 (936) 283-4848\n\nYou were not charged. Your daily check starts tomorrow at ' +
+        ((sched.hour % 12) || 12) + ':' + String(sched.minute || 0).padStart(2, '0') + (sched.hour < 12 ? ' AM' : ' PM') + '.\n\n- ProbationCall.com', 'first_day_failed')
+        .catch(function(n) { console.error('[FIRST-DAY] failure notice failed:', n.message); });
+    }
+  } catch (e) {
+    console.error('[FIRST-DAY] failed for ' + String(userId).slice(0, 8) + ':', e.message);
   }
 }
 

@@ -1002,6 +1002,20 @@ time of the county's day: "today" is the Texas day, not the UTC date
 second save the same day writes nothing, and the morning run never adds a
 second row for a day this already answered. Website signups get it too.
 
+**A first Montgomery schedule created after its call time is called at once
+(2026-10-02).** When the schedule is created between 06:00 and 13:55 Central
+and at or after its own call time, today's scheduled call has already gone
+by, so the server dials once immediately as that day's real call: billed like
+any morning, the result delivered by the chosen methods, a no-result entering
+the normal retry sequence. `/today` shows `IN_PROGRESS`, then the result,
+with no client change; the row carries `origin: "first_day"` server-side.
+Created before its call time, the regular call runs today; created after
+13:55 or before 06:00, the first call is tomorrow's. It happens once: a second
+save does not trigger it, it refuses if anything already ran for the person
+that day, and the missed-call recovery never dials a schedule created after
+its call time. If the dial itself is rejected, the person is told once to
+call the hotline themselves and is not charged. Website signups get it too.
+
 **Shared phone numbers are flagged, never refused (2026-09-02).** A notify
 number already on another account's schedule opens a review flag for the
 daily admin digest. The schedule saves normally and the client sees nothing
