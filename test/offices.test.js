@@ -110,3 +110,24 @@ test('soleOffice: junk in the column is {}', function() {
     assert.deepStrictEqual(o.cleanSoleOffice(raw, [o.shapeDirectory(counties, [conroe]).counties.montgomery.offices[0]], 'montgomery'), {});
   });
 });
+
+// 2026-10-06 (migration 069): Conroe's Saturday is 08:00–12:00 until Dave
+// confirms by phone. soleOffice must still resolve — the server drops an
+// entry whose office has no hours that day — and the migration must change
+// Saturday only.
+test('Conroe at noon on Saturday is still the Saturday sole office', function() {
+  const dir = o.shapeDirectory(
+    [{ county: 'montgomery', time_zone: 'America/Chicago', sole_office: { saturday: 'conroe' }, updated_at: '2026-09-14T19:20:49Z' }],
+    [{ id: 'conroe', county: 'montgomery', name: 'RMS Conroe Office', hours: { monday: ['08:00-17:45'], saturday: ['08:00-12:00'] }, notes: ["Saturday: Conroe only, and only if you're required to test that day."], sort_order: 0, updated_at: '2026-10-06T17:00:00Z' }]
+  );
+  assert.deepStrictEqual(dir.counties.montgomery.soleOffice, { saturday: 'conroe' });
+  assert.deepStrictEqual(dir.counties.montgomery.offices[0].hours.saturday, ['08:00-12:00']);
+  assert.strictEqual(dir.asOf, '2026-10-06T17:00:00.000Z', 'the newer office row moves asOf');
+});
+
+test('migration 069 changes Conroe Saturday only, and only once', function() {
+  const sql = require('fs').readFileSync(require('path').join(__dirname, '..', 'migrations', '069_conroe_saturday_hours.sql'), 'utf8').replace(/--.*$/gm, '');
+  assert.match(sql, /jsonb_set\(hours, '\{saturday\}', '\["08:00-12:00"\]'::jsonb\)/);
+  assert.match(sql, /updated_at = now\(\)/, 'moves asOf');
+  assert.match(sql, /WHERE id = 'conroe'\s+AND county = 'montgomery'\s+AND hours->'saturday' IS DISTINCT FROM '\["08:00-12:00"\]'::jsonb/, 'idempotent');
+});
