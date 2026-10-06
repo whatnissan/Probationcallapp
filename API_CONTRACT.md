@@ -171,7 +171,7 @@ outcome exists yet (`SCHEDULED` / `IN_PROGRESS` / `NOT_CALLED`).
 |---|---|---|
 | `no_credits` | **Yes** | Buy credits. No Resume button — it'd be dead. |
 | `unknown_streak` | No | Call the hotline yourself; check whether the PIN changed |
-| `pin_expired` | No | Contact your officer for a new PIN |
+| `pin_expired` | No | Contact your officer for a new PIN. Saving the **new** PIN resumes (§4.7); saving the same PIN does not |
 | `sms_opted_out` | No (resumes on START) | Switch to email. **No Resume button** — see below |
 | `user` | No | Resume |
 
@@ -840,9 +840,11 @@ Full replace, mirroring the existing `/api/schedule` upsert. Body is the schedul
 object from §3 minus server-owned fields (`id`, `enabled`, `pauseReason`,
 counters).
 
-Server-side rules that already exist and must be preserved: re-saving clears
-`consecutive_pin_expired`. Montgomery writes `pin` and null office/color; Fort
-Bend writes null `pin`.
+Server-side rules that already exist and must be preserved: a **PIN change**
+clears `consecutive_pin_expired` (2026-10-06 — until then every save did, so
+an unrelated edit the day after a first `PIN_EXPIRED` pushed the auto-pause
+back a day). Montgomery writes `pin` and null office/color; Fort Bend writes
+null `pin`.
 
 **A save does not undo a pause the person chose (2026-09-30).** Until this
 date every save forced `enabled: true` and cleared `paused_reason`. That rule
@@ -856,7 +858,8 @@ nothing told them. A save now lifts a pause only when its cause is gone:
 | `user` | **Still paused.** Only `POST /schedule/resume` lifts it |
 | `no_credits` | Still paused at a zero balance (the top-up auto-resumes it); resumed if the account has credits |
 | `sms_opted_out` | Resumed only if the saved channel delivers — `email` in `notifyMethods` with an address, or a number that is not opted out. Otherwise still paused |
-| `pin_expired`, `unknown_streak` | Resumed — saving the new PIN is the remedy |
+| `pin_expired` | Resumed **only if the save carries a different PIN** (2026-10-06). The same PIN would fail the same way: calls restart, report `PIN_EXPIRED` again and re-pause a day or two later |
+| `unknown_streak` | Resumed |
 | `null` on a paused schedule (untagged; predates tagging) | Resumed |
 | any other value | Still paused. A save never undoes a pause it does not know |
 
@@ -977,6 +980,10 @@ schedule is a `400`, for the same reason `ftbendColor` is one on Montgomery:
 it has no meaning there, and Fort Bend has no verified buildings yet. The
 response echoes what was stored, after the retired-id rule in §3.
 
+**An office-only edit should use §4.7a, not this endpoint.** This PUT is a
+full replace: whatever else is unchanged, it still applies the pause-on-save
+table above and can lift a pause. §4.7a writes the office and nothing else.
+
 **`probationEndDate` is writable here (2026-09-02).** `"YYYY-MM-DD"` or
 `null` to clear; stored on `profiles.probation_end_date` and read back from
 `/me`. A malformed or impossible date is a `400` naming the field. The app
@@ -1022,6 +1029,29 @@ daily admin digest. The schedule saves normally and the client sees nothing
 different: one person managing a family member's account is legitimate, and
 being unable to sign up is worse than someone farming. An open flag withholds
 only the earned extension.
+
+### 4.7a `PUT /schedule/testing-office`
+
+```json
+{ "testingOfficeId": "conroe" }
+```
+
+Sets the office the county assigned this person, and **nothing else**
+(2026-10-06). No reschedule, no pause change, no `consecutive_pin_expired`
+reset, no first-day call, no notification, no billing — so a client can say,
+truthfully, that changing the testing office does not change the daily call.
+`PUT /schedule` (§4.7) still accepts `testingOfficeId`, but it is a full
+replace and runs every save rule; use this for an office-only edit.
+
+- `testingOfficeId` is **required** in the body: an office id, or `null` (or
+  `""`) to clear it. Missing is a `400 validation_failed` naming it.
+- Validation is exactly §4.7's, from the same server function: the id must
+  be an active office in the **live** directory for the schedule's county,
+  otherwise `400 validation_failed` naming `testingOfficeId`; a non-null
+  value on a Fort Bend schedule is the same `400`; `503 internal`
+  (retryable) when the directory cannot be read.
+- No schedule yet: `404 schedule_missing`.
+- The response is the full §3 schedule object, as `PUT /schedule` returns.
 
 ### 4.8 `POST /schedule/pause` · `POST /schedule/resume`
 

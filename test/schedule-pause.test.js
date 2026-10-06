@@ -45,8 +45,26 @@ test('sms_opted_out lifts only when the saved channel can deliver', () => {
     'email chosen with no address delivers nothing');
 });
 
-test('pauses a save fixes still resume: new PIN, and legacy untagged pauses', () => {
-  assert.deepStrictEqual(pauseStateOnSave(paused('pin_expired'), sms, {}), RUNNING);
+test('pin_expired lifts only when the save carries a different PIN (2026-10-06)', () => {
+  const pe = (pin) => Object.assign(paused('pin_expired'), { pin: pin });
+  assert.deepStrictEqual(pauseStateOnSave(pe('111111'), Object.assign({}, sms, { pin: '222222' }), {}), RUNNING, 'new PIN: resumed');
+  const kept = { enabled: false, paused_reason: 'pin_expired' };
+  assert.deepStrictEqual(pauseStateOnSave(pe('111111'), Object.assign({}, sms, { pin: '111111' }), {}), kept, 'same PIN: stays paused');
+  assert.deepStrictEqual(pauseStateOnSave(pe('111111'), Object.assign({}, sms, { pin: ' 111111 ' }), {}), kept, 'same PIN with spaces');
+  assert.deepStrictEqual(pauseStateOnSave(paused('pin_expired'), Object.assign({}, sms, { pin: '222222' }), {}), kept, 'stored PIN not read: never resumes');
+  assert.deepStrictEqual(pauseStateOnSave(pe('111111'), Object.assign({}, sms, { pin: null }), {}), kept, 'no PIN sent');
+});
+
+test('the PIN-expired count resets only on a new schedule or a changed PIN', () => {
+  const { pinChanged } = require('../lib/schedule-pause');
+  assert.strictEqual(pinChanged({ pin: '111111' }, { pin: '222222' }), true);
+  assert.strictEqual(pinChanged({ pin: '111111' }, { pin: '111111' }), false, 'an unrelated save keeps the count');
+  assert.strictEqual(pinChanged({}, { pin: '222222' }), false, 'unknown stored PIN: no reset');
+  assert.match(server, /if \(!existing \|\| pinChanged\(existing, data\)\) data\.consecutive_pin_expired = 0;/, 'applyPauseOnSave owns the reset');
+  assert.ok(!/^\s*consecutive_pin_expired: 0\s*$/m.test(server), 'no writer resets it unconditionally any more');
+});
+
+test('other pauses a save fixes still resume: unknown_streak and legacy untagged', () => {
   assert.deepStrictEqual(pauseStateOnSave(paused('unknown_streak'), sms, {}), RUNNING);
   assert.deepStrictEqual(pauseStateOnSave(paused(null), sms, {}), RUNNING);
   assert.deepStrictEqual(pauseStateOnSave({ id: 's1', enabled: false }, sms, {}), RUNNING, 'column absent reads as untagged');
@@ -67,7 +85,7 @@ test('both writers read the pause and decide through the one helper', () => {
   const v1 = slice("app.put('/api/v1/schedule'", 16000);
   const web = slice("app.post('/api/schedule'", 12000);
   for (const [name, body] of [['v1 PUT', v1], ['website', web]]) {
-    assert.match(body, /select\('id, enabled, paused_reason'\)/, name + ' reads the current pause');
+    assert.match(body, /select\('id, enabled, paused_reason, pin'\)/, name + ' reads the current pause and PIN');
     assert.match(body, /await applyPauseOnSave\(req\.user\.id, /, name + ' applies the rule');
     assert.ok(!/^\s*enabled: true,/m.test(body), name + ' no longer forces enabled: true');
   }
@@ -79,4 +97,23 @@ test('the website is told when a save left the checks paused', () => {
   assert.match(slice("app.post('/api/schedule'", 12000), /res\.json\(\{ success: true, enabled: data\.enabled, pausedReason: data\.paused_reason \}\)/);
   const dash = fs.readFileSync(path.join(__dirname, '..', 'public', 'dashboard.html'), 'utf8');
   assert.match(dash, /d\.success && d\.enabled === false/, 'the form does not say "saved" as if running');
+});
+
+test('PUT /schedule/testing-office writes the office and nothing else', () => {
+  const i = server.indexOf("app.put('/api/v1/schedule/testing-office', authV1");
+  assert.ok(i > 0, 'the endpoint exists');
+  const ep = server.slice(i, server.indexOf('\n});', i)).replace(/\/\/.*$/gm, '');
+  assert.match(ep, /\.update\(\{ testing_office_id: office\.value \}\)/, 'one column');
+  for (const call of ['rescheduleUser', 'applyPauseOnSave', 'startMontgomeryFirstDayCall', 'writeFtbendSignupDayVerdict', 'notify(', 'deductCreditOnce', 'consecutive_pin_expired', 'enabled']) {
+    assert.ok(!ep.includes(call), 'never touches ' + call);
+  }
+  assert.match(ep, /resolveTestingOfficeId\(b\.testingOfficeId, sched\.data\.county\)/, 'same validation as PUT /schedule');
+  assert.match(server, /var office = await resolveTestingOfficeId\(b\.testingOfficeId, county\);/, 'PUT /schedule uses the same validator');
+});
+
+test('the contract documents the PIN rules and §4.7a', () => {
+  const contract = require('fs').readFileSync(require('path').join(__dirname, '..', 'API_CONTRACT.md'), 'utf8');
+  assert.match(contract, /### 4\.7a `PUT \/schedule\/testing-office`/);
+  assert.match(contract, /\| `pin_expired` \| Resumed \*\*only if the save carries a different PIN\*\*/);
+  assert.match(contract, /a \*\*PIN change\*\*\nclears `consecutive_pin_expired`/);
 });

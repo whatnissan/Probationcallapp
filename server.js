@@ -38,7 +38,7 @@ const wsTicketLib = require('./lib/ws-ticket');
 const connectRefresh = require('./lib/connect-refresh');
 const { createThrottle } = require('./lib/write-throttle');
 const { constructEventWithSecrets } = require('./lib/stripe-webhook');
-const { pauseStateOnSave } = require('./lib/schedule-pause');
+const { pauseStateOnSave, pinChanged } = require('./lib/schedule-pause');
 const recovery = require('./lib/recovery');
 const apns = require('./lib/apns');
 const { fallbackFieldsFor } = require('./lib/push');
@@ -4222,16 +4222,76 @@ async function pauseContextForSave(userId, existing, saved) {
 }
 
 // Apply pauseStateOnSave to a schedule about to be written, and say so in
-// the log when a save leaves a pause in place or lifts one.
+// the log when a save leaves a pause in place or lifts one. Also owns the
+// PIN-expired count: it starts over only on a NEW schedule or a CHANGED PIN
+// (Dave, 2026-10-06). Every save used to reset it, so an unrelated edit the
+// day after a first PIN_EXPIRED pushed the auto-pause back a day.
+// `existing` must include pin (both writers select it).
 async function applyPauseOnSave(userId, existing, data, tag) {
   var st = pauseStateOnSave(existing, data, await pauseContextForSave(userId, existing, data));
   data.enabled = st.enabled;
   data.paused_reason = st.paused_reason;
+  if (!existing || pinChanged(existing, data)) data.consecutive_pin_expired = 0;
   if (existing && existing.enabled === false) {
     console.log(tag + ' ' + userId.slice(0, 8) + ' saved while paused (' + (existing.paused_reason || 'untagged') + ') — ' +
       (st.enabled ? 'save removed the cause, resumed' : 'pause kept'));
   }
 }
+
+// testingOfficeId -> the stored value, validated against the LIVE directory
+// for the schedule's county. Shared by PUT /schedule and PUT
+// /schedule/testing-office so the two can never disagree. Null or empty
+// clears. Returns { value } or { error: {status, code, message, ...} }.
+async function resolveTestingOfficeId(raw, county) {
+  if (raw === null || raw === undefined || String(raw).trim() === '') return { value: null };
+  if ((county || 'montgomery') !== 'montgomery') {
+    return { error: { status: 400, code: 'validation_failed', message: 'testingOfficeId does not apply to a Fort Bend schedule.', retryable: false, field: 'testingOfficeId' } };
+  }
+  var officeId = String(raw).trim().toLowerCase();
+  var active = await loadActiveOfficeIds();
+  if (!active) {
+    return { error: { status: 503, code: 'internal', message: 'Could not check the office directory. Please try again.', retryable: true } };
+  }
+  if (!(active.montgomery && active.montgomery[officeId])) {
+    return { error: { status: 400, code: 'validation_failed', message: 'testingOfficeId "' + officeId.slice(0, 40) + '" is not an office in the Montgomery County directory.', retryable: false, field: 'testingOfficeId' } };
+  }
+  return { value: officeId };
+}
+
+// §4.7a PUT /schedule/testing-office (2026-10-06): the assigned testing
+// office and NOTHING else. PUT /schedule is a full replace, so an office-only
+// edit there still runs every rule — it could lift a pause, reset the
+// PIN-expired count, re-arm the call — and the app could not honestly say
+// "this does not change your daily call". This writes one column: no
+// reschedule, no pause change, no count reset, no first-day call, no
+// notification, no billing.
+app.put('/api/v1/schedule/testing-office', authV1, async function(req, res) {
+  try {
+    var b = req.body || {};
+    if (!Object.prototype.hasOwnProperty.call(b, 'testingOfficeId')) {
+      return v1Error(res, 400, 'validation_failed', 'testingOfficeId is required — an office id, or null to clear it.', false, 'testingOfficeId');
+    }
+    var sched = await supabase.from('user_schedules').select('county').eq('user_id', req.user.id).maybeSingle();
+    if (sched.error) throw new Error(sched.error.message);
+    if (!sched.data) return v1Error(res, 404, 'schedule_missing', 'Set up your daily call first.');
+    var office = await resolveTestingOfficeId(b.testingOfficeId, sched.data.county);
+    if (office.error) return v1Error(res, office.error.status, office.error.code, office.error.message, office.error.retryable, office.error.field);
+    var upd = await supabase.from('user_schedules')
+      .update({ testing_office_id: office.value })
+      .eq('user_id', req.user.id)
+      .select('*');
+    if (upd.error) {
+      console.error('[V1-TESTING-OFFICE] save failed for ' + req.user.id.slice(0, 8) + ':', upd.error.message);
+      return v1Error(res, 500, 'internal', 'Could not save your testing office.', true);
+    }
+    if (!(upd.data || []).length) return v1Error(res, 404, 'schedule_missing', 'Set up your daily call first.');
+    var prof = await supabase.from('profiles').select('user_color').eq('id', req.user.id).maybeSingle();
+    res.json(v1Schedule(upd.data[0], prof.data, await loadActiveOfficeIds()));
+  } catch (e) {
+    console.error('[V1-TESTING-OFFICE] error:', e.message);
+    return v1Error(res, 500, 'internal', 'Something went wrong on our side.', true);
+  }
+});
 
 // §4.7 PUT /schedule — full replace, mirroring POST /api/schedule exactly.
 // Every server-side rule the web path enforces is preserved here, including
@@ -4403,11 +4463,10 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
       timezone: tz,
       quiet_mode: b.quietMode || false,
       ftbend_office: county === 'ftbend' ? (b.ftbendOffice || b.ftbend_office || 'missouri') : 'missouri',
-      // A fresh PIN means the expiry streak starts over. enabled and
-      // paused_reason are set by applyPauseOnSave once the existing row is
-      // read: a save no longer undoes a pause the person chose (§4.7).
-      // b.enabled is ignored — resuming is POST /schedule/resume.
-      consecutive_pin_expired: 0
+      // enabled, paused_reason and (on a PIN change only)
+      // consecutive_pin_expired are set by applyPauseOnSave once the
+      // existing row is read: a save no longer undoes a pause the person
+      // chose (§4.7). b.enabled is ignored — resuming is /schedule/resume.
     };
 
     // ftbendColor was previously ignored outright — the colour was only
@@ -4451,23 +4510,9 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
     // validated against the LIVE directory for this schedule's county; the
     // user declares what the county assigned them, and we never pick.
     if (Object.prototype.hasOwnProperty.call(b, 'testingOfficeId')) {
-      var rawOffice = b.testingOfficeId;
-      if (rawOffice === null || String(rawOffice).trim() === '') {
-        data.testing_office_id = null;
-      } else {
-        if (county !== 'montgomery') {
-          return v1Error(res, 400, 'validation_failed', 'testingOfficeId does not apply to a Fort Bend schedule.', false, 'testingOfficeId');
-        }
-        var officeId = String(rawOffice).trim().toLowerCase();
-        var active = await loadActiveOfficeIds();
-        if (!active) {
-          return v1Error(res, 503, 'internal', 'Could not check the office directory. Please try again.', true);
-        }
-        if (!(active.montgomery && active.montgomery[officeId])) {
-          return v1Error(res, 400, 'validation_failed', 'testingOfficeId "' + officeId.slice(0, 40) + '" is not an office in the Montgomery County directory.', false, 'testingOfficeId');
-        }
-        data.testing_office_id = officeId;
-      }
+      var office = await resolveTestingOfficeId(b.testingOfficeId, county);
+      if (office.error) return v1Error(res, office.error.status, office.error.code, office.error.message, office.error.retryable, office.error.field);
+      data.testing_office_id = office.value;
     } else if (county === 'ftbend') {
       // A schedule moving to Fort Bend cannot carry a Montgomery building.
       data.testing_office_id = null;
@@ -4477,7 +4522,7 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
     // degrade — it writes the wrong thing. maybeSingle already returns null
     // without an error when the row is genuinely absent, so any .error here
     // means the read failed and we must not conclude there is no schedule.
-    var existing = await supabase.from('user_schedules').select('id, enabled, paused_reason').eq('user_id', req.user.id).maybeSingle();
+    var existing = await supabase.from('user_schedules').select('id, enabled, paused_reason, pin').eq('user_id', req.user.id).maybeSingle();
     if (existing.error) {
       console.error('[V1-SCHEDULE] existing-schedule read failed for ' + req.user.id.slice(0, 8) + ' — refusing to guess insert vs update:', existing.error.message);
       return v1Error(res, 503, 'internal', 'Could not save your schedule. Please try again.', true);
@@ -6439,9 +6484,8 @@ app.post('/api/schedule', auth, async function(req, res) {
     // existing row is read. A save lifts a pause only when its cause is
     // gone (a new PIN, credits, a working channel) and never undoes a pause
     // the person chose in the app (§4.7, lib/schedule-pause.js).
-    // Re-saving the schedule (typically to update a fresh PIN) clears the
-    // PIN_EXPIRED streak so the auto-disable logic starts over.
-    consecutive_pin_expired: 0
+    // The PIN_EXPIRED count starts over only on a PIN change — set by
+    // applyPauseOnSave, which compares with the stored PIN.
   };
   
   // Decides UPDATE vs INSERT. A failed read used to look identical to "no
@@ -6449,7 +6493,7 @@ app.post('/api/schedule', auth, async function(req, res) {
   // had one AND send them the first-time welcome SMS again. maybeSingle
   // returns null with no error when the row really is absent, so .error here
   // means the read failed and nothing should be written on a guess.
-  var existingResult = await supabase.from('user_schedules').select('id, enabled, paused_reason').eq('user_id', req.user.id).maybeSingle();
+  var existingResult = await supabase.from('user_schedules').select('id, enabled, paused_reason, pin').eq('user_id', req.user.id).maybeSingle();
   if (existingResult.error) {
     console.error('[SCHEDULE] existing-schedule read failed for ' + req.user.id.slice(0, 8) + ' — refusing to guess insert vs update:', existingResult.error.message);
     return res.status(503).json({ error: 'Could not save your schedule. Please try again.' });

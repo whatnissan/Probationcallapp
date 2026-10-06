@@ -2149,6 +2149,7 @@ document.getElementById('scheduleForm').onsubmit = function(e) {
     var STILL_PAUSED = {
       user: 'You paused them in the ProbationCall app — resume them there.',
       no_credits: 'Add credits and they restart automatically.',
+      pin_expired: 'The hotline said your PIN expired. Enter the new PIN from your officer — the checks restart when the PIN changes.',
       sms_opted_out: 'Texts are stopped for this number — add an email and choose Email or Both to resume.'
     };
     if (d.success && d.enabled === false) { alert('✅ Schedule saved — your daily checks are still paused.' + (STILL_PAUSED[d.pausedReason] ? '\n\n' + STILL_PAUSED[d.pausedReason] : '')); loadUser(); }
