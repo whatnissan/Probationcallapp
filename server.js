@@ -4603,6 +4603,17 @@ app.post('/api/v1/schedule/pause', authV1, async function(req, res) {
 // a schedule the morning run would immediately re-pause for no credits.
 app.post('/api/v1/schedule/resume', authV1, async function(req, res) {
   try {
+    var resumeFields = { enabled: true, paused_reason: null };
+    var cur = await supabase.from('user_schedules')
+      .select('paused_reason, notify_method, notify_number, notify_email')
+      .eq('user_id', req.user.id).maybeSingle();
+    // pin_expired (2026-10-06): the remedy is a NEW PIN, saved through
+    // PUT /schedule, which lifts this pause (§4.7). Resuming with the same
+    // PIN restarts calls that fail the same way, so it is refused like
+    // sms_opted_out — and checked before credits, which would not help.
+    if (cur.data && cur.data.paused_reason === 'pin_expired') {
+      return v1Error(res, 409, 'pin_expired', 'The hotline said your PIN expired, so your calls stay paused until the PIN changes. Enter the new PIN from your probation officer — saving it restarts your calls.');
+    }
     var prof = await supabase.from('profiles').select('credits').eq('id', req.user.id).maybeSingle();
     var credits = (prof.data && prof.data.credits) || 0;
     if (credits <= 0) {
@@ -4613,10 +4624,6 @@ app.post('/api/v1/schedule/resume', authV1, async function(req, res) {
     // endpoint refuses too — resuming with no deliverable channel just
     // re-breaks it. It resumes once an email exists (switched to email
     // here, so the channel is real) or the number has texted START.
-    var resumeFields = { enabled: true, paused_reason: null };
-    var cur = await supabase.from('user_schedules')
-      .select('paused_reason, notify_method, notify_number, notify_email')
-      .eq('user_id', req.user.id).maybeSingle();
     if (cur.data && cur.data.paused_reason === 'sms_opted_out') {
       var stillOptedOut = cur.data.notify_number ? await isSmsOptedOut(cur.data.notify_number) : true;
       if (stillOptedOut) {

@@ -117,3 +117,16 @@ test('the contract documents the PIN rules and §4.7a', () => {
   assert.match(contract, /\| `pin_expired` \| Resumed \*\*only if the save carries a different PIN\*\*/);
   assert.match(contract, /a \*\*PIN change\*\*\nclears `consecutive_pin_expired`/);
 });
+
+test('POST /schedule/resume refuses pin_expired with 409, before the credits rule', () => {
+  const i = server.indexOf("app.post('/api/v1/schedule/resume', authV1");
+  const h = server.slice(i, server.indexOf('\n});', i));
+  const refusal = h.indexOf("cur.data.paused_reason === 'pin_expired'");
+  assert.ok(refusal > 0, 'resume checks for pin_expired');
+  assert.match(h.slice(refusal, refusal + 400), /v1Error\(res, 409, 'pin_expired'/);
+  assert.ok(refusal < h.indexOf("'insufficient_credits'"), 'checked before credits — credits would not help');
+  assert.ok(refusal < h.indexOf('.update(resumeFields)'), 'and before anything is written');
+  const contract = require('fs').readFileSync(require('path').join(__dirname, '..', 'API_CONTRACT.md'), 'utf8');
+  assert.match(contract, /Resume must also \*\*reject with `409 pin_expired`\*\*/);
+  assert.match(contract, /`pin_expired` \(§4\.8\),/, 'listed with the standard codes');
+});

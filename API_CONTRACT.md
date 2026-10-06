@@ -88,6 +88,7 @@ Standard codes: `unauthenticated`, `forbidden`, `not_found`, `validation_failed`
 `account_deletion_blocked` (all three §4.15), `phone_not_verified` (§4.7),
 `referral_already_applied`, `referral_after_purchase` (both §4.14),
 `sms_opted_out`, `sms_consent_required` (§4.7, §4.17), `ftbend_color_required` (§4.7),
+`pin_expired` (§4.8),
 `sms_send_failed`, `verification_not_found`,
 `verification_expired`, `verification_locked`, `verification_incorrect`
 (§4.17).
@@ -171,7 +172,7 @@ outcome exists yet (`SCHEDULED` / `IN_PROGRESS` / `NOT_CALLED`).
 |---|---|---|
 | `no_credits` | **Yes** | Buy credits. No Resume button — it'd be dead. |
 | `unknown_streak` | No | Call the hotline yourself; check whether the PIN changed |
-| `pin_expired` | No | Contact your officer for a new PIN. Saving the **new** PIN resumes (§4.7); saving the same PIN does not |
+| `pin_expired` | No | Contact your officer for a new PIN. Saving the **new** PIN resumes (§4.7); saving the same PIN does not. **No Resume button** — `POST /schedule/resume` is refused with `409 pin_expired` (§4.8) |
 | `sms_opted_out` | No (resumes on START) | Switch to email. **No Resume button** — see below |
 | `user` | No | Resume |
 
@@ -1070,6 +1071,13 @@ Resume must also **reject with `409 sms_opted_out`** when `pause_reason` is
 schedule or profile (§2). If an email does exist, resume succeeds and the
 server switches `notify_method` to `email` in the same write, so the
 resumed schedule has a channel that actually delivers.
+
+Resume must also **reject with `409 pin_expired`** when `pause_reason` is
+`pin_expired` (2026-10-06). The remedy is the new PIN from the officer,
+saved through `PUT /schedule`, which lifts the pause (§4.7); resuming with
+the same PIN would restart calls that fail the same way. This is checked
+**before** the credits rule, because adding credits would not help. Route the
+person to PIN entry, not a retry.
 
 ### 4.9 Test tools — `POST /test/call` · `/test/sms` · `/test/email`
 
