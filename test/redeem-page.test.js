@@ -65,3 +65,14 @@ test('every post-login redirect goes through the allowlist', () => {
   assert.strictEqual((login.match(/goAfterLogin\(\);/g) || []).length, 4);
   assert.match(login, /window\.location\.href = dest \|\| '\/dashboard';/);
 });
+
+test('the dashboard promo box redeems through the same endpoint, with the affiliate fallback kept', () => {
+  const dash = fs.readFileSync(path.join(root, 'public', 'dashboard.html'), 'utf8');
+  const i = dash.indexOf('function redeemPromo()');
+  const fn = dash.slice(i, dash.indexOf('// Affiliate functions', i));
+  assert.match(fn, /fetch\('\/api\/v1\/redeem', \{/);
+  assert.ok(!/fetch\('\/api\/redeem'/.test(dash), 'no page uses the old endpoint');
+  assert.match(fn, /errCode === 'promo_not_found' \|\| errCode === 'validation_failed'/, 'only "not a promo code" falls back to the affiliate check');
+  assert.match(fn, /fetch\('\/api\/check-affiliate-code'/);
+  assert.ok(!/innerHTML/.test(fn.replace(/\/\/.*$/gm, '')), 'messages via textContent');
+});

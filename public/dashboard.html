@@ -1770,19 +1770,38 @@ function redeemPromo() {
   st.className = 'status calling';
   st.textContent = 'Checking code...';
   
-  // First try as free credits promo
-  fetch('/api/redeem', {
+  // Promo codes redeem through POST /api/v1/redeem (2026-10-12) — the app's
+  // endpoint, the same one the /redeem page uses — so the format check, the
+  // 5-per-hour limit and the AFFILIATE ATTRIBUTION are identical on the web.
+  // The old /api/redeem never attributed, so an office's code redeemed here
+  // earned that office nothing.
+  fetch('/api/v1/redeem', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
     body: JSON.stringify({ code: code })
-  }).then(function(r) { return r.json(); }).then(function(d) {
-    if (d.success) {
+  }).then(function(r) {
+    return r.json().catch(function() { return {}; }).then(function(d) { return { status: r.status, ok: r.ok, d: d }; });
+  }).then(function(res) {
+    var d = res.d || {};
+    if (res.ok) {
       st.className = 'status success';
       st.textContent = '✅ Added ' + d.credits + ' credits!';
+      var a = d.attribution || {};
+      if (a.state === 'not_attributed' && a.message) {
+        var note = document.createElement('div');
+        note.style.fontSize = '0.85rem';
+        note.style.marginTop = '6px';
+        note.textContent = a.message;
+        st.appendChild(note);
+      }
       loadUser();
       setTimeout(closeBuyModal, 1500);
-    } else {
-      // Not a free credits code - check if affiliate code
+      return;
+    }
+    var errCode = d.error && typeof d.error === 'object' ? d.error.code : null;
+    // Not a promo code (or not one's shape): it may be an affiliate code for
+    // checkout, as before.
+    if (errCode === 'promo_not_found' || errCode === 'validation_failed') {
       fetch('/api/check-affiliate-code', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
@@ -1798,7 +1817,15 @@ function redeemPromo() {
           st.textContent = '❌ Invalid code';
         }
       });
+      return;
     }
+    // Expired, used up, already used by you, rate limited: say exactly that
+    // — it used to fall through to "Invalid code".
+    st.className = 'status error';
+    st.textContent = '❌ ' + ((d.error && typeof d.error === 'object' ? d.error.message : d.error) || 'Could not apply that code. Please try again.');
+  }).catch(function() {
+    st.className = 'status error';
+    st.textContent = 'Network error — please try again.';
   });
 }
 
