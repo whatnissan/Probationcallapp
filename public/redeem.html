@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex">
+<title>Redeem a code - ProbationCall</title>
+<link rel="icon" type="image/png" href="/favicon.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,sans-serif;background:#0a0a0f;color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center}
+.container{width:100%;max-width:420px;padding:40px 16px;text-align:center}
+.brand{display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px}
+.brand span{font-size:1.6rem;font-weight:700;color:#cbd5e1}
+h1{color:#00d9ff;font-size:1.5rem;margin-bottom:8px}
+p{color:#8892b0;font-size:0.95rem;margin-bottom:20px}
+label{display:block;text-align:left;color:#cbd5e1;font-size:0.85rem;margin-bottom:6px}
+input{width:100%;padding:14px;border-radius:8px;border:1px solid rgba(255,255,255,0.2);background:#12121a;color:#fff;font-size:1.2rem;letter-spacing:0.08em;text-transform:uppercase;text-align:center;margin-bottom:14px}
+.btn{display:block;width:100%;background:#00d9ff;color:#000;border:none;padding:14px;border-radius:8px;font-size:1rem;font-weight:700;cursor:pointer;text-decoration:none;text-align:center}
+.btn:disabled{opacity:0.5;cursor:default}
+.btn.secondary{background:transparent;color:#00d9ff;border:1px solid rgba(0,217,255,0.4);margin-top:10px}
+.who{color:#8892b0;font-size:0.8rem;margin:14px 0 0}
+.who a{color:#8892b0}
+.status{margin-top:16px;padding:12px;border-radius:8px;font-size:0.95rem;display:none;text-align:left}
+.status.error{display:block;background:rgba(239,68,68,0.15);color:#fca5a5}
+.status.ok{display:block;background:rgba(34,197,94,0.15);color:#86efac}
+.status.info{display:block;background:rgba(0,217,255,0.08);color:#cbd5e1}
+.note{color:#cbd5e1;font-size:0.85rem;margin-top:8px}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="brand"><img src="/brand-emblem.png" alt="" width="44" height="44"><span>ProbationCall</span></div>
+  <h1>Redeem a code</h1>
+  <p>Credits from the code are added to your ProbationCall account.</p>
+
+  <div id="form">
+    <label for="code">Code</label>
+    <input id="code" maxlength="24" autocomplete="off" autocapitalize="characters" spellcheck="false" inputmode="text">
+    <button class="btn" id="redeemBtn" type="button" disabled>Redeem code</button>
+    <a class="btn hidden" id="signInBtn" href="/login">Sign in to redeem</a>
+    <div class="who hidden" id="who"><span id="whoText"></span> · <a id="switchLink" href="/login?logout=true">Not you?</a></div>
+  </div>
+
+  <div class="status" id="status"></div>
+
+  <div class="hidden" id="done">
+    <a class="btn" href="probationcall://return?to=credits" style="margin-top:16px">Return to the app</a>
+    <a class="btn secondary" href="/dashboard">Go to your dashboard</a>
+  </div>
+</div>
+
+<script>
+// /redeem?code=<CODE> (2026-10-12). The app opens this in Safari instead of
+// redeeming in-app (App Store 3.1.1). It prefills the code and redeems on
+// ONE explicit tap — never on load, so a link alone cannot spend a code on
+// whoever opens it. Redemption is POST /api/v1/redeem, the app's own
+// endpoint: the same validation, rate limit, one-use-per-account rule and
+// affiliate attribution, because it is the same code.
+//
+// The code arrives from a URL. It only ever reaches the page through
+// input.value and textContent — never innerHTML — and links that carry it
+// are built from the validated value.
+var SUPA_URL = 'https://xvpuqeaowvlkcyywgaaq.supabase.co';
+var SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh2cHVxZWFvd3Zsa2N5eXdnYWFxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQyNzc1MjcsImV4cCI6MjA3OTg1MzUyN30.y90odNDSU0zZcVGMK9C39gSFDL9NJcy5E4yBkgcFc8w';
+var supabase = window.supabase.createClient(SUPA_URL, SUPA_KEY);
+var CODE_RE = /^[A-Z0-9]{4,24}$/;
+
+var input = document.getElementById('code');
+var redeemBtn = document.getElementById('redeemBtn');
+var signInBtn = document.getElementById('signInBtn');
+var statusEl = document.getElementById('status');
+
+function cleanCode(v) { return String(v || '').trim().toUpperCase(); }
+var fromLink = cleanCode(new URLSearchParams(window.location.search).get('code'));
+if (CODE_RE.test(fromLink)) input.value = fromLink;
+
+function show(kind, text, note) {
+  statusEl.className = 'status ' + kind;
+  statusEl.textContent = text;
+  if (note) {
+    var n = document.createElement('div');
+    n.className = 'note';
+    n.textContent = note;
+    statusEl.appendChild(n);
+  }
+}
+
+// Where /login should bring the person back to. /login only accepts this
+// exact shape (?next=/redeem?code=...), so the value cannot redirect away.
+function returnPath() {
+  var c = cleanCode(input.value);
+  return '/redeem' + (CODE_RE.test(c) ? '?code=' + c : '');
+}
+function refreshLinks() {
+  var next = encodeURIComponent(returnPath());
+  signInBtn.href = '/login?next=' + next;
+  document.getElementById('switchLink').href = '/login?logout=true&next=' + next;
+}
+input.addEventListener('input', refreshLinks);
+
+function showSignedOut(message) {
+  redeemBtn.classList.add('hidden');
+  document.getElementById('who').classList.add('hidden');
+  signInBtn.classList.remove('hidden');
+  refreshLinks();
+  if (message) show('info', message);
+}
+
+async function currentSession() {
+  try {
+    var r = await supabase.auth.getSession();
+    return (r && r.data && r.data.session) || null;
+  } catch (e) { return null; }
+}
+
+async function init() {
+  refreshLinks();
+  var session = await currentSession();
+  if (!session) {
+    showSignedOut('Sign in to the ProbationCall account you use in the app, and the code will be waiting here.');
+    return;
+  }
+  document.getElementById('whoText').textContent = 'Signed in as ' + ((session.user && session.user.email) || 'your account');
+  document.getElementById('who').classList.remove('hidden');
+  redeemBtn.disabled = false;
+}
+
+redeemBtn.addEventListener('click', async function() {
+  var code = cleanCode(input.value);
+  if (!CODE_RE.test(code)) {
+    show('error', 'Enter the code exactly as it was given to you.');
+    return;
+  }
+  redeemBtn.disabled = true;
+  show('info', 'Checking the code…');
+  var session = await currentSession();
+  if (!session) {
+    redeemBtn.disabled = false;
+    showSignedOut('Your sign-in has expired. Sign in again to redeem.');
+    return;
+  }
+  var res, body = {};
+  try {
+    res = await fetch('/api/v1/redeem', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + session.access_token },
+      body: JSON.stringify({ code: code })
+    });
+    try { body = await res.json(); } catch (e) { body = {}; }
+  } catch (e) {
+    redeemBtn.disabled = false;
+    show('error', 'Could not reach ProbationCall. Check your connection and try again.');
+    return;
+  }
+  if (res.ok) {
+    var n = Number(body.credits) || 0;
+    var a = body.attribution || {};
+    show('ok', '✅ ' + n + ' credit' + (n === 1 ? '' : 's') + ' added to your account.',
+      a.state === 'not_attributed' && a.message ? a.message : null);
+    document.getElementById('form').classList.add('hidden');
+    document.getElementById('done').classList.remove('hidden');
+    return;
+  }
+  if (res.status === 401) {
+    redeemBtn.disabled = false;
+    showSignedOut('Your sign-in has expired. Sign in again to redeem.');
+    return;
+  }
+  // v1 errors are {error:{code,message}}; the rate limiter's is {error:"..."}.
+  var msg = body && body.error && typeof body.error === 'object' ? body.error.message
+    : (typeof (body && body.error) === 'string' ? body.error : null);
+  show('error', msg || 'Could not apply that code. Please try again.');
+  redeemBtn.disabled = false;
+});
+
+init();
+</script>
+</body>
+</html>

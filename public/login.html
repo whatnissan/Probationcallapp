@@ -67,6 +67,29 @@ var SUPA_URL = 'https://xvpuqeaowvlkcyywgaaq.supabase.co';
 var SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh2cHVxZWFvd3Zsa2N5eXdnYWFxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQyNzc1MjcsImV4cCI6MjA3OTg1MzUyN30.y90odNDSU0zZcVGMK9C39gSFDL9NJcy5E4yBkgcFc8w';
 var supabase = window.supabase.createClient(SUPA_URL, SUPA_KEY);
 
+// Where to go after signing in (2026-10-12). Only the web code-redemption
+// page may be named — anything else, or anything malformed, goes to
+// /dashboard, so ?next= cannot be used to send someone off-site. It is kept
+// in sessionStorage because sign-in leaves for Google/Apple and returns to
+// /login without our query string.
+var AFTER_LOGIN_KEY = 'afterLogin';
+function safeAfterLogin(p) {
+  var s = String(p == null ? '' : p);
+  return /^\/redeem(\?code=[A-Za-z0-9]{4,24})?$/.test(s) ? s : null;
+}
+(function rememberNext() {
+  var n = safeAfterLogin(new URLSearchParams(window.location.search).get('next'));
+  try { if (n) sessionStorage.setItem(AFTER_LOGIN_KEY, n); } catch (e) { /* private mode: dashboard */ }
+})();
+function goAfterLogin() {
+  var dest = null;
+  try {
+    dest = safeAfterLogin(sessionStorage.getItem(AFTER_LOGIN_KEY));
+    sessionStorage.removeItem(AFTER_LOGIN_KEY);
+  } catch (e) { /* private mode: dashboard */ }
+  window.location.href = dest || '/dashboard';
+}
+
 // Check if returning from OAuth with token in URL
 async function handleOAuthCallback() {
   // Check for hash fragment (OAuth callback)
@@ -79,13 +102,13 @@ async function handleOAuthCallback() {
     
     var result = await supabase.auth.getSession();
     if (result.data.session) {
-      window.location.href = '/dashboard';
+      goAfterLogin();
     } else {
       // Try one more time
       await new Promise(function(r) { setTimeout(r, 1000); });
       result = await supabase.auth.getSession();
       if (result.data.session) {
-        window.location.href = '/dashboard';
+        goAfterLogin();
       } else {
         showError('Login failed. Please try again.');
       }
@@ -113,7 +136,7 @@ async function checkExistingSession() {
   var result = await supabase.auth.getSession();
   if (result.data.session) {
     sessionStorage.setItem('redirecting', 'true');
-    window.location.href = '/dashboard';
+    goAfterLogin();
     return true;
   }
   return false;
@@ -159,7 +182,7 @@ supabase.auth.onAuthStateChange(function(event, session) {
   console.log('Auth event:', event);
   if (event === 'SIGNED_IN' && session && !sessionStorage.getItem('redirecting')) {
     sessionStorage.setItem('redirecting', 'true');
-    window.location.href = '/dashboard';
+    goAfterLogin();
   }
 });
 

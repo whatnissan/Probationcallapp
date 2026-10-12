@@ -2357,6 +2357,31 @@ monthly run pays them once the flag is resolved in the admin panel. Promo
 attribution raises a `promo_attribution` flag, deduped to one open flag per
 affiliate.
 
+### 4.14b Redeeming on the web — `https://www.probationcall.com/redeem?code=<CODE>`
+
+**The app does not redeem codes in-app (App Store 3.1.1, 2026-10-12).** It
+opens this page in Safari instead. The page:
+
+- prefills `code` from the query (4–24 letters and digits, uppercased; any
+  other value is ignored, never echoed into the page);
+- needs the person signed in **on the website**. The web session is separate
+  from the app's: they sign in with the same Google or Apple account they use
+  in the app, and `/login` brings them back to this page with the code still
+  filled in (`/login?next=/redeem?code=<CODE>` — `/login` accepts only that
+  exact shape, so `next` cannot be used to redirect anywhere else);
+- redeems on **one explicit tap**, never on load, so a link alone cannot spend
+  a code;
+- redeems through **`POST /api/v1/redeem` itself** (§4.14a) with the web
+  session's token — not a copy of it — so the validation, the 5-per-hour
+  limit, one-use-per-account and the affiliate attribution are identical by
+  construction. The endpoint's own messages are what the page shows,
+  including the "credits added, referral not credited" note;
+- on success offers **Return to the app**, which is `probationcall://return?to=credits`
+  (the existing return route, §4.13).
+
+When the app comes back to the foreground after this, it should re-read
+`/me`: the balance changed server-side, and nothing pushes that to the app.
+
 ### 4.15 `DELETE /account`
 
 App Store guideline 5.1.1(v) — hard requirement, not optional. Shipped

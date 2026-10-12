@@ -1694,6 +1694,10 @@ function authAllowDisabled(req, res, next) {
 app.get('/', function(req, res) { res.sendFile(path.join(__dirname, 'public', 'index.html')); });
 app.get('/login', function(req, res) { res.sendFile(path.join(__dirname, 'public', 'login.html')); });
 app.get('/dashboard', function(req, res) { res.sendFile(path.join(__dirname, 'public', 'dashboard.html')); });
+// /redeem?code=<CODE> (2026-10-12): the signed-in web page the app opens in
+// Safari to redeem a code (App Store 3.1.1). It redeems through
+// POST /api/v1/redeem, so the rules and attribution are the app's own.
+app.get('/redeem', function(req, res) { res.sendFile(path.join(__dirname, 'public', 'redeem.html')); });
 
 // GET /return — the bounce back into the iOS app after Stripe.
 //
