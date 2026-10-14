@@ -368,8 +368,12 @@ select option { background: #1a1a2e; color: #fff; }
 
 
   <div class="test-stats-card" id="testStatsCard" style="display:none">
-    <h3>📊 Test Frequency Analysis</h3>
-    <div class="test-stats-grid">
+    <h3 id="testStatsTitle">📊 Test Frequency Analysis</h3>
+    <!-- Fort Bend: the subscriber's colour at THEIR office (2026-10-13).
+         The Montgomery blocks below are hidden for them — Montgomery's
+         pooled statistics say nothing about a Fort Bend colour. -->
+    <div id="ftColorCard" style="display:none;text-align:left"></div>
+    <div class="test-stats-grid" id="mgStatsGrid">
       <div class="test-stat highlight"><div class="value" id="statAvgInterval">--</div><div class="label">Avg Days Between Tests</div><div class="context" id="statAvgCtx"></div></div>
       <div class="test-stat"><div class="value" id="statTotalTests">--</div><div class="label">Total Tests</div><div class="context" id="statTestsCtx"></div></div>
       <div class="test-stat" id="statDaysSinceBox"><div id="daysGauge" style="display:flex;justify-content:center"></div><div class="label">Days Since Last Test</div><div class="context" id="statDaysCtx"></div></div>
@@ -390,7 +394,7 @@ select option { background: #1a1a2e; color: #fff; }
       <div class="predict-text" id="predictText">Gathering data...</div>
       <div class="confidence" id="predictConfidence"></div>
     </div>
-    <div style="margin-top:12px;text-align:center">
+    <div style="margin-top:12px;text-align:center" id="mgPatternBlock">
       <div style="font-size:0.75rem;color:#8892b0;margin-bottom:6px" id="patternTitle">Test Likelihood by Day</div>
       <div class="pattern-row" id="patternRow"></div><div style="font-size:0.65rem;color:#666;margin-top:8px" id="patternLegend">Darker = called more often in your history. No day is safe — any day can be a test day.</div>
     </div>
@@ -543,7 +547,7 @@ select option { background: #1a1a2e; color: #fff; }
   
   <!-- HISTORY TAB -->
   <div id="historyTab" class="tab-content">
-    <div class="card"><h2>Call History</h2><div style="margin-bottom:15px;display:flex;gap:8px;flex-wrap:wrap"><button class="filter-btn active" onclick="filterHistory('all')">All</button><button class="filter-btn" onclick="filterHistory('montgomery')">Montgomery</button><button class="filter-btn" onclick="filterHistory('ftbend')">Fort Bend</button></div><div id="historyList"></div></div>
+    <div class="card"><h2>Call History</h2><div id="historyFilters" style="margin-bottom:15px;display:flex;gap:8px;flex-wrap:wrap"></div><div id="historyArchiveNote" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:8px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.25);color:#cbd5e1;font-size:0.85rem"></div><div id="historyList"></div><div id="historyArchiveMore" style="display:none;margin-top:12px;text-align:center"><button class="filter-btn" id="historyArchiveMoreBtn" type="button">Load more</button></div></div>
   </div>
   
   <!-- AFFILIATE TAB -->
@@ -1476,7 +1480,12 @@ function loadUser() {
         };
         setTimeout(maybeShowReconfirm, 900);
       }
+      // d.history is the CURRENT county's results; past counties are the
+      // archive, listed in d.historyCounties and loaded on demand.
       window.callHistoryData = d.history || [];
+      window.historyCounty = d.historyCounty || null;
+      window.historyCounties = d.historyCounties || [];
+      buildHistoryFilters();
       renderCallHistory("all");
       calculateTestStats(d.history, window.systemStats);
     })
@@ -2788,7 +2797,17 @@ function calculateTestStats() {
   fetch('/api/v1/prediction', { headers: { Authorization: 'Bearer ' + token } })
     .then(function(r) { return r.json(); })
     .then(function(p) {
-      if (!p || p.error || !p.testsCounted) { card.style.display = "none"; return; }
+      if (!p || p.error) { card.style.display = "none"; return; }
+      // Each county gets ITS OWN card (2026-10-13). A Fort Bend subscriber
+      // used to get either nothing or their old Montgomery numbers.
+      var isFt = p.county === 'ftbend';
+      document.getElementById('ftColorCard').style.display = isFt ? 'block' : 'none';
+      document.getElementById('mgStatsGrid').style.display = isFt ? 'none' : '';
+      document.getElementById('testPrediction').style.display = isFt ? 'none' : '';
+      document.getElementById('mgPatternBlock').style.display = isFt ? 'none' : '';
+      document.getElementById('testStatsTitle').textContent = isFt ? '🎨 Your Colour History' : '📊 Test Frequency Analysis';
+      if (isFt) { card.style.display = "block"; renderFtbendColorCard(p); return; }
+      if (!p.testsCounted) { card.style.display = "none"; return; }
       card.style.display = "block";
       document.getElementById("statAvgInterval").textContent = p.yourIntervalDays !== null ? p.yourIntervalDays.toFixed(1) : "--";
       document.getElementById("statTotalTests").textContent = p.testsCounted;
@@ -2962,18 +2981,13 @@ function calculateTestStats() {
 
         // Test Days.
         //
-        // BOTH TESTS SIGNIFICANT (2026-09-04). The weekday-only chi-square
-        // used to fail, so this case did not exist and the page fell through
-        // to "Testing looks random" — which became wrong the day the test
-        // crossed. Mon-Fri chi-square is now 10.804 (df=4, crit 9.488,
-        // p=0.029) and Thursday survives Bonferroni across the five weekdays
-        // at p=0.0011.
-        //
-        // NO MULTIPLIER IN THE COPY, deliberately. The contrast ran at 65%
-        // power, its 95% CI is +1.5 to +9.7 points, and an underpowered test
-        // that clears tends to overstate the effect — so "about twice as
-        // often" is the honest ceiling on precision here. Do not replace it
-        // with the computed lift.
+        // NO NUMBER IN THIS LINE, deliberately. The weekday contrast is real
+        // but imprecise, and an underpowered test that clears tends to
+        // overstate its effect. The county-odds block above carries the
+        // measured rates with their sample sizes; this line only names the
+        // day. It used to say "about twice as often as an average weekday",
+        // which the full data does not support (2026-10-13: Thursdays 10.0%
+        // against 6.3% for the average weekday and 4.7% across all days).
         //
         // NO WEEKDAY GRID in this branch, also deliberately: buildWeekdayVisual
         // renders all seven days, and showing Sunday's zero beside words
@@ -2981,46 +2995,31 @@ function calculateTestStats() {
         // inference the copy is written to refuse. The named day IS the
         // finding; the gradient would only add the half we do not say.
         //
-        // INTERIM SHAPE. The day is picked from countyDayCounts, which the
-        // server already sends. It deliberately does NOT call
-        // countyElevatedDays() yet: that function and its countyDayCalls
-        // denominator are still unreleased, and calling a function the
-        // deployed prediction-core.js does not have throws inside this
-        // .then(), where the .catch() hides the WHOLE card. Wrong copy is bad;
-        // a missing card is worse. Swap to countyElevatedDays() in the same
-        // commit that ships it, not before.
-        //
-        // Safe as an interim because the branch is already gated on
-        // weekdaySignificant, so we only name a day when the weekday pattern
-        // itself is real, and because call volume is near-flat across
-        // weekdays (248-262), so the unweighted count and the rate agree on
-        // which day leads. If that stops being true, the rate is right and
-        // this is wrong — which is the reason the real version is coming.
-        var wdCounts = p.countyDayCounts || [];
-        var hotIdx = null;
-        if (wdCounts.length === 7) {
-          for (var wi = 1; wi <= 5; wi++) {
-            if (hotIdx === null || wdCounts[wi] > wdCounts[hotIdx]) hotIdx = wi;
-          }
-        }
-        if (county && county.fullWeekSignificant && county.weekdaySignificant && hotIdx !== null) {
-          var DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-          // No escaping: hotDay is an element of the DAY_NAMES literal above,
-          // never user input. dashboard.html has no esc() helper — calling one
-          // here throws a ReferenceError inside this .then(), and the .catch()
-          // would hide the entire card.
-          var hotDay = DAY_NAMES[hotIdx];
+        // WHICH DAY, AND WHETHER TO NAME ONE, IS THE SERVER'S CALL
+        // (2026-10-13): countyDaily.elevatedSignificant and elevatedDays, the
+        // rate-based test — tests per answered call, per weekday. This block
+        // used to pick the day from raw counts and gate it on an older
+        // count-only test, so the line could show or hide independently of
+        // what the server said. When the server stops finding a day
+        // significant, elevatedDays is empty and this line is gone.
+        var DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+        var DAY_KEYS = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+        var elevated = (cd && cd.elevatedSignificant && cd.elevatedDays && cd.elevatedDays.length) ? cd.elevatedDays[0] : null;
+        // hotDay is an element of the DAY_NAMES literal, chosen by index —
+        // never the server's string — so it is safe to place in markup.
+        var hotDay = elevated && DAY_KEYS.indexOf(elevated.day) >= 0 ? DAY_NAMES[DAY_KEYS.indexOf(elevated.day)] : null;
+        if (hotDay) {
           html += "<div style='border-top:1px solid rgba(255,255,255,0.06);padding-top:12px;margin-bottom:16px'>" +
             "<div style='color:#f59e0b;font-weight:700;font-size:1.02rem;margin-bottom:4px'>" + hotDay + "s run heaviest.</div>" +
-            "<div style='color:#8892b0;line-height:1.55'>Across Montgomery County, " + hotDay +
-            " has come back with a test about twice as often as an average weekday. Treat it as a day to be extra ready. " +
+            "<div style='color:#8892b0;line-height:1.55'>Across " + countyName + ", " + hotDay +
+            "s have come back with a test more often than the county's usual day. Treat it as a day to be extra ready. " +
             "Every other day still carries a real chance \u2014 testing is possible any day.</div>" +
             "</div>";
-        } else if (county && county.fullWeekSignificant && !county.weekdaySignificant) {
+        } else if (county && county.fullWeekSignificant) {
           html += "<div style='border-top:1px solid rgba(255,255,255,0.06);padding-top:12px;margin-bottom:16px'>" +
             "<div style='color:#f59e0b;font-weight:700;font-size:1.02rem;margin-bottom:4px'>Stay ready every weekday.</div>" +
-            "<div style='color:#8892b0;line-height:1.55'>Montgomery County overall: " +
-            (county.total - county.weekendCount) + " of " + county.total + " recorded tests fell on weekdays — but which weekday looks random. Weekend tests are rare, not never (" + county.weekendCount + " of " + county.total + ").</div>" +
+            "<div style='color:#8892b0;line-height:1.55'>" + countyName + " overall: " +
+            (county.total - county.weekendCount) + " of " + county.total + " recorded tests fell on weekdays \u2014 but no single weekday stands out. Weekend tests are rare, not never (" + county.weekendCount + " of " + county.total + ").</div>" +
             buildWeekdayVisual(county, p.countyDayCounts) +
             "</div>";
         } else {
@@ -3110,6 +3109,182 @@ function toggleTranscript(btn, id) {
   el.style.display = open ? "none" : "block";
   btn.textContent = open ? "Show full transcript" : "Hide full transcript";
 }
+
+// ---------------------------------------------------------------------------
+// One county at a time (Dave's rules, 2026-10-13). Nothing is deleted when
+// someone changes county; their old county's results are kept as an archive,
+// labelled as past and never mixed into the current list or numbers.
+// Everything below is built with createElement/textContent — the names and
+// summaries come from the server, and none of it is placed as markup.
+// ---------------------------------------------------------------------------
+var COUNTY_LABELS = { montgomery: 'Montgomery County', ftbend: 'Fort Bend County' };
+var FT_OFFICE_NAMES = { missouri: 'Missouri City', rosenberg: 'Rosenberg', rosenberg2: 'Rosenberg 2' };
+
+function mkEl(tag, css, text) {
+  var e = document.createElement(tag);
+  if (css) e.style.cssText = css;
+  if (text !== undefined && text !== null) e.textContent = String(text);
+  return e;
+}
+// 'YYYY-MM-DD' -> "Oct 1". Noon, so no timezone can move the day.
+function shortDay(ymd) {
+  var d = new Date(String(ymd).slice(0, 10) + 'T12:00:00');
+  return isNaN(d) ? String(ymd) : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+// "Apr–Sep 2026", or "Nov 2025 – Sep 2026" across years.
+function monthSpan(first, last) {
+  var a = new Date(String(first).slice(0, 10) + 'T12:00:00'), b = new Date(String(last).slice(0, 10) + 'T12:00:00');
+  if (isNaN(a) || isNaN(b)) return '';
+  var m = function(d) { return d.toLocaleDateString(undefined, { month: 'short' }); };
+  if (a.getFullYear() === b.getFullYear()) {
+    return (a.getMonth() === b.getMonth() ? m(a) : m(a) + '\u2013' + m(b)) + ' ' + b.getFullYear();
+  }
+  return m(a) + ' ' + a.getFullYear() + ' \u2013 ' + m(b) + ' ' + b.getFullYear();
+}
+
+// The Fort Bend card: this subscriber's colour at THEIR office — when it was
+// last called, how often, what the office calls most, and its recent days.
+// p.colorHistory comes with GET /prediction; the rest from GET /county-stats,
+// whose Fort Bend numbers are the same office's.
+function renderFtbendColorCard(p) {
+  var box = document.getElementById('ftColorCard');
+  box.textContent = '';
+  var ch = p.colorHistory || null;
+  var officeName = (ch && FT_OFFICE_NAMES[ch.office]) || 'your office';
+  if (!ch || !ch.color) {
+    box.appendChild(mkEl('div', 'color:#c7d0e0', 'Set your colour on the Schedule tab to see when it was last called at ' + officeName + '.'));
+  } else {
+    var colour = ch.color.charAt(0).toUpperCase() + ch.color.slice(1);
+    if (ch.lastCalledDate) {
+      var top = mkEl('div', 'display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px');
+      top.appendChild(mkEl('div', 'font-size:2.4rem;font-weight:700;color:#e2e8f0;line-height:1', ch.daysSinceLastCalled));
+      top.appendChild(mkEl('div', 'color:#c7d0e0', 'day' + (ch.daysSinceLastCalled === 1 ? '' : 's') + ' since ' + colour + ' was last called at ' + officeName));
+      box.appendChild(top);
+      box.appendChild(mkEl('div', 'color:#8892b0;font-size:0.82rem',
+        'Last called ' + shortDay(ch.lastCalledDate) + ' \u00b7 called ' + ch.timesCalled + ' time' + (ch.timesCalled === 1 ? '' : 's') +
+        (ch.recordedSince ? ' since ' + shortDay(ch.recordedSince) : '')));
+    } else {
+      box.appendChild(mkEl('div', 'color:#c7d0e0',
+        colour + ' has not been called at ' + officeName + (ch.recordedSince ? ' since our record began on ' + shortDay(ch.recordedSince) : '') + '.'));
+    }
+  }
+  var rest = mkEl('div', 'margin-top:14px');
+  box.appendChild(rest);
+  fetch('/api/v1/county-stats', { headers: { Authorization: 'Bearer ' + token } })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      var fb = d && d.fortBend;
+      if (!fb) return;
+      var name = FT_OFFICE_NAMES[fb.office] || officeName;
+      if (fb.mostCalled && fb.mostCalled.length) {
+        rest.appendChild(mkEl('div', 'color:#8892b0;font-size:0.72rem;letter-spacing:0.06em;margin:4px 0 6px', 'MOST CALLED AT ' + name.toUpperCase()));
+        fb.mostCalled.slice(0, 6).forEach(function(c) {
+          var row = mkEl('div', 'display:flex;align-items:center;gap:8px;margin-bottom:5px;font-size:0.85rem');
+          var sw = mkEl('span', 'width:12px;height:12px;border-radius:3px;display:inline-block;flex:none;border:1px solid rgba(255,255,255,0.25)');
+          if (/^#[0-9a-fA-F]{3,8}$/.test(c.hex || '')) sw.style.background = c.hex;
+          row.appendChild(sw);
+          row.appendChild(mkEl('span', 'color:#e2e8f0;min-width:96px', c.name));
+          row.appendChild(mkEl('span', 'color:#8892b0', c.count + ' time' + (c.count === 1 ? '' : 's') + ' \u00b7 ' + c.percent + '%'));
+          rest.appendChild(row);
+        });
+      }
+      var recent = (fb.recent || []).map(function(day) {
+        var o = (day.offices || []).filter(function(x) { return x.office === fb.office; })[0];
+        if (!o) return null;
+        var what = (o.announced || []).concat((o.phases || []).map(function(ph) { return 'Phase ' + ph; }));
+        return what.length ? { date: day.date, what: what.join(' / ') } : null;
+      }).filter(Boolean).slice(0, 7);
+      if (recent.length) {
+        rest.appendChild(mkEl('div', 'color:#8892b0;font-size:0.72rem;letter-spacing:0.06em;margin:14px 0 6px', 'RECENT AT ' + name.toUpperCase()));
+        recent.forEach(function(r) {
+          var row = mkEl('div', 'display:flex;gap:10px;font-size:0.85rem;margin-bottom:3px');
+          row.appendChild(mkEl('span', 'color:#8892b0;min-width:64px', shortDay(r.date)));
+          row.appendChild(mkEl('span', 'color:#e2e8f0;text-transform:capitalize', r.what));
+          rest.appendChild(row);
+        });
+      }
+      rest.appendChild(mkEl('div', 'color:#8892b0;font-size:0.75rem;margin-top:12px', 'From ' + name + "'s own daily announcements. Testing is possible any day."));
+    })
+    .catch(function() { /* the headline above stands on its own */ });
+}
+
+// History tab: the current county by default; each past county is a
+// labelled archive ("Past: Montgomery County · Nov 2025 – Sep 2026").
+function buildHistoryFilters() {
+  var box = document.getElementById('historyFilters');
+  if (!box) return;
+  box.textContent = '';
+  var list = window.historyCounties || [];
+  var past = list.filter(function(c) { return !c.current; });
+  if (!past.length) return;                       // one county: nothing to choose
+  var add = function(label, active, onClick) {
+    var b = mkEl('button', null, label);
+    b.type = 'button';
+    b.className = 'filter-btn' + (active ? ' active' : '');
+    b.onclick = function() {
+      box.querySelectorAll('.filter-btn').forEach(function(x) { x.classList.remove('active'); });
+      b.classList.add('active');
+      onClick();
+    };
+    box.appendChild(b);
+  };
+  add(COUNTY_LABELS[window.historyCounty] || 'Current', true, showCurrentHistory);
+  past.forEach(function(c) {
+    add('Past: ' + (COUNTY_LABELS[c.county] || c.county) + ' \u00b7 ' + monthSpan(c.firstDate, c.lastDate), false, function() { showHistoryArchive(c); });
+  });
+}
+function showCurrentHistory() {
+  document.getElementById('historyArchiveNote').style.display = 'none';
+  document.getElementById('historyArchiveMore').style.display = 'none';
+  renderCallHistory('all');
+}
+var _historyArchive = { county: null, cursor: null };
+function showHistoryArchive(c) {
+  var note = document.getElementById('historyArchiveNote');
+  var label = COUNTY_LABELS[c.county] || c.county;
+  note.textContent = 'Your ' + label + ' history, ' + monthSpan(c.firstDate, c.lastDate) + ' \u00b7 ' + c.results + ' result' + (c.results === 1 ? '' : 's') +
+    '. This is from a county you are no longer in. It is kept, and it is not part of your current numbers.';
+  note.style.display = 'block';
+  document.getElementById('historyList').textContent = '';
+  _historyArchive = { county: c.county, cursor: null };
+  loadHistoryArchivePage();
+}
+function loadHistoryArchivePage() {
+  var list = document.getElementById('historyList');
+  var more = document.getElementById('historyArchiveMore');
+  var asked = _historyArchive.county;
+  fetch('/api/v1/history?county=' + encodeURIComponent(asked) + '&limit=100' +
+      (_historyArchive.cursor ? '&cursor=' + encodeURIComponent(_historyArchive.cursor) : ''),
+      { headers: { Authorization: 'Bearer ' + token } })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (_historyArchive.county !== asked) return;      // they switched views meanwhile
+      var RESULT_TEXT = { MUST_TEST: 'MUST TEST', NO_TEST: 'NO TEST', NO_COLOR: 'NO COLOUR SET', NOT_CALLED: 'NOT CALLED', UNKNOWN: 'NO RESULT' };
+      (d.items || []).forEach(function(it) {
+        var item = mkEl('div'); item.className = 'history-item';
+        var head = mkEl('div'); head.className = 'history-header';
+        var left = mkEl('div'); left.className = 'hh-left';
+        var when = mkEl('span', null, historyWhen(it.resolvedAt)); when.className = 'history-date';
+        var what = mkEl('span', null, it.summary || ''); what.className = 'history-county';
+        left.appendChild(when); left.appendChild(what);
+        var right = mkEl('div'); right.className = 'hh-right';
+        var known = Object.prototype.hasOwnProperty.call(RESULT_TEXT, it.result);
+        var res = mkEl('span', null, known ? RESULT_TEXT[it.result] : String(it.result || '').replace(/_/g, ' '));
+        res.className = 'history-result ' + (it.result === 'MUST_TEST' || it.result === 'NO_TEST' ? it.result : 'UNKNOWN');
+        right.appendChild(res);
+        head.appendChild(left); head.appendChild(right); item.appendChild(head);
+        list.appendChild(item);
+      });
+      if (!list.children.length) list.appendChild(mkEl('p', 'color:#666', 'No results in this county.'));
+      _historyArchive.cursor = d.nextCursor || null;
+      more.style.display = d.hasMore ? 'block' : 'none';
+    })
+    .catch(function() { list.appendChild(mkEl('p', 'color:#ef4444', 'Could not load this history. Please try again.')); });
+}
+document.addEventListener('DOMContentLoaded', function() {
+  var b = document.getElementById('historyArchiveMoreBtn');
+  if (b) b.onclick = loadHistoryArchivePage;
+});
 
 function renderCallHistory(filter) {
   var el = document.getElementById("historyList");
