@@ -40,6 +40,7 @@ const { createThrottle } = require('./lib/write-throttle');
 const { constructEventWithSecrets } = require('./lib/stripe-webhook');
 const { pauseStateOnSave, pinChanged } = require('./lib/schedule-pause');
 const recovery = require('./lib/recovery');
+const countyView = require('./lib/county-view');
 const apns = require('./lib/apns');
 const { fallbackFieldsFor } = require('./lib/push');
 const { isValidPin, isValidTimezone, isValidEmail, normalizePhoneE164, isValidSupportSubject, isValidSupportBody } = require('./lib/validation');
@@ -1755,8 +1756,16 @@ app.get('/r/:code', function(req, res) {
 
 app.get('/api/user', auth, async function(req, res) {
   var _smsConsentOnFile = await hasSmsConsent(req.user.id);
-  var historyResult = await supabase.from('call_history').select('*').eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(500);
   var scheduleResult = await supabase.from('user_schedules').select('*').eq('user_id', req.user.id).single();
+  // History is the CURRENT county's (Dave's rule 2, 2026-10-13); a past
+  // county is the archive, listed in historyCounties and fetched on demand
+  // from /api/v1/history?county=. Nothing is deleted — it is just not mixed.
+  var _webCounty = 'montgomery', _webCounties = [];
+  try {
+    _webCounty = await currentCountyForUser(req.user.id, scheduleResult.data);
+    _webCounties = await historyCountiesFor(req.user.id, _webCounty);
+  } catch (e) { console.error('[USER] county summary unavailable for ' + req.user.id.slice(0, 8) + ':', briefErr(e)); }
+  var historyResult = await supabase.from('call_history').select('*').eq('user_id', req.user.id).eq('county', _webCounty).order('created_at', { ascending: false }).limit(500);
   
   // Get referral stats
   var referralResult = await supabase.from('referrals').select('*').eq('referrer_id', req.user.id);
@@ -1787,6 +1796,8 @@ app.get('/api/user', auth, async function(req, res) {
     onboardingComplete: req.profile.onboarding_complete,
     ftbend_access: req.profile.ftbend_access || false,
     history: historyResult.data || [], 
+    historyCounty: _webCounty,
+    historyCounties: _webCounties,
     schedule: scheduleResult.data,
     isDev: isDev(req.user.email),
     affiliate: {
@@ -2297,7 +2308,13 @@ app.get('/api/v1/me', authV1, async function(req, res) {
           }
         : null,
       // Array by contract even though it is one row today; [] = not onboarded.
-      schedules: sched.data ? [v1Schedule(sched.data, profile, await loadActiveOfficeIds())] : []
+      schedules: sched.data ? [v1Schedule(sched.data, profile, await loadActiveOfficeIds())] : [],
+      // Every county this account has results in, current first (§3,
+      // 2026-10-13). More than one entry = they changed county; the
+      // non-current ones are the archive (§4.2 ?county=). [] if unreadable.
+      historyCounties: await currentCountyForUser(req.user.id, sched.data)
+        .then(function(c) { return historyCountiesFor(req.user.id, c); })
+        .catch(function(e) { console.error('[V1-ME] historyCounties unavailable:', briefErr(e)); return []; })
     });
   } catch (e) {
     console.error('[V1-ME] failed:', e.message);
@@ -2365,8 +2382,12 @@ app.get('/api/v1/today', authV1, async function(req, res) {
     if (row.enabled === false) {
       payload.pauseReason = row.paused_reason || null;
     } else {
+      // Today's rows in the CURRENT county only (rule 2, 2026-10-13): on the
+      // day someone changes county, the old county's morning result is not
+      // today's answer for the new one.
       var calls = await supabase.from('call_history').select('*')
         .eq('user_id', req.user.id)
+        .eq('county', countyView.normaliseCounty(county))
         .gte('created_at', todayBounds.start)
         .lt('created_at', todayBounds.end)
         .order('created_at', { ascending: true });
@@ -2622,6 +2643,31 @@ function v1RecordingFor(row) {
   };
 }
 
+// Every county this person has results in, current one first (§3
+// historyCounties, §4.2). Nothing is deleted when someone changes county
+// (Dave's rule 1): their old county's results stay and are served as an
+// ARCHIVE, labelled as past and never mixed into current numbers. This is
+// what lets a client say "Your Montgomery history, Apr–Sep".
+// The county a person is in NOW: their schedule's. With no schedule (it was
+// deleted, or never made) it is the county of their most recent result, so a
+// Fort Bend-only person without a schedule is not shown an empty Montgomery
+// list. Montgomery when there is nothing at all.
+async function currentCountyForUser(userId, schedRow) {
+  if (schedRow && schedRow.county) return countyView.normaliseCounty(schedRow.county);
+  var latest = await supabase.from('call_history').select('county').eq('user_id', userId)
+    .order('created_at', { ascending: false }).limit(1);
+  if (latest.error) throw new Error(latest.error.message);
+  return countyView.normaliseCounty(latest.data && latest.data[0] && latest.data[0].county);
+}
+
+async function historyCountiesFor(userId, currentCounty) {
+  var rows = await selectAllRows(function() {
+    return supabase.from('call_history').select('county, result, verdict, created_at')
+      .eq('user_id', userId).order('created_at', { ascending: true }).order('id', { ascending: true });
+  });
+  return countyView.countySummaries(rows, currentCounty, 'America/Chicago');
+}
+
 // §4.2 GET /history — cursor pagination. Offset pagination double-serves and
 // skips rows when a morning call lands mid-scroll.
 app.get('/api/v1/history', authV1, async function(req, res) {
@@ -2642,6 +2688,22 @@ app.get('/api/v1/history', authV1, async function(req, res) {
     var prof = await supabase.from('profiles').select('user_color').eq('id', req.user.id).maybeSingle();
     var userColor = prof.data ? prof.data.user_color : null;
 
+    // ONE COUNTY PER LIST (Dave's rules 2 and 3, 2026-10-13). The default is
+    // the person's CURRENT county; a past county is asked for by name
+    // (?county=montgomery) and is the archive. The two are never mixed in
+    // one list — that was how old Montgomery rows read as current history
+    // for someone now in Fort Bend.
+    var hSched = await supabase.from('user_schedules').select('county').eq('user_id', req.user.id).maybeSingle();
+    var currentCounty = await currentCountyForUser(req.user.id, hSched.data);
+    var servedCounty = currentCounty;
+    if (req.query.county !== undefined) {
+      var askedCounty = String(req.query.county).toLowerCase();
+      if (countyView.COUNTIES.indexOf(askedCounty) === -1) {
+        return v1Error(res, 400, 'validation_failed', 'county must be "montgomery" or "ftbend".', false, 'county');
+      }
+      servedCounty = askedCounty;
+    }
+
     // With a filter we may have to walk several raw pages to fill one page of
     // matches, because the §2 result is computed (Fort Bend rows store an
     // announcement, not a verdict) and so cannot be filtered in SQL.
@@ -2650,6 +2712,7 @@ app.get('/api/v1/history', authV1, async function(req, res) {
       rounds++;
       var q = supabase.from('call_history').select('*')
         .eq('user_id', req.user.id)
+        .eq('county', servedCounty)
         .order('created_at', { ascending: false })
         .limit(limit + 1);
       if (before) q = q.lt('created_at', before);
@@ -2700,7 +2763,15 @@ app.get('/api/v1/history', authV1, async function(req, res) {
       };
     });
 
+    var historyCounties = [];
+    try { historyCounties = await historyCountiesFor(req.user.id, currentCounty); }
+    catch (e) { console.error('[V1-HISTORY] county summary unavailable:', briefErr(e)); }
+
     res.json({
+      // Which county this list is, and whether that is the archive.
+      county: servedCounty,
+      isArchive: servedCounty !== currentCounty,
+      counties: historyCounties,
       items: items,
       nextCursor: (hasMore && lastSeen)
         ? Buffer.from(JSON.stringify({ t: lastSeen.created_at, id: lastSeen.id })).toString('base64')
@@ -4125,7 +4196,7 @@ function sendCountyStats(req, res, payload) {
 // §4.11 GET /county-stats — discriminated on `type` so Swift decodes cleanly.
 app.get('/api/v1/county-stats', authV1, async function(req, res) {
   try {
-    var sched = await supabase.from('user_schedules').select('county').eq('user_id', req.user.id).maybeSingle();
+    var sched = await supabase.from('user_schedules').select('county, ftbend_office').eq('user_id', req.user.id).maybeSingle();
     var county = (sched.data && sched.data.county) || 'montgomery';
 
     if (county !== 'ftbend') {
@@ -4151,10 +4222,20 @@ app.get('/api/v1/county-stats', authV1, async function(req, res) {
     }
 
     // ---- Fort Bend rotation model ----
+    // THE SUBSCRIBER'S OWN OFFICE ONLY (Dave, 2026-10-13). This read every
+    // office's rows together, so "most called", "due soon" and "your colour
+    // was last called N days ago" mixed three offices that announce
+    // independently: a Missouri City subscriber on Gray was told 11 days
+    // because ROSENBERG 2 called Gray the day after Missouri City did.
+    // `recent` below is still all three offices — it is the board.
     var catalog = await loadColorCatalog();
-    var hist = await supabase.from('daily_county_status')
-      .select('color, date, county').order('date', { ascending: false }).limit(1000);
-    var rows = hist.data || [];
+    var ftOffice = (sched.data && sched.data.ftbend_office) || 'missouri';
+    if (!FTBEND_OFFICES[ftOffice]) ftOffice = 'missouri';
+    var rows = await selectAllRows(function() {
+      return supabase.from('daily_county_status')
+        .select('county, date, color, phase1_color, phase2_color')
+        .eq('county', 'ftbend_' + ftOffice).order('date', { ascending: false });
+    });
 
     var seen = {};   // name -> { color, dates: [] }
     rows.forEach(function(r) {
@@ -4232,9 +4313,12 @@ app.get('/api/v1/county-stats', authV1, async function(req, res) {
     var yourColor = null;
     var mine = resolveColor(catalog, prof.data && prof.data.user_color);
     if (mine) {
-      var e = seen[mine.name];
-      var avg = e ? avgIntervalDays(e.dates) : null;
-      var since = e ? daysSince(e.dates) : null;
+      // The same "was this colour called" rule the morning verdict uses
+      // (lib/ftbend.colourCallDates), at this office — so the day count here
+      // and GET /prediction's daysSinceLastTest are one number.
+      var mineDates = ftbend.colourCallDates(rows, ftOffice, prof.data.user_color);
+      var avg = avgIntervalDays(mineDates);
+      var since = daysSince(mineDates);
       yourColor = {
         name: mine.display_name,
         hex: mine.hex || null,
@@ -4248,6 +4332,9 @@ app.get('/api/v1/county-stats', authV1, async function(req, res) {
       type: 'ftbend',
       montgomery: null,
       fortBend: {
+        // Whose numbers these are: mostCalled, dueSoon, yourColor and
+        // totalCallsLogged describe THIS office. `recent` is all offices.
+        office: ftOffice,
         totalCallsLogged: totalMatched,
         mostCalled: mostCalled,
         dueSoon: dueSoon,
@@ -5435,32 +5522,96 @@ async function countyRangeFor(county, excludeUserId) {
   }
 }
 
+// One Fort Bend subscriber's colour at THEIR office: when it was last called
+// and how often, from the office's own daily record (daily_county_status).
+// Never another office's — Rosenberg 2 calling Gray says nothing about a
+// Missouri City subscriber (lib/ftbend.colourCallDates). Shared by
+// GET /prediction and GET /county-stats. null colour = none saved yet.
+async function ftbendColorHistoryFor(userId, sched) {
+  // No schedule = no known office. Missouri City is the default everywhere a
+  // schedule exists without one, but with no schedule at all it would be
+  // somebody else's office presented as theirs.
+  if (!sched) return null;
+  var office = sched.ftbend_office || 'missouri';
+  if (!FTBEND_OFFICES[office]) return null;
+  var prof = await supabase.from('profiles').select('user_color').eq('id', userId).maybeSingle();
+  if (prof.error) throw new Error(prof.error.message);
+  var color = prof.data && prof.data.user_color ? String(prof.data.user_color).toLowerCase() : null;
+  var rows = await selectAllRows(function() {
+    return supabase.from('daily_county_status')
+      .select('county, date, color, phase1_color, phase2_color')
+      .eq('county', 'ftbend_' + office).order('date', { ascending: true });
+  });
+  var dates = ftbend.colourCallDates(rows, office, color);
+  var last = dates.length ? dates[dates.length - 1] : null;
+  return {
+    office: office,
+    color: color,
+    lastCalledDate: last,
+    daysSinceLastCalled: last ? Math.max(0, daysBetweenLocalDays(last, formatLocalDay(new Date(), 'America/Chicago'))) : null,
+    timesCalled: dates.length,
+    // How far back the office's record goes: "not called since <this date>"
+    // is the honest reading of a null lastCalledDate.
+    recordedSince: rows.length ? String(rows[0].date) : null
+  };
+}
+
 app.get('/api/v1/prediction', authV1, async function(req, res) {
   try {
     var sched = await supabase.from('user_schedules')
-      .select('county, timezone').eq('user_id', req.user.id).maybeSingle();
-    var county = (sched.data && sched.data.county) || 'montgomery';
+      .select('county, timezone, ftbend_office').eq('user_id', req.user.id).maybeSingle();
+    // The same "current county" as /me and /history (currentCountyForUser):
+    // the schedule's, or with no schedule the county of the latest result.
+    var county = await currentCountyForUser(req.user.id, sched.data);
+    var isFt = county === 'ftbend';
 
-    // Same window the web dashboard has always computed from, for parity.
-    var hist = await supabase.from('call_history').select('result, created_at')
-      .eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(500);
+    // CURRENT COUNTY ONLY (Dave's rule 2, 2026-10-13). This read had no
+    // county filter and counted a test only when `result` was 'MUST_TEST' —
+    // Montgomery's shape — so someone who moved to Fort Bend was shown their
+    // Montgomery numbers as current ("40 days since last test" for a person
+    // who tested 12 days ago), and a Fort Bend test was never counted at
+    // all. lib/county-view: filter to the county, then read each row's
+    // ANSWER (Fort Bend's is `verdict`). Old-county rows are not deleted;
+    // they are simply not part of today's numbers (§4.2 serves the archive).
+    var hist = await supabase.from('call_history').select('result, verdict, county, created_at')
+      .eq('user_id', req.user.id).eq('county', county)
+      .order('created_at', { ascending: false }).limit(500);
     if (hist.error) {
       console.error('[V1-PREDICTION] history read failed:', hist.error.message);
       return v1Error(res, 500, 'internal', 'Could not load your call history.', true);
     }
+    var testRows = countyView.asTestRows(countyView.rowsForCounty(hist.data || [], county));
 
+    // County-wide statistics are MONTGOMERY's (PIN-based, pooled across
+    // people). They are never blended into, or shown beside, a Fort Bend
+    // person's numbers: Fort Bend is colour-based, and its county fact is
+    // the office's colour history below.
     var sysStats = null;
-    try { sysStats = await computeSystemStats(); }
-    catch (e) { console.error('[V1-PREDICTION] system stats failed (personal-only fallback):', e.message); }
+    if (!isFt) {
+      try { sysStats = await computeSystemStats(); }
+      catch (e) { console.error('[V1-PREDICTION] system stats failed (personal-only fallback):', e.message); }
+    }
 
-    var p = PredictionCoreV1.computePrediction(hist.data || [], sysStats);
-    var countyPattern = PredictionCoreV1.countyDayPattern(sysStats);
+    var p = PredictionCoreV1.computePrediction(testRows, sysStats);
+    var countyPattern = isFt ? null : PredictionCoreV1.countyDayPattern(sysStats);
+
+    // Fort Bend: when this person's colour was last called AT THEIR OFFICE,
+    // from the office's own history — complete, and it covers days before
+    // they joined. It is the "days since" for Fort Bend (Dave, 2026-10-13).
+    var colorHistory = null;
+    if (isFt) {
+      try { colorHistory = await ftbendColorHistoryFor(req.user.id, sched.data); }
+      catch (e) { console.error('[V1-PREDICTION] colour history unavailable:', briefErr(e)); }
+    }
+    var officeDaysSince = colorHistory && typeof colorHistory.daysSinceLastCalled === 'number' ? colorHistory.daysSinceLastCalled : null;
 
     if (!p) {
       // Zero history: the county range is still a county fact, so it is
-      // offered here too — with the same "not you" sentence.
-      var zeroRange = await countyRangeFor(county, req.user.id);
-      var zeroNotes = ['No MUST_TEST results recorded yet — prediction unlocks after your first required test.'];
+      // offered here too — with the same "not you" sentence. Montgomery only.
+      var zeroRange = isFt ? null : await countyRangeFor(county, req.user.id);
+      var zeroNotes = isFt
+        ? ['No test days recorded on your account in Fort Bend yet.']
+        : ['No MUST_TEST results recorded yet — prediction unlocks after your first required test.'];
       if (zeroRange) zeroNotes.push("That's the county, not you. Testing is possible any day.");
       return res.json({
         county: county,
@@ -5468,7 +5619,8 @@ app.get('/api/v1/prediction', authV1, async function(req, res) {
         window: { state: 'insufficient', intervalsUsed: 0, needed: 5, innerDays: null, outerDays: null, scoredOrigins: 0, innerCoverage: null, countyRange: zeroRange },
         yourIntervalDays: null,
         countyAverageIntervalDays: sysStats ? sysStats.scheduledAvg : null,
-        daysSinceLastTest: null,
+        daysSinceLastTest: officeDaysSince,
+        colorHistory: colorHistory,
         testsCounted: 0,
         observationDays: 0,
         // §4.10 types this as a plain number, and the app decodes it
@@ -5508,7 +5660,7 @@ app.get('/api/v1/prediction', authV1, async function(req, res) {
     // note so the framing travels with the number.
     var win = p.window || null;
     if (win) {
-      win.countyRange = win.state === 'insufficient' ? await countyRangeFor(county, req.user.id) : null;
+      win.countyRange = (!isFt && win.state === 'insufficient') ? await countyRangeFor(county, req.user.id) : null;
       if (win.countyRange) notes.push("That's the county, not you. You don't have enough of your own history yet to say whether you differ. Testing is possible any day.");
     }
 
@@ -5528,7 +5680,10 @@ app.get('/api/v1/prediction', authV1, async function(req, res) {
       window: win,
       yourIntervalDays: p.avgDays !== null ? Math.round(p.avgDays * 10) / 10 : null,
       countyAverageIntervalDays: sysStats ? sysStats.scheduledAvg : null,
-      daysSinceLastTest: p.daysSince,
+      // Fort Bend: the office's colour history decides this (see above); the
+      // person's own results are the fallback when it cannot be read.
+      daysSinceLastTest: officeDaysSince !== null ? officeDaysSince : p.daysSince,
+      colorHistory: colorHistory,
       testsCounted: p.tests,
       observationDays: p.totalDays,
       testsPerMonth: parseFloat(p.perMonth),
