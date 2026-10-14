@@ -330,9 +330,25 @@ bad connection, one round trip beats five.**
       "notifyEmail": "dave@example.com",
       "quietMode": false
     }
+  ],
+  "historyCounties": [
+    { "county": "ftbend",     "current": true,  "firstDate": "2026-09-28", "lastDate": "2026-10-13", "results": 14,  "tests": 1 },
+    { "county": "montgomery", "current": false, "firstDate": "2026-04-06", "lastDate": "2026-09-25", "results": 170, "tests": 8 }
   ]
 }
 ```
+
+**`historyCounties` — every county this account has results in (added
+2026-10-13).** Current county first. `firstDate`/`lastDate` are the county's
+calendar days; `results` is every stored row; `tests` counts the person's
+MUST_TEST answers (Montgomery `result`, Fort Bend the recorded verdict).
+**One entry is the normal case.** More than one means the person changed
+county: the entries with `current: false` are an **archive** — kept in full,
+readable through §4.2 `?county=`, and never part of any current number
+(§4.10). A client that shows it labels it as past ("Your Montgomery history,
+Apr–Sep 2026") and keeps it out of the main list. `[]` means the summary
+could not be read, not that there is no history. With no schedule, the
+current county is the county of the most recent result.
 
 **`schedules` is an array even though it always has exactly one element today.**
 `user_schedules` is one row per user keyed on `user_id`, and dual-county is
@@ -586,6 +602,11 @@ Fort Bend variant differs only in the identity fields:
 The morning result. Supports `If-None-Match`; return `304` when unchanged so the
 app can poll cheaply during the retry window.
 
+**Today is the current county's day (2026-10-13).** The calls behind this
+response are filtered to the schedule's county, so on the day someone changes
+county the old county's morning result is not served as today's answer for
+the new one. No field changed.
+
 ```json
 {
   "date": "2026-08-20",
@@ -669,7 +690,7 @@ paused state.)
 ### 4.2 `GET /history`
 
 ```
-?limit=25&cursor=<opaque>&result=MUST_TEST
+?limit=25&cursor=<opaque>&result=MUST_TEST&county=montgomery
 ```
 
 Cursor pagination — offset pagination breaks when rows land mid-scroll.
@@ -677,6 +698,12 @@ Cursor pagination — offset pagination breaks when rows land mid-scroll.
 
 ```json
 {
+  "county": "ftbend",
+  "isArchive": false,
+  "counties": [
+    { "county": "ftbend",     "current": true,  "firstDate": "2026-09-28", "lastDate": "2026-10-13", "results": 14,  "tests": 1 },
+    { "county": "montgomery", "current": false, "firstDate": "2026-04-06", "lastDate": "2026-09-25", "results": 170, "tests": 8 }
+  ],
   "items": [
     {
       "callId": "uuid",
@@ -699,6 +726,26 @@ Cursor pagination — offset pagination breaks when rows land mid-scroll.
 ```
 
 List rows deliberately omit transcript and log — fetch those per call.
+
+**One county per list (2026-10-13). This changes what an unparameterised
+request returns.** Until this date the list was every result on the account.
+It is now the person's **current** county only. A past county is asked for by
+name — `?county=montgomery` or `?county=ftbend` — and is the archive; any
+other value is `400 validation_failed` (`field: "county"`). The two are never
+mixed in one response, and a cursor belongs to the county it was issued for.
+
+- **`county`** — the county this list is. **`isArchive`** — `true` when that
+  is not the person's current county.
+- **`counties`** — the same array as §3 `historyCounties`, on every page, so
+  a client can offer the archive without a second call. `[]` if it could not
+  be read; the `items` are still good.
+- **Nothing was deleted.** Every result an account ever had is still stored
+  and still reachable: the current county by default, each past county by
+  name. For almost everyone `counties` has one entry and this section reads
+  exactly as before.
+- **What a shipped build sees:** a person who changed county stops seeing the
+  old county's rows in History until the client asks for them. Three accounts
+  have results in both counties on 2026-10-13.
 
 **Several fields are derived or unknowable, and say so honestly rather than
 guessing.** The backend never invents a value to satisfy a type:
@@ -1099,6 +1146,97 @@ this endpoint; it no longer computes locally. Clients must not reimplement the
 math: this is the number people make decisions on, and two implementations
 drift. (Verified at migration: server and client paths produced identical
 output for all 15 production users.)
+
+#### County scope — 2026-10-13. Read this before anything below.
+
+**Every personal number here comes from the county the person is in NOW.**
+Until this date the endpoint read every result on the account with no county
+filter and counted a test only where `result` was `MUST_TEST` — Montgomery's
+shape. Fort Bend stores the office's announcement in `result` and the
+person's answer in `verdict`, so a Fort Bend test was never counted, and
+someone who had moved from Montgomery to Fort Bend was served their
+Montgomery numbers as if they were current (40 days since a test that was
+12). Now:
+
+- History is filtered to the schedule's county before any math runs.
+- **One definition of "a test":** Montgomery `result = MUST_TEST`; Fort Bend
+  `verdict = MUST_TEST`. A Fort Bend row with no stored verdict (before
+  2026-08-27) is not counted as a test — a verdict is never re-derived here.
+- **"The county the person is in" is the schedule's county.** With no
+  schedule it is the county of their most recent result (Montgomery if they
+  have none) — the same rule as §3 `historyCounties` and §4.2.
+- Results from a county the person has left are not deleted and not used.
+  They are the archive (§3 `historyCounties`, §4.2 `?county=`).
+
+**Montgomery (`county: "montgomery"`): no field changed shape.** A person who
+has only ever been in Montgomery gets the same response as before, apart from
+the corrected county rates below.
+
+**Fort Bend (`county: "ftbend"`): what a client receives.**
+
+| Field | Fort Bend value |
+|---|---|
+| `colorHistory` | **New.** `{office, color, lastCalledDate, daysSinceLastCalled, timesCalled, recordedSince}` — see below. `null` for Montgomery. |
+| `daysSinceLastTest` | Days since the person's colour was last called **at their office** (`colorHistory.daysSinceLastCalled`). Falls back to their own Fort Bend results only when the office history has no call for that colour; `null` when neither exists. |
+| `testsCounted`, `recentTests`, `yourIntervalDays`, `testsPerMonth`, `observationDays`, `window`, `nextWindow`, `escalation`, `dayOfWeek` | Computed from the person's **Fort Bend** results only (verdicts). Usually small: `window.state` is `insufficient` for nearly everyone today. |
+| `countyAverageIntervalDays` | `null` — it is Montgomery's pooled average. |
+| `countyDayPattern`, `countyDayCounts`, `countyDayCalls` | `null` — Montgomery's weekday pool. |
+| `countyDaily` | `null`, as before. |
+| `window.countyRange` | `null` — there is no pooled Fort Bend gap range. |
+
+A Fort Bend client therefore has **no county-wide statistic** in this
+response, by design: Montgomery's pool says nothing about a Fort Bend colour,
+and Fort Bend's own county picture is §4.11. Render `colorHistory`; render
+nothing where a field is `null`.
+
+- **`colorHistory`** `{office, color, lastCalledDate, daysSinceLastCalled,
+  timesCalled, recordedSince} | null` — the person's colour in **their
+  office's** announcement history (`daily_county_status`), not their own call
+  rows, so it is complete from the day we began recording that office and
+  does not depend on whether they were subscribed, paused or out of credits.
+  - `office` ∈ `missouri` `rosenberg` `rosenberg2`; `color` is their stored
+    colour, lower-case, or `null` when none is set (then `lastCalledDate`
+    and `daysSinceLastCalled` are `null`, `timesCalled` is `0`, and the
+    client asks them to set one). The whole object is `null` when the person
+    has no schedule (no office is known) or the history could not be read.
+  - `lastCalledDate` `YYYY-MM-DD | null`, `daysSinceLastCalled` `int | null`
+    — counted in the county's calendar days, `0` on the day it is called.
+  - `timesCalled` `int` — days it was called at that office since
+    `recordedSince` (`YYYY-MM-DD`, that office's first recorded day).
+  - **"Called" is the morning verdict's own rule** — the same match that
+    decides MUST_TEST, including phase groups — applied to that office's
+    rows only. Another office announcing the same colour does not count.
+  - **Copy:** "12 days since Gray was last called at Missouri City". It is a
+    fact about the hotline. Never "overdue", never a forecast from it.
+
+**Corrected county rates (Montgomery), same date.** Two defects in the pooled
+numbers were fixed together; a client changes nothing, but the values it
+renders move:
+
+1. **The denominator was truncated.** The answered-call count behind every
+   rate was read in one unpaged query and came back as 1,000 of 2,261 rows,
+   while the MUST_TEST count beside it was complete — so every rate was about
+   double. `countyDaily.baselinePercent` was served as **9.7** and is **4.7**;
+   Thursday was **24.6** and is **10.0** (25 of 251). `todayPercent`,
+   `elevatedDays[].percent`/`opportunities` and `countyDayCalls` move with it.
+2. **One exclusion set.** The rates excluded only the demo account while the
+   gap range excluded admins, dev emails and `INTERNAL_ACCOUNT_EMAILS` too.
+   Every county number now uses that one set; every other account counts,
+   whatever its schedule state (active, paused, dormant, moved away).
+   `basedOnTests` is **85** (was 96), `basedOnUsers` **24**;
+   `countyDayCounts` is `[0,12,13,20,25,11,4]`, `countyDayCalls`
+   `[260,261,262,250,251,256,260]`. `gapBand` and `window.countyRange` are
+   unchanged — that pool already used this set.
+
+Thursday still clears the rate-based test on the corrected pool (chi-square
+40.16, df 6; Thursday z = 3.91), so `elevatedSignificant` stays `true` and
+`elevatedDays` still names Thursday alone. **The count-only test does not:**
+`countyDayPattern.weekdaySignificant` becomes `false` (weekdays-only
+chi-square 9.06, df 4, p = 0.060). A client that names a weekday must gate on
+`countyDaily.elevatedSignificant` and take the day from `elevatedDays` — the
+website does, as of this date — and must not gate on
+`countyDayPattern.weekdaySignificant`, which is a count test with no
+denominator and is kept only for the weekday-vs-weekend sentence.
 
 ```json
 {
@@ -1646,6 +1784,7 @@ Fort Bend — rotation model:
   "type": "ftbend",
   "montgomery": null,
   "fortBend": {
+    "office": "missouri",
     "totalCallsLogged": 366,
     "mostCalled": [ {"name":"Gray","hex":"#9BA1A8","percent":15.9,"count":58,"isProgram":false} ],
     "dueSoon":   [ {"name":"Tan","hex":"#D9B98C","daysSince":73,"averageIntervalDays":10,"overdueRatio":7.3,"isProgram":false} ],
@@ -1663,6 +1802,18 @@ Fort Bend — rotation model:
   }
 }
 ```
+
+**`mostCalled`, `dueSoon`, `yourColor` and `totalCallsLogged` are the
+subscriber's OWN OFFICE (2026-10-13).** `office` names it (`missouri`,
+`rosenberg`, `rosenberg2`). Until this date those four pooled all three
+offices, which announce independently — so "your colour was last called N
+days ago" could be another office's call (a Missouri City subscriber on Gray
+read 11 days because Rosenberg 2 called Gray the day after Missouri City
+did; the answer is 12). `yourColor.daysSince` now uses the same
+"was it called" rule as the morning verdict, and whenever both are present
+it equals §4.10 `colorHistory.daysSinceLastCalled`. Counts are roughly a third of what they
+were, and the history is read in full rather than the newest 1,000 rows.
+**`recent` is unchanged: all three offices** — it is the board.
 
 **The server owns the hex values.** Colors are domain data, not styling — a new
 county color must not require an app release. `isProgram: true` marks Prep /
