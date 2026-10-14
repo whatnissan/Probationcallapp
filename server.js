@@ -1893,19 +1893,65 @@ app.get("/api/admin/montgomery-analytics", adminAuth, async function(req, res) {
 });
 
 
+// THE canonical exclusion set for every county-wide number (Dave, rule 4,
+// 2026-10-13): the demo account, admins, dev emails and
+// INTERNAL_ACCOUNT_EMAILS. A test account is not a person on probation.
+// Everyone ELSE counts — active, paused, dormant, moved to another county —
+// because the pools read results, not schedules.
+//
+// One function, because there were two sets: the weekday rates, the county
+// average and "N tests across M people" excluded only the demo account,
+// while the county gap range excluded all of the above. One internal
+// account's tests sat inside the weekday numbers until this date.
+// Returns { id: true }. Throws if profiles cannot be read: a county number
+// computed with nobody excluded is worse than none.
+async function countyPoolExcludedIds() {
+  var profiles = await supabase.from('profiles').select('id, email, is_admin, is_demo');
+  if (profiles.error) throw new Error('profiles: ' + profiles.error.message);
+  var internal = internalAccountEmails();
+  var excluded = {};
+  (profiles.data || []).forEach(function(p) {
+    var email = String(p.email || '').toLowerCase();
+    if (p.is_admin === true || p.is_demo === true || (email && isDev(email)) || internal.indexOf(email) >= 0) excluded[p.id] = true;
+  });
+  return excluded;
+}
+
+// Every row of a query, not the first 1000. Supabase caps a select at 1000
+// rows, silently: no error, just a shorter array. `build` returns a fresh
+// query each call (a builder cannot be re-run); it must ORDER, or the pages
+// can overlap. Throws on a read error.
+//
+// 2026-10-13: computeSystemStats read every answered call in one unpaged
+// select. It got 1,000 of 2,261 — the oldest — while the MUST_TEST count
+// beside it was complete, so every county rate was about double: a 9.7%
+// baseline served for a true 4.7%, Thursdays 24.6% for a true 10.0%.
+async function selectAllRows(build) {
+  var rows = [], from = 0, page = 1000;
+  while (true) {
+    var r = await build().range(from, from + page - 1);
+    if (r.error) throw new Error(r.error.message || String(r.error));
+    rows = rows.concat(r.data || []);
+    if ((r.data || []).length < page) break;
+    from += page;
+  }
+  return rows;
+}
+
 // Shared by /api/system-stats and /api/v1/prediction. Hour-cached.
 async function computeSystemStats() {
   var now = Date.now();
   if (global.systemStatsCache && (now - global.systemStatsCache.timestamp) < 3600000) {
     return global.systemStatsCache.data;
   }
-  var result = await supabase.from('call_history').select('user_id, created_at, result, county')
-    .eq('result', 'MUST_TEST').order('created_at', { ascending: true });
-  if (result.error) throw new Error(result.error.message);
-    // Demo accounts (migration 043) hold fabricated history — never pooled.
-    var demoIds = {};
-    var demoRes = await supabase.from('profiles').select('id').eq('is_demo', true);
-    (demoRes.data || []).forEach(function(d) { demoIds[d.id] = true; });
+  var result = { data: await selectAllRows(function() {
+    return supabase.from('call_history').select('user_id, created_at, result, county')
+      .eq('result', 'MUST_TEST').order('created_at', { ascending: true }).order('id', { ascending: true });
+  }) };
+    // The canonical exclusion set (countyPoolExcludedIds): demo accounts
+    // hold fabricated history, and admin/dev/internal accounts are not
+    // people on probation. Was demo-only until 2026-10-13.
+    var demoIds = await countyPoolExcludedIds();
     var tests = (result.data || []).filter(function(t) {
       if (demoIds[t.user_id]) return false;
       var c = t.county || 'montgomery';
@@ -1954,9 +2000,17 @@ async function computeSystemStats() {
     // stopped being.
     var dayCalls = [0,0,0,0,0,0,0];
     var observedUsers = {};
-    var answered = await supabase.from('call_history')
-      .select('user_id, created_at, result, county')
-      .in('result', ['MUST_TEST', 'NO_TEST']);
+    // EVERY answered call (selectAllRows): this is the denominator of every
+    // county rate, and an unpaged select returned less than half of it.
+    var answered = { data: null, error: null };
+    try {
+      answered.data = await selectAllRows(function() {
+        return supabase.from('call_history')
+          .select('user_id, created_at, result, county')
+          .in('result', ['MUST_TEST', 'NO_TEST'])
+          .order('created_at', { ascending: true }).order('id', { ascending: true });
+      });
+    } catch (e) { answered.error = e; }
     if (answered.error) {
       console.error('[STATS] weekday denominator read failed:', briefErr(answered.error));
       dayCalls = null;   // null, not zeros — "unknown" must not read as "no calls"
@@ -5248,25 +5302,13 @@ async function countyIntervalPool(county) {
   var c = _countyPoolCache[county];
   if (c && (now - c.at) < COUNTY_POOL_CACHE_MS) return c.byUser;
 
-  var profiles = await supabase.from('profiles').select('id, email, is_admin, is_demo');
-  if (profiles.error) throw new Error('profiles: ' + profiles.error.message);
-  var internal = internalAccountEmails();
-  var excluded = {};
-  (profiles.data || []).forEach(function(p) {
-    var email = String(p.email || '').toLowerCase();
-    if (p.is_admin === true || p.is_demo === true || (email && isDev(email)) || internal.indexOf(email) >= 0) excluded[p.id] = true;
-  });
+  var excluded = await countyPoolExcludedIds();
 
   // Supabase caps a select at 1000 rows; page through, oldest first.
-  var rows = [], from = 0, page = 1000;
-  while (true) {
-    var r = await supabase.from('call_history').select('user_id, result, created_at')
-      .eq('county', county).order('created_at', { ascending: true }).range(from, from + page - 1);
-    if (r.error) throw new Error('call_history: ' + r.error.message);
-    rows = rows.concat(r.data || []);
-    if ((r.data || []).length < page) break;
-    from += page;
-  }
+  var rows = await selectAllRows(function() {
+    return supabase.from('call_history').select('user_id, result, created_at')
+      .eq('county', county).order('created_at', { ascending: true }).order('id', { ascending: true });
+  });
   var byUserRows = {};
   rows.forEach(function(row) {
     if (excluded[row.user_id]) return;
