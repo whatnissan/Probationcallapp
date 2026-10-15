@@ -1309,11 +1309,12 @@ function loadUser() {
         try { localStorage.removeItem('referralCode'); } catch (e) {}
       }
 
-      // Apple Private Relay: mail to @privaterelay.appleid.com depends on
-      // Apple's relay (senders must stay registered with Apple) — nudge these
-      // users toward SMS, the channel Apple can't drop.
+      // Apple Private Relay: mail to a relay address depends on Apple's
+      // relay (senders must stay registered with Apple) — nudge these users
+      // toward SMS, the channel Apple can't drop. isAppleRelayEmail knows both
+      // relay domains.
       var relayNote = document.getElementById('relayNote');
-      if (relayNote) relayNote.style.display = /@privaterelay\.appleid\.com$/i.test(d.user.email || '') ? 'block' : 'none';
+      if (relayNote) relayNote.style.display = isAppleRelayEmail(d.user.email) ? 'block' : 'none';
       // Hide the link-Apple row for accounts already signed in via Apple.
       var linkRow = document.getElementById('linkAppleRow');
       if (linkRow && d.user.identities && d.user.identities.some(function(i) { return i.provider === 'apple'; })) linkRow.style.display = 'none';
@@ -1699,6 +1700,14 @@ function linkApple() {
     .catch(function(e) { alert('Could not link Apple ID: ' + e.message); });
 }
 
+// Sign in with Apple hidden-relay addresses. Apple issued them at
+// @privaterelay.appleid.com and is moving NEW ones to @private.icloud.com
+// (2026-10); existing addresses keep the old domain, so both count. Exact
+// domains only: plain @icloud.com is an ordinary iCloud mailbox, not a relay.
+function isAppleRelayEmail(email) {
+  return /@(privaterelay\.appleid\.com|private\.icloud\.com)$/i.test(String(email || '').trim());
+}
+
 function maskPhone(e164) {
   var digits = String(e164 || '').replace(/[^0-9]/g, '').replace(/^1/, '');
   if (digits.length !== 10) return 'your number on file';
@@ -1724,7 +1733,7 @@ function maybeShowReconfirm() {
   var email = data.email || '';
   if (!email) {
     alt.style.display = 'none'; warn.style.display = 'none';
-  } else if (/@privaterelay\.appleid\.com$/i.test(email)) {
+  } else if (isAppleRelayEmail(email)) {
     alt.style.display = 'block'; warn.style.display = 'block';
   } else {
     alt.style.display = 'block'; warn.style.display = 'none';
