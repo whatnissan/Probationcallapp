@@ -2067,38 +2067,47 @@ currently 0% commission, but the district court is setting a fee on remand. When
 a number lands you'll need to know which purchases originated in-app, and you
 cannot reconstruct that retroactively.
 
-The app opens the URL in `SFSafariViewController`. Stripe returns to
-`{BASE_URL}/return?to=credits` or `…?to=subscription` — never to the web
-dashboard, which is login-gated and would strand an app buyer on a login
-page. `cancel_url` goes to the same place, so a cancelled checkout comes
-back too.
+The app opens the URL in the default browser (real Safari). Stripe returns
+to the public `/return` page — never to the web dashboard, which is
+login-gated and would strand an app buyer on a login page:
 
-`/return` is a public page carrying no token, session or amount, only that
-destination hint. It shows a **Return to the app** button linking to
-`probationcall://return?to=…` and also attempts the redirect automatically.
-**The app must handle that URL**, or the return goes nowhere. The button is
-the primary path, not a fallback: inside `SFSafariViewController` an
-automatic bounce to a custom scheme is sometimes blocked and shows an
-invalid-address error, and a tap is a user gesture that opens the app
-reliably.
+| Outcome | URL |
+|---|---|
+| Paid (`success_url`) | `{BASE_URL}/return?to=credits\|subscription&result=success&session_id={CHECKOUT_SESSION_ID}` — Stripe fills in the session id |
+| Cancelled (`cancel_url`) | `{BASE_URL}/return?to=credits\|subscription&result=canceled` |
+
+**`/return` says what happened, and claims only what it has verified
+(2026-10-15).** It asks Stripe about the session and our ledger about the
+grant, and words the page from that: "30 credits added", "Subscription
+started — 31 credits added", "Payment received — your credits are being
+added" (paid, grant not landed yet; the page reloads itself once, five
+seconds later), "Payment not finished", "Checkout canceled — nothing was
+charged". When it cannot verify (no session id, Stripe did not answer, the
+per-IP lookup limit), it says only "If your payment went through, your
+credits will show in the app shortly." The page shows no balance, email or
+amount: it carries no sign-in, and a session id is all it is given.
+
+Every variant shows one **Back to ProbationCall** button linking to
+`probationcall://return?to=credits|subscription|connect|app` — only `to`,
+whatever else the page's own URL carried. **The app must handle that URL**,
+or the return goes nowhere. **There is no automatic redirect** to the app's
+scheme any more: in real Safari on a phone without the app, a scripted jump
+to `probationcall://` shows an invalid-address error over the page, and on a
+phone with the app the system prompt would cover the result before it is
+read. The page also says "No app on this device? Sign in on the website", so
+it stands on its own.
 
 **iOS asks first, and that is expected.** Handing control back from a web
-context raises a system confirmation — *Open in "Probationcall"?* with Cancel
-and Open — and the user must tap **Open**. It appears on both the button and
-the automatic redirect. This is iOS behaviour, not a fault in the page; the
-page says "Tap Open when your phone asks" so nobody reads the dialog as
-something going wrong and cancels out of it.
+page raises a system confirmation — *Open in "Probationcall"?* with Cancel
+and Open — and the user must tap **Open**. This is iOS behaviour, not a fault
+in the page; the page says "Tap Open when your phone asks" so nobody reads
+the dialog as something going wrong and cancels out of it.
 
-**Re-fetch `/me` on both dismissal paths.** The sheet may now be closed by
-the scheme redirect rather than by the user, so a refresh hung only on the
-user-dismissed callback will miss the case where the bounce worked — which
-is the common one.
-
-**`/return` never says the payment succeeded, and neither should the screen
-behind it.** Stripe sends people there the moment they finish, which can be
-before the webhook has granted anything. The balance from `/me` is the only
-statement about what was actually credited; a purchase confirmation shown on
-return alone would be a guess.
+**Re-fetch `/me` whenever the app comes back to the foreground** after
+opening a payment URL, whether or not it arrived through the return link:
+the person may switch back from Safari by hand. **`/me` stays the only
+statement of the balance**; the page's "added" means our ledger has the
+grant, not what the balance now is.
 
 ### 4.13a `GET /pricing`
 
@@ -2198,9 +2207,10 @@ card, cancel, see invoices. This is the "Manage subscription" the
 failed-payment notice and the pause notice point at (§4.13a). Until
 2026-09-15 only the website had a route to it, so the app was telling people
 to go somewhere it could not take them. The app opens the URL in
-`SFSafariViewController`; the portal returns to `{BASE_URL}/return?to=subscription`,
-the same public page checkout uses (§4.13), which hands the person back to
-the app.
+default browser; the portal returns to
+`{BASE_URL}/return?to=subscription&from=portal`, the same public page checkout
+uses (§4.13), worded "Subscription settings closed — any change you made is
+saved with Stripe", with the **Back to ProbationCall** button.
 
 `404 not_found` when the account has no Stripe customer and no subscription —
 never subscribed, nothing to manage. The server checks this itself before
@@ -2359,9 +2369,10 @@ where it stopped). Open it in an in-app browser sheet.
 
 Stripe returns to `{BASE_URL}/return?to=connect` — **both** on completion and
 when the link has expired. The two are not distinguishable there, and were
-never meant to be acted on differently. That page bounces into the app via
-`probationcall://return?to=connect`; treat arriving back as "done, re-fetch
-`/referral`" and read the truth from `connect.state`.
+never meant to be acted on differently. That page ("Payout setup") offers the
+**Back to ProbationCall** button to `probationcall://return?to=connect`; treat
+arriving back as "done, re-fetch `/referral`" and read the truth from
+`connect.state`.
 
 These used to be `{BASE_URL}/dashboard?connect=success` and `…?connect=refresh`.
 The web dashboard is login-gated and the in-app sheet carries no session, so
@@ -2527,8 +2538,11 @@ opens this page in Safari instead. The page:
   limit, one-use-per-account and the affiliate attribution are identical by
   construction. The endpoint's own messages are what the page shows,
   including the "credits added, referral not credited" note;
-- on success offers **Return to the app**, which is `probationcall://return?to=credits`
-  (the existing return route, §4.13).
+- on success offers **Back to ProbationCall**, which is `probationcall://return?to=credits`
+  (the existing return route, §4.13), with "Tap Open when your phone asks" and
+  a dashboard link for a device without the app;
+- shows a **Back to ProbationCall** link under the form at all times, so a
+  person who changes their mind or hits an error is never stranded.
 
 When the app comes back to the foreground after this, it should re-read
 `/me`: the balance changed server-side, and nothing pushes that to the app.
