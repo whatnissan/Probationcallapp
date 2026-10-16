@@ -91,7 +91,8 @@ Standard codes: `unauthenticated`, `forbidden`, `not_found`, `validation_failed`
 `pin_expired` (§4.8),
 `sms_send_failed`, `verification_not_found`,
 `verification_expired`, `verification_locked`, `verification_incorrect`
-(§4.17).
+(§4.17), `iap_unavailable`, `iap_wrong_account`, `iap_unknown_product`
+(§4.21), `managed_by_apple` (§4.13b).
 
 ### Rate limiting
 
@@ -472,8 +473,33 @@ called and keeps receiving results. Stopping calls to a person on probation
 until they tap a screen would manufacture the missed test the Terms exist to
 address. The app gates itself; the service does not.
 
-**`subscription`** `{status, cancelAtPeriodEnd, currentPeriodEnd} | null`
-(2026-09-15, migration 056). `null` means the account has never subscribed.
+**`subscription`** `{status, cancelAtPeriodEnd, currentPeriodEnd, source, duplicate} | null`
+(2026-09-15, migration 056; `source` and `duplicate` 2026-10-15). `null` means the account has never subscribed.
+
+**One subscription, whichever store sold it (2026-10-15).** The server merges
+the Stripe subscription and any App Store subscription (§4.21) into this one
+object:
+
+- **`source`** `"stripe" | "apple"` — whose subscription this describes. It
+  decides where "Manage subscription" goes: `stripe` → §4.13b's portal;
+  `apple` → StoreKit's manage-subscriptions sheet (`showManageSubscriptions`).
+  §4.13b answers `409 managed_by_apple` for an App Store-only subscriber.
+- For `apple`: `status` is mapped from Apple's — active → `"active"`,
+  billing retry and grace period → `"past_due"`, expired and revoked →
+  `"canceled"`; `cancelAtPeriodEnd` is auto-renew turned off;
+  `currentPeriodEnd` is the transaction's expiry. A `past_due` App Store
+  subscriber fixes it with Apple (Settings → their name → Payment &
+  Shipping), not with §4.13b.
+- When only one is active, it speaks. When neither is, a `past_due` one
+  outranks an ended one, then the later `currentPeriodEnd`.
+- **`duplicate`** `null | {source, currentPeriodEnd}` — **both** an active
+  Stripe and an active App Store subscription: two charges a month. The
+  object then describes the Stripe one and `duplicate` the App Store one.
+  Render it as "You're paying for two subscriptions" with both ways to
+  cancel; the server has already emailed the person once and alerted the
+  owner, and cancels neither (Dave's ruling).
+- A Sandbox App Store subscription counts only for the demo and internal
+  accounts (§4.21).
 Once a subscription has existed the object is always present, including
 after cancellation, because "was a subscriber, now cancelled, still has
 credits" is a state the app has to render.
@@ -2131,9 +2157,27 @@ needs them before sign-in.
       { "fromCredit": 31, "toCredit": 90,   "centsPerCredit": 42 },
       { "fromCredit": 91, "toCredit": null, "centsPerCredit": 33 }
     ]
+  },
+  "appStore": {
+    "products": [
+      { "productId": "com.probationcall.app.subscription.monthly", "kind": "subscription", "credits": 31 },
+      { "productId": "com.probationcall.app.credits.31",  "kind": "credits", "credits": 31 },
+      { "productId": "com.probationcall.app.credits.90",  "kind": "credits", "credits": 90 },
+      { "productId": "com.probationcall.app.credits.182", "kind": "credits", "credits": 182 }
+    ]
   }
 }
 ```
+
+**`appStore.products` (2026-10-15)** — the In-App Purchase products and the
+credits each one grants. **The app loads these ids with StoreKit
+(`Product.products(for:)`), shows StoreKit's `displayPrice`, and shows
+`credits` from here — it hard-codes neither.** The grant is decided by the
+server from the product id (§4.21), never from anything the app sends.
+`kind` is `"subscription"` (31 credits each month it renews, the same
+`creditsPerPeriod` as Stripe's) or `"credits"` (a one-time pack). Like every
+enum here, an unknown `kind` decodes to `unknown(String)`; a product the app
+cannot load from StoreKit is not shown.
 
 **Never hardcode a price in the app again.** `subscription.priceCents` comes
 from Stripe (the live recurring Price), cached server-side for ten minutes, so
@@ -2213,7 +2257,10 @@ uses (§4.13), worded "Subscription settings closed — any change you made is
 saved with Stripe", with the **Back to ProbationCall** button.
 
 `404 not_found` when the account has no Stripe customer and no subscription —
-never subscribed, nothing to manage. The server checks this itself before
+never subscribed, nothing to manage. **`409 managed_by_apple`** (2026-10-15)
+when the only subscription is from the App Store: open StoreKit's
+manage-subscriptions sheet instead. Better, branch on §3
+`subscription.source` and never call this endpoint for `apple`. The server checks this itself before
 touching Stripe, because the shared billing helper would otherwise create a
 customer for them, which is right for checkout and wrong for a portal that
 would then open onto nothing. `503 internal`, retryable, when Stripe's portal
@@ -2891,6 +2938,91 @@ website served at that moment, proven by git history: `2025-12-04` before
 2026-08-24, when an edit removed WhatsApp from the service description, and
 `2026-08-24` after (25 and 3 accounts). The original server timestamp is
 kept, not the backfill time.
+
+### 4.21 `POST /iap/transactions` — In-App Purchase (build 23)
+
+App Review requires In-App Purchase beside the Stripe link (2026-10-15). The
+app posts **every** StoreKit 2 transaction here: right after a purchase, and
+again for any transaction it has not finished (on launch, and from
+`Transaction.updates`).
+
+```json
+{ "signedTransaction": "<Transaction.jwsRepresentation>" }
+```
+
+**Before buying, the app MUST set `appAccountToken` to the account's id**
+(§3 `user.id`, as a UUID: `Product.PurchaseOption.appAccountToken(_:)`).
+It is how the server — and Apple's later notifications (§4.22) — know whose
+purchase it is. A transaction whose token names a different account is
+refused.
+
+**`200`** — done with it. **Call `finish()` only after a `200`**; on any
+error keep the transaction and post it again later. Finishing before the
+server has it can lose the purchase.
+
+```json
+{ "outcome": "granted", "creditsGranted": 31, "balance": 36 }
+```
+
+| `outcome` | Meaning |
+|---|---|
+| `granted` | Credits added now |
+| `already_granted` | This transaction was granted before (an earlier post, or Apple's notification got there first); `creditsGranted` is `0` |
+| `sandbox_not_granted` | A Sandbox purchase on an account that is not the demo or an internal one: recorded, nothing granted. TestFlight purchases are Sandbox and cost the tester nothing |
+| `revoked` | Apple has already refunded or revoked it: nothing granted |
+
+`balance` is the account's credits after the call. Read `/me` for the rest.
+
+**Errors.** `400 validation_failed` (`field: "signedTransaction"`) — missing,
+or Apple's signature does not verify; do not retry. `409 iap_wrong_account`
+— bought under another ProbationCall account. `409 iap_unknown_product` —
+the server does not sell that product id; keep the transaction (the owner is
+alerted), tell the person to contact support. `503 iap_unavailable`
+(retryable) — the App Store could not be reached or is not configured yet;
+keep it and retry. `500 internal` (retryable).
+
+**What the server does.** It verifies Apple's signature (Apple's library and
+root certificates), asks the App Store Server API for Apple's current copy of
+the transaction when it can, and grants by product id from §4.13a's
+`appStore.products`. Every grant is keyed on the App Store `transactionId` —
+one per purchase and one per renewal — so this endpoint and §4.22 can both
+see a purchase and it is granted once. A purchase row is recorded with
+`source: "apple_iap"`.
+
+- **Sandbox** grants credits only to the App Review demo account and our
+  internal accounts, and never counts as revenue or affiliate commission.
+- **Affiliate commission** on an App Store purchase is 20% of what is left
+  after Apple's commission (Stripe's stays 20% of the gross), US dollars
+  only, under the same 12-month window and hold.
+- **Two subscriptions** (Stripe and App Store both active) are reported, not
+  cancelled: §3 `subscription.duplicate`, one email to the person, an alert
+  to the owner. §4.13 refuses a new Stripe subscription while an App Store one
+  is active or past due.
+- **Credits never expire**, from any source.
+- **Account deletion (§4.15) does not cancel an App Store subscription** —
+  the server cannot. Until the deletion flow says so itself, the app must
+  tell an App Store subscriber to cancel in Settings before deleting.
+
+### 4.22 App Store Server Notifications V2 (server behaviour, not an endpoint for the app)
+
+`POST https://www.probationcall.com/webhook/apple` — set as BOTH the
+Production and Sandbox notification URLs in App Store Connect, Version 2.
+Signed by Apple; verified like §4.21; each notification is processed once.
+
+| Notification | What the server does |
+|---|---|
+| `SUBSCRIBED`, `DID_RENEW`, `ONE_TIME_CHARGE` | Grants, keyed on `transactionId` — every renewal grants 31 |
+| `DID_FAIL_TO_RENEW`, `GRACE_PERIOD_EXPIRED` | Subscription → `past_due` |
+| `EXPIRED` | Subscription → `canceled` |
+| `DID_CHANGE_RENEWAL_STATUS` | Auto-renew off/on → `cancelAtPeriodEnd` |
+| `REFUND`, `REVOKE` | Takes the credits back, **never below zero** (a prorated refund takes its share); flags the account for the owner; reverses the affiliate commission on a full refund; ends the subscription |
+| `REFUND_REVERSED` | Gives back the credits that refund took |
+| anything else | Recorded |
+
+A notification for an account that no longer exists — a deleted account
+whose App Store subscription is still renewing — grants nothing and alerts
+the owner. Apple keeps sending them until the subscription ends; the
+subscription record is kept (with no account) so they are recognised.
 
 ## 5. Build order
 
