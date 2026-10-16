@@ -28,6 +28,8 @@ input{width:100%;padding:14px;border-radius:8px;border:1px solid rgba(255,255,25
 .status.ok{display:block;background:rgba(34,197,94,0.15);color:#86efac}
 .status.info{display:block;background:rgba(0,217,255,0.08);color:#cbd5e1}
 .note{color:#cbd5e1;font-size:0.85rem;margin-top:8px}
+.hint{color:#c7d3e8;font-size:0.9rem;margin:10px 0 0}
+.back{display:inline-block;color:#8892b0;font-size:0.9rem;margin-top:22px}
 .hidden{display:none}
 </style>
 </head>
@@ -43,13 +45,17 @@ input{width:100%;padding:14px;border-radius:8px;border:1px solid rgba(255,255,25
     <button class="btn" id="redeemBtn" type="button" disabled>Redeem code</button>
     <a class="btn hidden" id="signInBtn" href="/login">Sign in to redeem</a>
     <div class="who hidden" id="who"><span id="whoText"></span> · <a id="switchLink" href="/login?logout=true">Not you?</a></div>
+    <!-- A way back that does not depend on redeeming: before a code is
+         entered, after an error, or when the person changes their mind. -->
+    <a class="back" href="probationcall://return?to=credits">Back to ProbationCall</a>
   </div>
 
   <div class="status" id="status"></div>
 
   <div class="hidden" id="done">
-    <a class="btn" href="probationcall://return?to=credits" style="margin-top:16px">Return to the app</a>
-    <a class="btn secondary" href="/dashboard">Go to your dashboard</a>
+    <a class="btn" href="probationcall://return?to=credits" style="margin-top:16px">Back to ProbationCall</a>
+    <p class="hint">Tap <b>Open</b> when your phone asks.</p>
+    <a class="btn secondary" href="/dashboard">No app on this device? Go to your dashboard</a>
   </div>
 </div>
 

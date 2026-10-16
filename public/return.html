@@ -4,12 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="robots" content="noindex">
-<title>Returning you to ProbationCall</title>
+__REFRESH__
+<title>__TITLE__</title>
 <style>
   html,body{margin:0;padding:0}
   body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0a1929;color:#fff;
-       min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+       min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box}
   .card{max-width:420px;width:100%;text-align:center}
+  .brand{color:#8892b0;font-size:0.85rem;letter-spacing:0.04em;margin:0 0 18px}
   h1{font-size:1.35rem;font-weight:600;margin:0 0 10px}
   p{color:#8892b0;font-size:0.95rem;line-height:1.6;margin:0 0 24px}
   .btn{display:block;background:#00d9ff;color:#000;text-decoration:none;font-weight:700;
@@ -18,46 +20,40 @@
   .hint{color:#c7d3e8;font-size:0.92rem;margin:0 0 22px}
   .hint b{color:#fff}
   .fine{color:#5c6b8a;font-size:0.8rem;line-height:1.55;margin:0}
+  .fine a{color:#8892b0}
 </style>
 </head>
 <body>
   <div class="card">
-    <h1>Returning you to the app</h1>
-    <p>If ProbationCall doesn&rsquo;t open on its own, tap the button.</p>
+    <p class="brand">ProbationCall</p>
+    <!-- What happened. The server fills these from fixed sentences
+         (lib/return-page.js) and claims a payment or a grant only when it
+         has verified it with Stripe and our ledger. -->
+    <h1>__HEADING__</h1>
+    <p>__MESSAGE__</p>
 
-    <!-- THE BUTTON IS THE PRIMARY PATH, NOT A FALLBACK. Inside
-         SFSafariViewController an automatic window.location bounce to a custom
-         scheme is sometimes blocked and shows an "address is invalid" error
-         instead of opening the app — a dead end for anyone who lands here,
-         including an App Store reviewer making a test purchase. A tap is a
-         user gesture and opens the app reliably. The href is written by the
-         server from a fixed allowlist, so this works with no JavaScript at
-         all. -->
-    <a class="btn" id="open" href="probationcall://return?to=__DEST__">Return to the app</a>
+    <!-- THE BUTTON IS THE WAY BACK. There is deliberately no automatic
+         redirect to probationcall:// any more (2026-10-15): payment flows now
+         open in real Safari, where a redirect to the app's scheme on a phone
+         WITHOUT the app shows "Safari cannot open the page because the
+         address is invalid" over this page, and on a phone WITH it the
+         system prompt would cover the sentence above before it is read. A
+         tap is a user gesture and opens the app reliably. The href is
+         written by the server from a fixed allowlist, so this works with no
+         JavaScript at all. -->
+    <a class="btn" id="open" href="probationcall://return?to=__DEST__">Back to ProbationCall</a>
 
-    <!-- iOS shows a system confirmation — Open in "Probationcall"? / Cancel /
-         Open — before handing control back from a web context, on BOTH the
-         button and the automatic redirect. Verified on device. Someone who
-         taps and then meets an unexplained dialog can reasonably read it as
-         something going wrong and hit Cancel, which strands them here. This
-         line sits directly under the button because that is where the eye
-         goes after tapping. -->
+    <!-- iOS shows a system confirmation (Open in "Probationcall"? / Cancel /
+         Open) before handing control back from a web page. Verified on
+         device. Someone who meets an unexplained dialog can read it as a
+         failure and tap Cancel, so this line sits directly under the button,
+         where the eye goes after tapping. -->
     <p class="hint">Tap <b>Open</b> when your phone asks.</p>
 
-    <!-- Deliberately makes NO claim about the payment. Stripe sends people
-         here the moment they finish, which can be before our webhook has
-         granted anything — "Payment complete" here would be a guess. The app
-         shows the real balance. -->
-    <p class="fine">You can close this page. Your balance is shown in the app.</p>
+    <!-- For someone without the app on this device: the page must still
+         make sense, and lead somewhere. /login sends a signed-in browser
+         straight on to the dashboard. -->
+    <p class="fine">No app on this device? <a href="/login">Sign in on the website</a> to see your account. You can close this page.</p>
   </div>
-
-<script>
-// Try the automatic bounce, but only after the card above has painted, so a
-// blocked redirect leaves the button on screen instead of a blank page.
-// location.replace keeps this page out of the back stack.
-setTimeout(function () {
-  try { window.location.replace(document.getElementById('open').href); } catch (e) {}
-}, 400);
-</script>
 </body>
 </html>

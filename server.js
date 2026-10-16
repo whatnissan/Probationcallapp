@@ -1719,22 +1719,86 @@ app.get('/redeem', function(req, res) { res.sendFile(path.join(__dirname, 'publi
 // hand people straight after they pay. Anything unrecognised falls back to
 // simply opening the app.
 var _returnPage = null;
-app.get('/return', function(req, res) {
+// What a finished app checkout actually did, for /return to say so: asked
+// of Stripe (was it paid?) and of our own ledger (have the credits landed?).
+// Returns null when it cannot tell — the page then claims nothing. Waits up
+// to ~3 s for the webhook's grant, which usually lands within a second or
+// two of Stripe's redirect. Never throws.
+//   { paid, kind: 'credits'|'subscription', credits, granted }
+async function checkoutReturnFacts(sessionId) {
+  try {
+    var session = await Promise.race([
+      stripe.checkout.sessions.retrieve(sessionId),
+      new Promise(function(_, reject) { setTimeout(function() { reject(new Error('stripe timeout')); }, 4000); })
+    ]);
+    if (!session || session.id !== sessionId) return null;
+    var paid = session.status === 'complete' &&
+      (session.payment_status === 'paid' || session.payment_status === 'no_payment_required');
+    var kind, credits, ledgerCol, ledgerVal;
+    if (session.mode === 'subscription') {
+      kind = 'subscription';
+      credits = SUBSCRIPTION_CREDITS_PER_PAYMENT;
+      ledgerCol = 'stripe_invoice_id';
+      ledgerVal = session.invoice && typeof session.invoice === 'object' ? session.invoice.id : session.invoice;
+    } else if (session.mode === 'payment') {
+      kind = 'credits';
+      credits = parseInt(session.metadata && session.metadata.credits, 10);
+      if (!(credits > 0 && credits <= MAX_EXACT_CREDITS)) return null;
+      ledgerCol = 'stripe_session_id';
+      ledgerVal = session.id;
+    } else {
+      return null;
+    }
+    var granted = false;
+    if (paid && ledgerVal) {
+      for (var i = 0; i < 4 && !granted; i++) {
+        if (i) await new Promise(function(r) { setTimeout(r, 1000); });
+        var row = await supabase.from('credit_transactions').select('id').eq(ledgerCol, String(ledgerVal)).limit(1);
+        granted = !!(row.data && row.data.length);
+      }
+    }
+    return { paid: paid, kind: kind, credits: credits, granted: granted };
+  } catch (e) {
+    console.error('[RETURN] checkout lookup failed for ' + String(sessionId).slice(0, 14) + '…:', e.message);
+    return null;
+  }
+}
+
+// A public page that makes a Stripe call is a lever for anyone with a loop,
+// so lookups are limited per IP. Over the limit the page still renders —
+// it just claims nothing, never a 429 JSON body where a person expects a page.
+var _returnLookups = new Map();
+function returnLookupAllowed(ip) {
+  var key = String(ip || 'anon'), now = Date.now();
+  var e = _returnLookups.get(key);
+  if (!e || now - e.at > 10 * 60 * 1000) { _returnLookups.set(key, { at: now, n: 1 }); return true; }
+  e.n++;
+  return e.n <= 20;
+}
+
+app.get('/return', async function(req, res) {
   try {
     if (_returnPage === null) {
       _returnPage = require('fs').readFileSync(path.join(__dirname, 'public', 'return.html'), 'utf8');
     }
+    var q = returnPage.parseReturnQuery(req.query);
+    var facts = null;
+    if (q.result === 'success' && q.sessionId && returnLookupAllowed(req.ip)) {
+      facts = await checkoutReturnFacts(q.sessionId);
+    }
     res.set('Cache-Control', 'no-store');
-    res.type('html').send(returnPage.renderReturnPage(_returnPage, req.query && req.query.to));
+    res.type('html').send(returnPage.renderReturnPage(_returnPage, req.query || {}, facts));
   } catch (e) {
     console.error('[RETURN] could not render return page:', e.message);
     // Never leave someone stranded on an error after they have paid: send
     // them at the app with no destination hint rather than showing nothing.
     res.type('html').send('<!DOCTYPE html><meta charset="utf-8"><title>Return to ProbationCall</title>' +
       '<body style="font-family:-apple-system,sans-serif;background:#0a1929;color:#fff;padding:24px">' +
-      '<p>Returning you to the app.</p>' +
-      '<p><a style="color:#00d9ff" href="probationcall://return?to=app">Return to the app</a></p>' +
-      '<p>Tap <b>Open</b> when your phone asks.</p>');
+      '<h1 style="font-size:1.3rem">Back to ProbationCall</h1>' +
+      '<p>Your balance and subscription are shown in the app.</p>' +
+      '<p><a style="color:#00d9ff;font-weight:700" href="probationcall://return?to=app">Back to ProbationCall</a></p>' +
+      '<p>Tap <b>Open</b> when your phone asks.</p>' +
+      '<p style="color:#8892b0">No app on this device? <a style="color:#8892b0" href="/login">Sign in on the website</a>.</p>');
   }
 });
 // Extension-less aliases. These are linked from emails, the app, and the
@@ -5077,8 +5141,9 @@ app.post('/api/v1/referral/connect', authV1, rateLimit('connect', 10, 10 * 60 * 
 // update the card, cancel, see invoices. This is the "Manage subscription"
 // the failed-payment and pause notices point at; until 2026-09-15 only the
 // website had a route to it, so the app was telling people to go somewhere
-// it could not take them. Returns to /return?to=subscription, the same
-// public page checkout uses, which hands the person back to the app.
+// it could not take them. Returns to /return?to=subscription&from=portal,
+// the same public page checkout uses, worded for the portal, with the button
+// back to the app.
 //
 // 404 when the account has no Stripe customer AND no subscription: never
 // subscribed, nothing to manage. Checked HERE, because the shared helper
@@ -5091,7 +5156,7 @@ app.post('/api/v1/billing-portal', authV1, rateLimit('portal', 10, 5 * 60 * 1000
     if (!profile || (!profile.stripe_customer_id && !profile.stripe_subscription_id)) {
       return v1Error(res, 404, 'not_found', 'There is no subscription on this account to manage.');
     }
-    var result = await billing.openBillingPortal(profile, process.env.BASE_URL + '/return?to=subscription');
+    var result = await billing.openBillingPortal(profile, process.env.BASE_URL + '/return?to=subscription&from=portal');
     return res.json({ url: result.url });
   } catch (e) {
     logStripeError('v1 portal (user ' + req.user.id.slice(0, 8) + ')', e);
@@ -5184,8 +5249,10 @@ app.post('/api/v1/checkout-link', authV1,rateLimit('checkout', 10, 5 * 60 * 1000
           line_items: [{ price: subPriceId, quantity: 1 }],
           // App-originated: bounce back into the app, not the login-gated
           // web dashboard. Web checkout routes keep /dashboard.
-          success_url: process.env.BASE_URL + '/return?to=subscription',
-          cancel_url: process.env.BASE_URL + '/return?to=subscription',
+          // {CHECKOUT_SESSION_ID} is filled in by Stripe; /return asks Stripe
+          // and our ledger about it so the page can say what happened.
+          success_url: process.env.BASE_URL + '/return?to=subscription&result=success&session_id={CHECKOUT_SESSION_ID}',
+          cancel_url: process.env.BASE_URL + '/return?to=subscription&result=canceled',
           // user_id on the SUBSCRIPTION metadata so renewal invoices resolve
           // back to this user, and on the SESSION metadata for the completed
           // event — both, exactly as the web path does.
@@ -5213,8 +5280,8 @@ app.post('/api/v1/checkout-link', authV1,rateLimit('checkout', 10, 5 * 60 * 1000
         }],
         mode: 'payment',
         // App-originated: see the subscription branch above.
-        success_url: process.env.BASE_URL + '/return?to=credits',
-        cancel_url: process.env.BASE_URL + '/return?to=credits',
+        success_url: process.env.BASE_URL + '/return?to=credits&result=success&session_id={CHECKOUT_SESSION_ID}',
+        cancel_url: process.env.BASE_URL + '/return?to=credits&result=canceled',
         // package_id/credits match the existing one-time bundle webhook path,
         // so this rides the same idempotent credit grant. attribution_id is
         // additive and ignored by that handler.
