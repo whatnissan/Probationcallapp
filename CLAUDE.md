@@ -77,7 +77,10 @@ CONNECT_REQUEST_1099_CAPABILITY (set true only after the tax picture is settled)
 DISABLE_BACKGROUND_JOBS (LOCAL test instances only — never in Railway),
 PUSH_SMS_FALLBACK_MINUTES (SMS after an unacked push; 4 since 2026-09-17, default 10 in code),
 CALL_STAGGER_SECONDS (spacing between Montgomery dials sharing a call time; default 45 — do not lower to 20 until call_attempts shows no `busy` outcome under 45),
-ALERT_EMAIL (where the 10:00 AM Fort Bend recording check sends problems — Dave; unset = every admin, with a note saying so)
+ALERT_EMAIL (where the 10:00 AM Fort Bend recording check sends problems — Dave; unset = every admin, with a note saying so),
+APPSTORE_APP_APPLE_ID (the app's numeric Apple ID — required to verify Production In-App Purchases),
+APPSTORE_ISSUER_ID, APPSTORE_KEY_ID, APPSTORE_PRIVATE_KEY (App Store Connect In-App Purchase key, the .p8 — the App Store Server API cross-check; optional),
+APPSTORE_BUNDLE_ID (defaults to com.probationcall.app)
 ```
 
 ---

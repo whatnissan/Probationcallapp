@@ -41,6 +41,10 @@ const { constructEventWithSecrets } = require('./lib/stripe-webhook');
 const { pauseStateOnSave, pinChanged } = require('./lib/schedule-pause');
 const recovery = require('./lib/recovery');
 const countyView = require('./lib/county-view');
+// App Store In-App Purchase (build 23): the rules, and one subscription state
+// whether it came from Stripe or Apple.
+const appstoreRules = require('./lib/appstore');
+const subscriptionState = require('./lib/subscription-state');
 const apns = require('./lib/apns');
 const { fallbackFieldsFor } = require('./lib/push');
 const { isValidPin, isValidTimezone, isValidEmail, normalizePhoneE164, isValidSupportSubject, isValidSupportBody } = require('./lib/validation');
@@ -611,7 +615,7 @@ async function recordCreditAdd(opts) {
     console.error('[CREDITS] recordCreditAdd: invalid args', JSON.stringify(opts));
     return null;
   }
-  var rpc = await supabase.rpc('add_credits_with_ledger', {
+  var rpc = await supabase.rpc('add_credits_with_ledger', Object.assign({
     p_user_id: opts.userId,
     p_amount: opts.amount,
     p_source: opts.source,
@@ -622,7 +626,12 @@ async function recordCreditAdd(opts) {
     // Migration 059: the ledger names the promo code it paid for, so /me's
     // promo array joins on it instead of parsing the note.
     p_promo_code_id: opts.promoCodeId || null
-  });
+  }, opts.appleTransactionId ? {
+    // Migration 070: an App Store grant is keyed on its transactionId. Sent
+    // ONLY for Apple grants, so every other grant keeps working against the
+    // pre-070 function if this code ever lands before the migration.
+    p_apple_transaction_id: String(opts.appleTransactionId)
+  } : {}));
   if (rpc.error) {
     console.error('[CREDITS] add_credits_with_ledger RPC failed for ' + opts.userId.slice(0, 8) + ' source=' + opts.source + ':', rpc.error.message || rpc.error);
     return null;
@@ -907,8 +916,10 @@ async function deductCreditOnce(userId, idempotencyKey, options) {
       if (extended === 0 && newCredits <= 3) {
         try {
           var subProf = await supabase.from('profiles')
-            .select('subscription_status, subscription_cancel_at_period_end').eq('id', userId).maybeSingle();
-          subscriberQuiet = !!(subProf.data && subProf.data.subscription_status === 'active' && !subProf.data.subscription_cancel_at_period_end);
+            .select('email, is_demo, subscription_status, stripe_subscription_id, subscription_cancel_at_period_end, subscription_current_period_end')
+            .eq('id', userId).maybeSingle();
+          // Stripe or App Store (2026-10-15): a renewing subscriber of either kind.
+          subscriberQuiet = subscriptionState.isRenewingSubscriber(await subscriptionStateFor(userId, subProf.data));
         } catch (e) { /* unknown status reads as not a subscriber: warn rather than stay silent */ }
         if (subscriberQuiet) console.log('[LOW-CREDIT] suppressed for ' + userId.slice(0, 8) + ' — active subscription renews on its own (' + newCredits + ' left)');
       }
@@ -2364,13 +2375,9 @@ app.get('/api/v1/me', authV1, async function(req, res) {
       // §3 subscription (migration 056). null = never subscribed. Present
       // after cancellation too: "was a subscriber, still has credits" is a
       // state the app has to render. status is Stripe's verbatim.
-      subscription: (profile.subscription_status || profile.stripe_subscription_id)
-        ? {
-            status: profile.subscription_status || null,
-            cancelAtPeriodEnd: !!profile.subscription_cancel_at_period_end,
-            currentPeriodEnd: profile.subscription_current_period_end || null
-          }
-        : null,
+      // Stripe and App Store merged (2026-10-15): one subscription, with
+      // `source` saying whose it is and `duplicate` set when both are active.
+      subscription: await subscriptionStateFor(req.user.id, profile),
       // Array by contract even though it is one row today; [] = not onboarded.
       schedules: sched.data ? [v1Schedule(sched.data, profile, await loadActiveOfficeIds())] : [],
       // Every county this account has results in, current first (§3,
@@ -3101,7 +3108,18 @@ function pushFallbackMinutes() {
 // credits" points at the wrong door. Same pause, same auto-resume on the
 // next successful grant — only the words and the subject differ.
 function pauseNoticeFor(profile) {
-  if (profile && profile.subscription_status === 'past_due') {
+  // subscription_state (set by pauseNoticeForUser) is the merged Stripe +
+  // App Store answer. An App Store subscriber fixes a failed payment with
+  // Apple, not on our website.
+  var st = profile && profile.subscription_state;
+  if (st && st.status === 'past_due' && st.source === 'apple') {
+    return {
+      kind: 'no_credits_pause_apple',
+      message: 'Your daily checks are paused — your App Store subscription payment didn\'t go through and your credits ran out.\n\n' +
+        'Update your payment method with Apple: on your iPhone, open Settings, tap your name, then Payment & Shipping. As soon as Apple collects the payment your credits are added and your checks restart automatically.\n\n- ProbationCall.com'
+    };
+  }
+  if (st ? (st.status === 'past_due' && st.source === 'stripe') : (profile && profile.subscription_status === 'past_due')) {
     return {
       kind: 'no_credits_pause_sub',
       message: 'Your daily checks are paused — your subscription payment didn\'t go through and your credits ran out.\n\n' +
@@ -3112,6 +3130,15 @@ function pauseNoticeFor(profile) {
     kind: 'no_credits_pause',
     message: 'Your daily checks are paused — your credits ran out.\n\nAdd credits and we\'ll restart them automatically. You won\'t need to set anything up again:\nprobationcall.com\n\n- ProbationCall.com'
   };
+}
+
+// pauseNoticeFor with the account's merged subscription state loaded first.
+// A failed read falls back to the Stripe column alone, as before.
+async function pauseNoticeForUser(userId, profile) {
+  var p = Object.assign({}, profile || {});
+  try { p.subscription_state = await subscriptionStateFor(userId, profile); }
+  catch (e) { console.error('[PAUSE] subscription state unavailable for ' + String(userId).slice(0, 8) + ':', e.message); }
+  return pauseNoticeFor(p);
 }
 
 function pushAllowed(schedule, result) {
@@ -5154,6 +5181,10 @@ app.post('/api/v1/billing-portal', authV1, rateLimit('portal', 10, 5 * 60 * 1000
     var pr = await supabase.from('profiles').select('*').eq('id', req.user.id).maybeSingle();
     var profile = pr.data;
     if (!profile || (!profile.stripe_customer_id && !profile.stripe_subscription_id)) {
+      var portalSub = await subscriptionStateFor(req.user.id, profile);
+      if (portalSub && portalSub.source === 'apple') {
+        return v1Error(res, 409, 'managed_by_apple', 'This subscription is through the App Store. Manage it in your iPhone\'s Settings, under your name, then Subscriptions.');
+      }
       return v1Error(res, 404, 'not_found', 'There is no subscription on this account to manage.');
     }
     var result = await billing.openBillingPortal(profile, process.env.BASE_URL + '/return?to=subscription&from=portal');
@@ -5188,8 +5219,13 @@ app.post('/api/v1/checkout-link', authV1,rateLimit('checkout', 10, 5 * 60 * 1000
       // customer to reuse (a second customer for the same person splits their
       // billing history in two).
       var pr = await supabase.from('profiles')
-        .select('subscription_status, stripe_customer_id').eq('id', req.user.id).maybeSingle();
+        .select('email, is_demo, subscription_status, stripe_customer_id').eq('id', req.user.id).maybeSingle();
       profile = pr.data || {};
+      var subNow = await subscriptionStateFor(req.user.id, profile);
+      // past_due too: Apple is still retrying it, and it comes back on its own.
+      if (subNow && subNow.source === 'apple' && (subNow.status === 'active' || subNow.status === 'past_due')) {
+        return v1Error(res, 400, 'validation_failed', 'You already subscribe through the App Store. Manage it in your iPhone\'s Settings, under your name, then Subscriptions.', false, 'intent');
+      }
       if (profile.subscription_status === 'active' && profile.stripe_customer_id) {
         return v1Error(res, 400, 'validation_failed', 'You already have an active subscription. Use Manage subscription to make changes.', false, 'intent');
       }
@@ -5368,7 +5404,11 @@ app.get('/api/v1/pricing', rateLimit('pricing', 60, 60 * 1000), async function(r
     res.json({
       currency: sub ? sub.currency : 'usd',
       subscription: sub,
-      credits: creditPricing()
+      credits: creditPricing(),
+      // In-App Purchase products and the credits each grants (2026-10-15).
+      // The app takes prices from StoreKit and credits from here; it never
+      // hard-codes either.
+      appStore: { products: appStoreProducts() }
     });
   } catch (e) {
     console.error('[V1-PRICING] failed:', e.message);
@@ -6926,7 +6966,8 @@ function rescheduleUser(userId, sched) {
           }
           if (pauseUpd.data && pauseUpd.data.length > 0) {
             console.log('[SCHED] No credits for ' + userId.slice(0, 8) + ' — schedule PAUSED (config kept)');
-            await notify(sched.notify_number, sched.notify_email, sched.notify_method, pauseNoticeFor(profile).message, pauseNoticeFor(profile).kind);
+            var pauseNotice = await pauseNoticeForUser(userId, profile);
+            await notify(sched.notify_number, sched.notify_email, sched.notify_method, pauseNotice.message, pauseNotice.kind);
           }
           return;
         }
@@ -6961,6 +7002,557 @@ async function loadAllSchedules() {
     console.log('[SCHED] Loaded ' + result.data.length + ' schedules (cohort-spaced ' + staggerSpacingSeconds() + 's apart; largest Montgomery cohort ' + stagger.maxCohortSize(result.data) + ')');
   }
 }
+
+// === APP STORE IN-APP PURCHASE (build 23, 2026-10-15) ===
+//
+// App Review requires In-App Purchase beside the Stripe link. Two ways in,
+// one grant path:
+//   POST /api/v1/iap/transactions  the app posts a StoreKit 2 transaction
+//                                  right after purchase (§4.21).
+//   POST /webhook/apple            App Store Server Notifications V2:
+//                                  renewals, refunds, expiry (§4.22).
+// Both verify Apple's signature (lib/appstore.js, Apple's own library and
+// root certificates in certs/apple/) and grant through recordCreditAdd keyed
+// on the App Store transactionId — migration 070's unique index — so the
+// app's POST and Apple's notification for the same purchase grant once.
+//
+// Dave's rulings are in lib/appstore.js. In short: refunds take credits back
+// to no lower than zero and flag the account; REFUND_REVERSED gives them
+// back; Sandbox grants only to the demo and internal accounts; commission is
+// 20% of net after Apple's cut; two subscriptions are reported, not
+// cancelled. Account deletion is NOT changed here (on hold for the Privacy
+// Policy): apple_subscriptions keeps its rows with the user link nulled, so
+// later notifications are recognised and alerted, never granted.
+
+function appStoreProducts() {
+  return appstoreRules.productCatalogue(SUBSCRIPTION_CREDITS_PER_PAYMENT);
+}
+
+var _appStore = null;
+function appStore() {
+  if (_appStore) return _appStore;
+  var dir = path.join(__dirname, 'certs', 'apple'), roots = [];
+  try {
+    roots = require('fs').readdirSync(dir).filter(function(f) { return /\.cer$/i.test(f); })
+      .map(function(f) { return require('fs').readFileSync(path.join(dir, f)); });
+  } catch (e) {
+    console.error('[IAP] Apple root certificates unreadable (' + dir + '):', e.message);
+  }
+  _appStore = appstoreRules.createAppStore({
+    bundleId: process.env.APPSTORE_BUNDLE_ID || 'com.probationcall.app',
+    appAppleId: process.env.APPSTORE_APP_APPLE_ID || null,
+    issuerId: process.env.APPSTORE_ISSUER_ID || null,
+    keyId: process.env.APPSTORE_KEY_ID || null,
+    privateKey: appstoreRules.normalisePem(process.env.APPSTORE_PRIVATE_KEY),
+    rootCertificates: roots
+  });
+  return _appStore;
+}
+
+// Who may receive credits for a Sandbox purchase: the App Review demo account
+// and our own internal accounts. Anyone else's Sandbox purchase (a TestFlight
+// tester's, which costs them nothing) is recorded in apple_events and grants
+// nothing.
+function sandboxGrantAllowed(profile) {
+  if (!profile) return false;
+  var email = String(profile.email || '').toLowerCase();
+  return profile.is_demo === true || (!!email && isDev(email)) || internalAccountEmails().indexOf(email) >= 0;
+}
+
+// One subscription answer for this account, Stripe and App Store merged
+// (lib/subscription-state.js). `profile` needs the Stripe subscription
+// columns; email and is_demo decide whether Sandbox rows count. An unreadable
+// apple_subscriptions (before migration 072, or a read error) gives the
+// Stripe-only answer, which is what every caller had before.
+async function subscriptionStateFor(userId, profile) {
+  var rows = [];
+  var r = await supabase.from('apple_subscriptions')
+    .select('original_transaction_id, status, auto_renew, expires_at, environment').eq('user_id', userId);
+  if (r.error) console.error('[SUBSCRIPTION] apple_subscriptions read failed for ' + String(userId).slice(0, 8) + ':', briefErr(r.error));
+  else rows = r.data || [];
+  return subscriptionState.effectiveSubscription(profile || null, rows, { includeSandbox: sandboxGrantAllowed(profile) });
+}
+
+// An alert to Dave: ALERT_EMAIL, or every admin when it is unset (and they
+// are told why) — the same rule as the Fort Bend recording check. Never throws.
+async function sendOwnerAlert(text, kind) {
+  try {
+    var to = process.env.ALERT_EMAIL;
+    if (to) { await sendEmail(to, text, kind); return; }
+    var admins = await supabase.from('profiles').select('email').eq('is_admin', true);
+    var list = (admins.data || []).filter(function(a) { return a.email; });
+    for (var i = 0; i < list.length; i++) {
+      await sendEmail(list[i].email, text + '\n\n(ALERT_EMAIL is not set in Railway, so this went to every admin.)', kind)
+        .catch(function(e) { console.error('[ALERT] ' + kind + ' email failed:', e.message); });
+    }
+  } catch (e) {
+    console.error('[ALERT] ' + kind + ' failed:', e.message);
+  }
+}
+
+async function logAppleEvent(fields) {
+  var r = await supabase.from('apple_events').insert(fields).select('id').maybeSingle();
+  if (r.error) { console.error('[IAP] apple_events insert failed:', briefErr(r.error)); return null; }
+  return r.data ? r.data.id : null;
+}
+async function finishAppleEvent(id, patch) {
+  if (!id) return;
+  var r = await supabase.from('apple_events')
+    .update(Object.assign({ processed_at: new Date().toISOString() }, patch || {})).eq('id', id);
+  if (r.error) console.error('[IAP] apple_events update failed for ' + id + ':', briefErr(r.error));
+}
+
+var APPLE_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function appAccountTokenOf(tx) {
+  var t = tx && tx.appAccountToken ? String(tx.appAccountToken).toLowerCase() : null;
+  return t && APPLE_UUID_RE.test(t) ? t : null;
+}
+
+// Whose purchase this is. The app sets appAccountToken to the account's id
+// at purchase (Swift's UUID strings are upper-case; ours are lower). Without
+// one, the subscription row, then an earlier purchase of the same
+// subscription. Null when nobody — including when the token names an account
+// that has since been deleted: that payment is alerted, never re-homed.
+async function appleTransactionOwner(tx) {
+  var token = appAccountTokenOf(tx);
+  if (token) {
+    var p = await supabase.from('profiles').select('id').eq('id', token).maybeSingle();
+    return p.data ? p.data.id : null;
+  }
+  var otid = tx && tx.originalTransactionId ? String(tx.originalTransactionId) : null;
+  if (!otid) return null;
+  var s = await supabase.from('apple_subscriptions').select('user_id').eq('original_transaction_id', otid).maybeSingle();
+  if (s.data) return s.data.user_id || null;
+  var pu = await supabase.from('purchases').select('user_id')
+    .eq('apple_original_transaction_id', otid).not('user_id', 'is', null).limit(1);
+  return pu.data && pu.data[0] ? pu.data[0].user_id : null;
+}
+
+// The subscription row for this transaction: created on first sight, then
+// patched. Apple can deliver notifications out of order, so a patch from a
+// transaction that ends BEFORE the one already stored is dropped rather than
+// rolling the subscription back. A row is never moved to another account.
+async function upsertAppleSubscription(tx, patch, userId) {
+  var otid = tx && tx.originalTransactionId ? String(tx.originalTransactionId) : null;
+  if (!otid) return;
+  patch = patch || {};
+  var now = new Date().toISOString();
+  var cur = await supabase.from('apple_subscriptions').select('*').eq('original_transaction_id', otid).maybeSingle();
+  if (cur.error) throw new Error('apple_subscriptions read: ' + briefErr(cur.error));
+  if (!cur.data) {
+    var ins = await supabase.from('apple_subscriptions').insert(Object.assign({
+      original_transaction_id: otid, user_id: userId || null, product_id: tx.productId,
+      environment: tx.environment, status: patch.status || 'active', created_at: now, updated_at: now
+    }, patch));
+    if (!ins.error) return;
+    if (!/duplicate key|unique/i.test(ins.error.message || '')) throw new Error('apple_subscriptions insert: ' + briefErr(ins.error));
+    cur = await supabase.from('apple_subscriptions').select('*').eq('original_transaction_id', otid).maybeSingle();
+    if (cur.error || !cur.data) throw new Error('apple_subscriptions re-read failed');
+  }
+  if (patch.expires_at && cur.data.expires_at && patch.expires_at < cur.data.expires_at) {
+    console.log('[IAP] subscription ' + otid + ': older transaction arrived after a newer one — state kept');
+    return;
+  }
+  var upd = Object.assign({ updated_at: now }, patch);
+  if (!cur.data.user_id && userId) upd.user_id = userId;
+  else if (cur.data.user_id && userId && cur.data.user_id !== userId) {
+    await sendOwnerAlert('⚠️ App Store subscription ' + otid + ' belongs to account ' + String(cur.data.user_id).slice(0, 8) +
+      ' but a transaction for it names account ' + String(userId).slice(0, 8) + '. Nothing was moved.', 'iap_attention_admin');
+  }
+  var u = await supabase.from('apple_subscriptions').update(upd).eq('original_transaction_id', otid);
+  if (u.error) throw new Error('apple_subscriptions update: ' + briefErr(u.error));
+}
+
+// Commission on an App Store purchase: 20% of NET after Apple's cut (Dave,
+// 2026-10-15; Stripe stays on gross). Production, USD only — usdCents is
+// null otherwise and the commission is zero. Same resolver, self-referral
+// rule and 12-month window as the Stripe paths. Never throws.
+async function accrueAppleCommission(profile, tx, purchaseId, product) {
+  try {
+    if (!profile || !profile.referred_by) return;
+    var ref = await resolveAffiliateByCode(profile.referred_by);
+    if (!ref) {
+      console.error('[AFFILIATE] App Store purchase: could not safely resolve referred_by="' + profile.referred_by + '" for ' + profile.id.slice(0, 8));
+      return;
+    }
+    if (ref.id === profile.id) return;
+    var rate = product.kind === 'subscription' ? AFFILIATE_COMMISSION_PERCENT_RECURRING : AFFILIATE_COMMISSION_PERCENT_ONETIME;
+    var cents = appstoreRules.netCommissionCents(tx, rate);
+    if (cents <= 0) return;
+    await accrueCommission({
+      affiliateId: ref.id, referredId: profile.id, purchaseId: purchaseId,
+      amountCents: cents, purchaseAmountCents: appstoreRules.usdCents(tx),
+      kind: 'apple_iap:' + product.kind
+    });
+  } catch (e) {
+    console.error('[AFFILIATE] App Store commission failed for ' + String(profile && profile.id).slice(0, 8) + ':', e.message);
+  }
+}
+
+// Two subscriptions at once — Stripe and App Store both active — is two
+// charges a month. Dave's ruling: email the person, alert him, cancel
+// neither. Once per App Store subscription (duplicate_notified_at is the
+// claim). Called when either side starts. Never throws.
+async function checkDuplicateSubscriptions(userId) {
+  try {
+    var pr = await supabase.from('profiles')
+      .select('id, email, is_demo, subscription_status, stripe_subscription_id, subscription_cancel_at_period_end, subscription_current_period_end')
+      .eq('id', userId).maybeSingle();
+    var prof = pr.data;
+    if (!prof || prof.subscription_status !== 'active') return false;
+    var rows = await supabase.from('apple_subscriptions')
+      .select('original_transaction_id, status, environment').eq('user_id', userId).eq('status', 'active');
+    var apple = (rows.data || []).filter(function(r) { return r.environment === 'Production' || sandboxGrantAllowed(prof); })[0];
+    if (!apple) return false;
+    var claim = await supabase.from('apple_subscriptions').update({ duplicate_notified_at: new Date().toISOString() })
+      .eq('original_transaction_id', apple.original_transaction_id).is('duplicate_notified_at', null).select('original_transaction_id');
+    if (claim.error || !claim.data || !claim.data.length) return true;   // already told (or the claim failed: never twice)
+    if (prof.email) {
+      await sendEmail(prof.email,
+        'You are paying for two ProbationCall subscriptions.\n\n' +
+        'One is through the App Store and one is through our website (Stripe). Each one charges you every month and adds ' +
+        SUBSCRIPTION_CREDITS_PER_PAYMENT + ' credits, so you are paying twice.\n\n' +
+        'We have not cancelled either one. To stop one:\n' +
+        '• App Store: on your iPhone, open Settings, tap your name, then Subscriptions.\n' +
+        '• Website (Stripe): in the app, open Account and tap Manage subscription.\n\n' +
+        'Credits you already have never expire.\n\n- ProbationCall.com', null, 'duplicate_subscription');
+    }
+    await sendOwnerAlert('⚠️ Duplicate subscription: account ' + prof.id.slice(0, 8) + ' has an active Stripe subscription (' +
+      String(prof.stripe_subscription_id || 'id unknown') + ') AND an active App Store subscription (' + apple.original_transaction_id +
+      '). They have been emailed. Neither was cancelled.', 'duplicate_sub_admin');
+    return true;
+  } catch (e) {
+    console.error('[IAP] duplicate-subscription check failed for ' + String(userId).slice(0, 8) + ':', e.message);
+    return false;
+  }
+}
+
+// THE grant. Both doors (the app's POST and Apple's notification) come here
+// with a verified transaction and its owner. Returns
+//   { outcome, creditsGranted, balance }
+// outcome: 'granted' | 'already_granted' | 'sandbox_not_granted' |
+//          'revoked' | 'unknown_product' | 'no_user'
+// Throws only when the grant itself failed — the caller answers 5xx so the
+// app (or Apple) tries again; the ledger key makes the retry safe.
+async function grantAppleTransaction(tx, userId, opts) {
+  opts = opts || {};
+  var product = appstoreRules.productFor(appStoreProducts(), tx.productId);
+  if (!product) return { outcome: 'unknown_product', creditsGranted: 0, balance: null };
+  if (tx.revocationDate) return { outcome: 'revoked', creditsGranted: 0, balance: null };
+  var pr = await supabase.from('profiles').select('id, email, is_demo, referred_by, credits').eq('id', userId).maybeSingle();
+  if (pr.error) throw new Error('profile read: ' + briefErr(pr.error));
+  var profile = pr.data;
+  if (!profile) return { outcome: 'no_user', creditsGranted: 0, balance: null };
+  var production = tx.environment === 'Production';
+  if (!production && !sandboxGrantAllowed(profile)) {
+    return { outcome: 'sandbox_not_granted', creditsGranted: 0, balance: profile.credits || 0 };
+  }
+  var isSub = product.kind === 'subscription';
+  var renewal = isSub && String(tx.transactionId) !== String(tx.originalTransactionId);
+  var balance = await recordCreditAdd({
+    userId: profile.id,
+    amount: product.credits,
+    source: 'apple_iap',
+    note: 'App Store' + (production ? '' : ' (Sandbox)') + ': ' +
+      (isSub ? (renewal ? 'subscription renewal' : 'first subscription payment') : product.credits + '-credit pack'),
+    appleTransactionId: String(tx.transactionId)
+  });
+  if (balance === null) throw new Error('credit grant failed');
+
+  var ins = await supabase.from('purchases').insert({
+    user_id: profile.id,
+    source: 'apple_iap',
+    package_name: isSub ? 'apple_subscription' : 'apple_credits_' + product.credits,
+    credits_purchased: product.credits,
+    amount_cents: appstoreRules.usdCents(tx),
+    apple_transaction_id: String(tx.transactionId),
+    apple_original_transaction_id: tx.originalTransactionId ? String(tx.originalTransactionId) : null,
+    apple_product_id: tx.productId,
+    apple_environment: tx.environment,
+    apple_price_milliunits: typeof tx.price === 'number' ? tx.price : null,
+    currency: tx.currency || null,
+    storefront: tx.storefront || null
+  }).select('id').maybeSingle();
+  var isNew = !ins.error && !!ins.data;
+  if (ins.error && !/duplicate key|unique/i.test(ins.error.message || '')) {
+    // Credits are granted; the record is what failed. Loud, and the ledger
+    // key means a retry cannot grant twice.
+    console.error('[IAP] purchases insert failed for transaction ' + tx.transactionId + ' (credits granted):', briefErr(ins.error));
+  }
+  if (isNew && production) await accrueAppleCommission(profile, tx, ins.data.id, product);
+  if (isSub) {
+    await upsertAppleSubscription(tx, opts.subscriptionPatch || appstoreRules.subscriptionPatch(null, null, tx, null), profile.id);
+    await checkDuplicateSubscriptions(profile.id);
+  }
+  console.log('[IAP] ' + (isNew ? 'granted' : 'already granted') + ' ' + product.credits + ' credits to ' + profile.id.slice(0, 8) +
+    ' for ' + tx.environment + ' transaction ' + tx.transactionId + ' (' + product.productId + ')');
+  return { outcome: isNew ? 'granted' : 'already_granted', creditsGranted: isNew ? product.credits : 0, balance: balance };
+}
+
+// A refund (or a Family Sharing revocation). Takes back the purchase's
+// credits — the refunded share for a prorated refund — never below zero,
+// flags the account, reverses the commission on a full refund (the Stripe
+// rule), and alerts Dave. The purchases row is the claim: only the delivery
+// that flips refunded_at does anything, and a failure flips it back so
+// Apple's retry finds it undone.
+async function applyAppleRefund(tx, notificationUuid, data, renewal, notificationType) {
+  var pr = await supabase.from('purchases')
+    .select('id, user_id, credits_purchased, amount_cents, apple_product_id, apple_environment, refunded_at')
+    .eq('apple_transaction_id', String(tx.transactionId)).maybeSingle();
+  if (pr.error) throw new Error('purchase read: ' + briefErr(pr.error));
+  var p = pr.data;
+  if (!p) {
+    await sendOwnerAlert('⚠️ App Store ' + notificationType + ' for transaction ' + tx.transactionId + ' (' + tx.productId +
+      '), which we never recorded as a purchase. Nothing was taken back.', 'iap_attention_admin');
+    return { outcome: 'refund_no_purchase', userId: null };
+  }
+  var now = new Date().toISOString();
+  var claim = await supabase.from('purchases').update({
+    refunded_at: now, refund_performed_by: 'apple', refund_amount_cents: p.amount_cents,
+    apple_refund_notification_id: notificationUuid
+  }).eq('id', p.id).is('refunded_at', null).select('id');
+  if (claim.error) throw new Error('refund claim: ' + briefErr(claim.error));
+  if (!claim.data || !claim.data.length) return { outcome: 'refund_already_applied', userId: p.user_id };
+
+  var toTake = appstoreRules.refundCredits(p.credits_purchased, tx.revocationType, tx.revocationPercentage);
+  var taken = 0;
+  if (toTake > 0 && p.user_id) {
+    var rpc = await supabase.rpc('deduct_credits_capped', {
+      p_user_id: p.user_id, p_amount: toTake, p_source: 'apple_refund',
+      p_note: 'App Store refund of transaction ' + tx.transactionId
+    });
+    if (rpc.error) {
+      await supabase.from('purchases').update({ refunded_at: null, refund_performed_by: null, refund_amount_cents: null, apple_refund_notification_id: null }).eq('id', p.id);
+      throw new Error('credit clawback failed: ' + briefErr(rpc.error));
+    }
+    taken = rpc.data || 0;
+  }
+  await supabase.from('purchases').update({ refund_credits_clawed: taken }).eq('id', p.id);
+
+  var full = appstoreRules.isFullRefund(tx.revocationType);
+  if (p.user_id) {
+    await supabase.from('profiles').update({
+      billing_flagged_at: now,
+      billing_flag_reason: 'App Store refund of ' + (p.apple_product_id || 'a purchase') + ' (transaction ' + tx.transactionId + '): ' +
+        taken + ' of ' + toTake + ' credits taken back' + (full ? '' : ' (partial refund)')
+    }).eq('id', p.user_id);
+  }
+  if (full && p.apple_environment === 'Production') await clawbackAffiliateCommissionForPurchase(p, 'apple_refund', notificationUuid);
+  var product = appstoreRules.productFor(appStoreProducts(), tx.productId);
+  if (product && product.kind === 'subscription') {
+    await upsertAppleSubscription(tx, appstoreRules.subscriptionPatch(notificationType, data && data.status, tx, renewal), p.user_id);
+  }
+  await sendOwnerAlert('💳 App Store refund — account ' + String(p.user_id || 'deleted').slice(0, 8) + ' flagged.\n\n' +
+    'Transaction ' + tx.transactionId + ' (' + (p.apple_product_id || tx.productId) + '), ' + (full ? 'full' : 'partial') + ' refund. ' +
+    taken + ' of ' + toTake + ' credits taken back (never below zero).' +
+    (full ? ' Affiliate commission on it, if any, reversed.' : ' Partial refund: affiliate commission left as is.') +
+    '\n\nClear the flag by hand once you have looked.', 'iap_refund_admin');
+  return { outcome: 'refunded', userId: p.user_id, detail: taken + '/' + toTake + ' credits' };
+}
+
+// Apple reversed a refund: the credits taken back are given back. The
+// commission stays reversed (Dave's rulings say nothing about it; restoring
+// it is a manual call) and the flag stays for Dave to clear.
+async function applyAppleRefundReversed(tx, notificationUuid) {
+  var pr = await supabase.from('purchases')
+    .select('id, user_id, refunded_at, refund_credits_clawed, apple_product_id')
+    .eq('apple_transaction_id', String(tx.transactionId)).maybeSingle();
+  if (pr.error) throw new Error('purchase read: ' + briefErr(pr.error));
+  var p = pr.data;
+  if (!p) {
+    await sendOwnerAlert('⚠️ App Store REFUND_REVERSED for transaction ' + tx.transactionId + ', which we never recorded. Nothing was given back.', 'iap_attention_admin');
+    return { outcome: 'reversal_no_purchase', userId: null };
+  }
+  var claim = await supabase.from('purchases').update({ refunded_at: null, refund_reversed_at: new Date().toISOString() })
+    .eq('id', p.id).not('refunded_at', 'is', null).select('id');
+  if (claim.error) throw new Error('reversal claim: ' + briefErr(claim.error));
+  if (!claim.data || !claim.data.length) return { outcome: 'reversal_already_applied', userId: p.user_id };
+  var back = p.refund_credits_clawed || 0;
+  if (back > 0 && p.user_id) {
+    var bal = await recordCreditAdd({ userId: p.user_id, amount: back, source: 'apple_refund_reversed',
+      note: 'App Store refund reversed for transaction ' + tx.transactionId });
+    if (bal === null) {
+      await supabase.from('purchases').update({ refunded_at: p.refunded_at, refund_reversed_at: null }).eq('id', p.id);
+      throw new Error('credit return failed');
+    }
+  }
+  await sendOwnerAlert('💳 App Store refund REVERSED — account ' + String(p.user_id || 'deleted').slice(0, 8) + ': ' + back +
+    ' credits given back for transaction ' + tx.transactionId + '. Affiliate commission was not restored, and the account flag is still set.',
+    'iap_refund_reversed_admin');
+  return { outcome: 'refund_reversed', userId: p.user_id, detail: back + ' credits' };
+}
+
+// A Sandbox subscription's state is kept only for the accounts whose Sandbox
+// purchases count (the demo and internal accounts) — not for every tester.
+async function sandboxOwnerAllowed(userId) {
+  if (!userId) return false;
+  var pr = await supabase.from('profiles').select('email, is_demo').eq('id', userId).maybeSingle();
+  return sandboxGrantAllowed(pr.data);
+}
+
+async function handleAppleNotification(type, data, tx, renewal, notificationUuid) {
+  if (type === 'TEST') return { outcome: 'test' };
+  if (!tx) return { outcome: 'ignored' };
+  var product = appstoreRules.productFor(appStoreProducts(), tx.productId);
+  var isSub = !!(product && product.kind === 'subscription');
+  var subPatch = isSub ? appstoreRules.subscriptionPatch(type, data && data.status, tx, renewal) : null;
+  switch (type) {
+    case 'SUBSCRIBED':
+    case 'DID_RENEW':
+    case 'ONE_TIME_CHARGE': {
+      var owner = await appleTransactionOwner(tx);
+      if (!owner) {
+        if (isSub) await upsertAppleSubscription(tx, subPatch, null);
+        await sendOwnerAlert('⚠️ App Store ' + type + ' for transaction ' + tx.transactionId + ' (' + tx.productId + ', ' + tx.environment +
+          ') matches no ProbationCall account — a deleted account, or a purchase made without the account id. Nothing was granted.', 'iap_attention_admin');
+        return { outcome: 'no_user', userId: null };
+      }
+      var g = await grantAppleTransaction(tx, owner, { subscriptionPatch: subPatch });
+      return { outcome: g.outcome, userId: owner };
+    }
+    case 'REFUND':
+    case 'REVOKE':
+      return applyAppleRefund(tx, notificationUuid, data, renewal, type);
+    case 'REFUND_REVERSED':
+      return applyAppleRefundReversed(tx, notificationUuid);
+    case 'DID_FAIL_TO_RENEW':
+    case 'GRACE_PERIOD_EXPIRED':
+    case 'EXPIRED':
+    case 'DID_CHANGE_RENEWAL_STATUS':
+    case 'DID_CHANGE_RENEWAL_PREF':
+    case 'RENEWAL_EXTENDED':
+    case 'OFFER_REDEEMED':
+    case 'PRICE_INCREASE': {
+      if (!isSub) return { outcome: 'ignored' };
+      var who = await appleTransactionOwner(tx);
+      if (tx.environment !== 'Production' && !(await sandboxOwnerAllowed(who))) return { outcome: 'sandbox_ignored', userId: who };
+      await upsertAppleSubscription(tx, subPatch, who);
+      return { outcome: 'subscription_updated', userId: who };
+    }
+    default:
+      // REFUND_DECLINED, CONSUMPTION_REQUEST, METADATA_UPDATE, …: logged in
+      // apple_events, nothing to do.
+      return { outcome: 'logged' };
+  }
+}
+
+function appStoreFailure(res, e, field) {
+  if (e && e.appStoreCode === 'invalid') {
+    return v1Error(res, 400, 'validation_failed', 'That purchase could not be verified with the App Store.', false, field);
+  }
+  console.error('[IAP] App Store unavailable:', e && e.message);
+  return v1Error(res, 503, 'iap_unavailable', 'We could not reach the App Store to confirm this purchase. It will be retried.', true);
+}
+
+// §4.21 POST /iap/transactions — the app posts each StoreKit 2 transaction
+// (Transaction.jwsRepresentation), right after purchase and again for any it
+// has not finished. 200 means "done with it, finish() it": granted, already
+// granted, a Sandbox purchase we record without granting, or a revoked one.
+// Any error means "keep it and post it again later".
+app.post('/api/v1/iap/transactions', authV1, rateLimit('iap_post', 30, 10 * 60 * 1000), async function(req, res) {
+  var b = req.body || {};
+  if (typeof b.signedTransaction !== 'string' || !b.signedTransaction) {
+    return v1Error(res, 400, 'validation_failed', 'signedTransaction is required.', false, 'signedTransaction');
+  }
+  var tx;
+  try {
+    tx = await appStore().verifyTransaction(b.signedTransaction);
+  } catch (e) {
+    return appStoreFailure(res, e, 'signedTransaction');
+  }
+  // Apple's own, fresher copy (it shows a revocation since). If Apple cannot
+  // be asked, the posted copy is already signature-verified and stands.
+  try {
+    var fresh = await appStore().fetchTransaction(tx.transactionId, tx.environment);
+    if (fresh) tx = fresh;
+  } catch (e) {
+    console.error('[IAP] App Store API lookup failed for ' + tx.transactionId + ' (using the verified posted copy):', e.message);
+  }
+  var eventId = await logAppleEvent({
+    source: 'app', environment: tx.environment || null,
+    transaction_id: tx.transactionId ? String(tx.transactionId) : null,
+    original_transaction_id: tx.originalTransactionId ? String(tx.originalTransactionId) : null,
+    product_id: tx.productId || null, user_id: req.user.id
+  });
+  try {
+    var token = appAccountTokenOf(tx);
+    var ownerMismatch = token ? token !== req.user.id : false;
+    if (!token) {
+      var owner = await appleTransactionOwner(tx);
+      ownerMismatch = !!(owner && owner !== req.user.id);
+    }
+    if (ownerMismatch) {
+      await finishAppleEvent(eventId, { outcome: 'wrong_account' });
+      return v1Error(res, 409, 'iap_wrong_account', 'This purchase belongs to a different ProbationCall account.', false);
+    }
+    var g = await grantAppleTransaction(tx, req.user.id);
+    await finishAppleEvent(eventId, { outcome: g.outcome });
+    if (g.outcome === 'unknown_product') {
+      await sendOwnerAlert('⚠️ The app posted an App Store purchase of "' + tx.productId + '", which the server does not sell. Nothing was granted; the app will post it again.', 'iap_attention_admin');
+      return v1Error(res, 409, 'iap_unknown_product', 'We could not match this purchase to a product. Contact support — your purchase is safe.', false);
+    }
+    var bal = g.balance;
+    if (bal === null) {
+      var pr = await supabase.from('profiles').select('credits').eq('id', req.user.id).maybeSingle();
+      bal = pr.data ? pr.data.credits || 0 : null;
+    }
+    return res.json({ outcome: g.outcome, creditsGranted: g.creditsGranted, balance: bal });
+  } catch (e) {
+    console.error('[IAP] POST transaction ' + tx.transactionId + ' failed:', e.message);
+    await finishAppleEvent(eventId, { outcome: 'error', detail: String(e.message).slice(0, 300) });
+    return v1Error(res, 500, 'internal', 'Something went wrong on our side. Your purchase is safe and will be retried.', true);
+  }
+});
+
+// §4.22 POST /webhook/apple — App Store Server Notifications V2. Set both the
+// Production and Sandbox URLs in App Store Connect to this address. The body
+// is { signedPayload }, signed by Apple; there is no shared secret. A
+// notification is recorded once (apple_events.notification_uuid): a
+// redelivery of one that finished is acknowledged; one that failed part-way
+// is processed again. A non-200 makes Apple retry for about three days.
+app.post('/webhook/apple', async function(req, res) {
+  var n, tx = null, renewal = null;
+  try {
+    n = await appStore().verifyNotification(req.body && req.body.signedPayload);
+    var d = n.data || {};
+    if (d.signedTransactionInfo) tx = await appStore().verifyTransaction(d.signedTransactionInfo, d.environment);
+    if (d.signedRenewalInfo) renewal = await appStore().verifyRenewal(d.signedRenewalInfo, d.environment);
+  } catch (e) {
+    console.error('[IAP-WEBHOOK] rejected:', e.message);
+    if (e && e.appStoreCode === 'invalid') return res.status(400).json({ error: 'invalid' });
+    return res.status(503).json({ error: 'unavailable' });
+  }
+  var data = n.data || {};
+  var uuid = n.notificationUUID || null;
+  var ev = await supabase.from('apple_events').insert({
+    source: 'notification', notification_uuid: uuid, notification_type: n.notificationType || null, subtype: n.subtype || null,
+    environment: data.environment || null,
+    transaction_id: tx && tx.transactionId ? String(tx.transactionId) : null,
+    original_transaction_id: tx && tx.originalTransactionId ? String(tx.originalTransactionId) : null,
+    product_id: tx ? tx.productId || null : null
+  }).select('id').maybeSingle();
+  var eventId = ev.data ? ev.data.id : null;
+  if (ev.error) {
+    if (!/duplicate key|unique/i.test(ev.error.message || '')) {
+      console.error('[IAP-WEBHOOK] apple_events insert failed:', briefErr(ev.error));
+      return res.status(500).json({ error: 'log_failed' });
+    }
+    var prior = await supabase.from('apple_events').select('id, processed_at').eq('notification_uuid', uuid).maybeSingle();
+    if (prior.data && prior.data.processed_at) return res.json({ received: true, duplicate: true });
+    eventId = prior.data ? prior.data.id : null;
+  }
+  try {
+    var r = await handleAppleNotification(n.notificationType, data, tx, renewal, uuid);
+    await finishAppleEvent(eventId, { outcome: r.outcome, user_id: r.userId || null, detail: r.detail || null });
+    console.log('[IAP-WEBHOOK] ' + n.notificationType + (n.subtype ? '/' + n.subtype : '') + ' ' + (data.environment || '') +
+      (tx ? ' txn ' + tx.transactionId : '') + ' -> ' + r.outcome);
+    return res.json({ received: true });
+  } catch (e) {
+    console.error('[IAP-WEBHOOK] ' + n.notificationType + ' failed (Apple will retry):', e.message);
+    if (eventId) await supabase.from('apple_events').update({ outcome: 'error', detail: String(e.message).slice(0, 300) }).eq('id', eventId);
+    return res.status(500).json({ error: 'processing_failed' });
+  }
+});
 
 // === SUBSCRIPTION SUPPORT ===
 // All subscription handlers below intentionally DO NOT touch affiliate /
@@ -7196,6 +7788,11 @@ async function handleSubscriptionInvoicePaid(invoice, res) {
       // Credits already granted; log loudly. A retry would hit the idempotency check above.
       console.error('[STRIPE WEBHOOK] Purchases insert failed for invoice', invoice.id, '(credits granted):', purchaseInsert.error);
     }
+
+    // Two subscriptions (2026-10-15): if this person also has an active App
+    // Store subscription, tell them and Dave, once. Cancels neither, and
+    // never disturbs the grant above.
+    if (billingReason === 'subscription_create') await checkDuplicateSubscriptions(profile.id);
 
     // AFFILIATE COMMISSION ON SUBSCRIPTION PAYMENTS (2026-09-06).
     //
@@ -7469,6 +8066,13 @@ async function clawbackAffiliateCommissionForCharge(opts) {
     return { matchedPurchase: false, reversed: 0, failed: 0 };
   }
 
+  return clawbackAffiliateCommissionForPurchase(purchase, reason, sourceEventId);
+}
+
+// The reversal itself, for a purchase already in hand: the Stripe path above
+// finds it by charge; the App Store refund path (applyAppleRefund) by
+// transaction. `purchase` needs its id.
+async function clawbackAffiliateCommissionForPurchase(purchase, reason, sourceEventId) {
   // Find every affiliate_earnings row tied to this purchase. Could be 0 or 1
   // in current data shape (one commission per purchase), but the loop is
   // robust to future "split commission" scenarios.
@@ -9379,6 +9983,12 @@ var EMAIL_SUBJECTS = {
   // Schedule state changes
   no_credits_pause:   { subject: 'Your daily checks are paused — out of credits', stamp: false, emoji: '⏸', color: '#f59e0b' },
   no_credits_pause_sub: { subject: 'Your daily checks are paused — your payment didn\'t go through', stamp: false, emoji: '⏸', color: '#ef4444' },
+  no_credits_pause_apple: { subject: 'Your daily checks are paused — your payment didn\'t go through', stamp: false, emoji: '⏸', color: '#ef4444' },
+  duplicate_subscription: { subject: 'You have two ProbationCall subscriptions', stamp: false, emoji: '💳', color: '#f59e0b' },
+  duplicate_sub_admin: { subject: 'ADMIN: duplicate subscription (Stripe + App Store)', stamp: true, emoji: '⚠️' },
+  iap_refund_admin: { subject: 'ADMIN: App Store refund — credits taken back, account flagged', stamp: true, emoji: '💳' },
+  iap_refund_reversed_admin: { subject: 'ADMIN: App Store refund reversed — credits given back', stamp: true, emoji: '💳' },
+  iap_attention_admin: { subject: 'ADMIN: App Store event needs a look', stamp: true, emoji: '🛠' },
   sub_payment_failed: { subject: 'Your payment didn\'t go through', stamp: false, emoji: '💳', color: '#ef4444' },
   resume:             { subject: 'Your daily checks have restarted', stamp: false, emoji: '▶️', color: '#22c55e' },
   earned_extension:   { subject: 'We added credits so your checks keep running', stamp: false, emoji: '🎁', color: '#22c55e' },
@@ -10965,6 +11575,9 @@ app.post('/api/admin/refund/:purchaseId', adminAuth, async function(req, res) {
     }
     var purchase = pr.data;
     if (!purchase) return res.status(404).json({ error: 'Purchase not found' });
+    if (purchase.source === 'apple_iap') {
+      return res.status(400).json({ error: 'App Store purchases can only be refunded by Apple (reportaproblem.apple.com). When Apple refunds it, the credits are taken back automatically.' });
+    }
 
     // Layer 1 — our own claim. Safe no-op with a clear message.
     if (purchase.refunded_at) {
@@ -12603,7 +13216,9 @@ async function deliverFtbendNotification(row) {
     return;
   }
 
-  var profileResult = await supabase.from('profiles').select('credits, email, is_disabled, user_color').eq('id', userId).single();
+  // subscription_status + is_demo: the pause notice words a failed subscription
+  // payment differently (pauseNoticeForUser); Fort Bend never loaded them.
+  var profileResult = await supabase.from('profiles').select('credits, email, is_disabled, is_demo, user_color, subscription_status').eq('id', userId).single();
   var profile = profileResult.data;
   if (!profile) return;
   if (profile.is_disabled) {
@@ -12625,7 +13240,8 @@ async function deliverFtbendNotification(row) {
     if (ftPause.error) {
       console.error('[FTBEND] Pause failed for ' + userId.slice(0, 8) + ':', ftPause.error.message);
     } else if (ftPause.data && ftPause.data.length > 0) {
-      await notify(s.notify_number, s.notify_email, s.notify_method, pauseNoticeFor(profile).message, pauseNoticeFor(profile).kind);
+      var ftPauseNotice = await pauseNoticeForUser(userId, profile);
+      await notify(s.notify_number, s.notify_email, s.notify_method, ftPauseNotice.message, ftPauseNotice.kind);
     }
     await supabase.from('call_history').insert({ user_id: userId, target_number: FTBEND_OFFICES[oid] ? FTBEND_OFFICES[oid].number : COUNTIES.ftbend.number, result: 'NO_CREDITS', county: 'ftbend', ftbend_office: oid });
     return;
@@ -13216,6 +13832,10 @@ app.post('/api/subscription/checkout', auth, rateLimit('checkout', 10, 5 * 60 * 
     }
     if (req.profile.subscription_status === 'active' && req.profile.stripe_customer_id) {
       return res.status(400).json({ error: 'You already have an active subscription. Use Manage Subscription to make changes.' });
+    }
+    var webSubNow = await subscriptionStateFor(req.user.id, req.profile);
+    if (webSubNow && webSubNow.source === 'apple' && (webSubNow.status === 'active' || webSubNow.status === 'past_due')) {
+      return res.status(400).json({ error: 'You already subscribe through the App Store. Manage it in your iPhone\'s Settings, under your name, then Subscriptions.' });
     }
     var params = {
       mode: 'subscription',
