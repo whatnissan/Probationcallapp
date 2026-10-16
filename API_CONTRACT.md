@@ -2161,9 +2161,7 @@ needs them before sign-in.
   "appStore": {
     "products": [
       { "productId": "com.probationcall.app.subscription.monthly", "kind": "subscription", "credits": 31 },
-      { "productId": "com.probationcall.app.credits.31",  "kind": "credits", "credits": 31 },
-      { "productId": "com.probationcall.app.credits.90",  "kind": "credits", "credits": 90 },
-      { "productId": "com.probationcall.app.credits.182", "kind": "credits", "credits": 182 }
+      { "productId": "com.probationcall.app.credits.30", "kind": "credits", "credits": 30 }
     ]
   }
 }
@@ -2178,6 +2176,15 @@ server from the product id (§4.21), never from anything the app sends.
 `creditsPerPeriod` as Stripe's) or `"credits"` (a one-time pack). Like every
 enum here, an unknown `kind` decodes to `unknown(String)`; a product the app
 cannot load from StoreKit is not shown.
+
+**The App Store sells two products (2026-10-16), and they match the website
+exactly:** the subscription (31 credits every payment, the same
+`creditsPerPeriod` as Stripe's) and the 30-credit pack (the App Store twin of
+the website's one-time month pass, 30 credits). Larger amounts — 90, 182, any
+number up to `maxCredits` — are website-only, through Stripe (`credits.tiers`
+above, §4.13). The server grants nothing for a product id that is not in this
+list (including the earlier draft id `…credits.31`), so the app must offer
+exactly what this array contains.
 
 **Never hardcode a price in the app again.** `subscription.priceCents` comes
 from Stripe (the live recurring Price), cached server-side for ten minutes, so
@@ -2993,7 +3000,9 @@ see a purchase and it is granted once. A purchase row is recorded with
   internal accounts, and never counts as revenue or affiliate commission.
 - **Affiliate commission** on an App Store purchase is 20% of what is left
   after Apple's commission (Stripe's stays 20% of the gross), US dollars
-  only, under the same 12-month window and hold.
+  only, under the same 12-month window and hold. Both App Store products pay
+  the subscription rate — the 30 pack, like the website's month pass it
+  mirrors.
 - **Two subscriptions** (Stripe and App Store both active) are reported, not
   cancelled: §3 `subscription.duplicate`, one email to the person, an alert
   to the owner. §4.13 refuses a new Stripe subscription while an App Store one
