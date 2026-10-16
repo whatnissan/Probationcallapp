@@ -11,20 +11,27 @@ const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
 // REFUND_REVERSED gives them back; Sandbox grants only to the demo and
 // internal accounts; commission is 20% of NET; two subscriptions are
 // reported, never cancelled; products are the subscription (31) and packs
-// of 31, 90 and 182, served from /pricing.
+// of 30, served from /pricing — matching the website's subscription (31)
+// and one-time month pass (30); 90 and 182 are website-only (2026-10-16).
 
-test('the catalogue: the subscription at the server\'s per-payment count, and packs of 31, 90, 182', () => {
+test('the catalogue: the subscription at the server\'s per-payment count, and one pack of 30', () => {
   const cat = a.productCatalogue(31);
   assert.deepStrictEqual(cat, [
     { productId: 'com.probationcall.app.subscription.monthly', kind: 'subscription', credits: 31 },
-    { productId: 'com.probationcall.app.credits.31', kind: 'credits', credits: 31 },
-    { productId: 'com.probationcall.app.credits.90', kind: 'credits', credits: 90 },
-    { productId: 'com.probationcall.app.credits.182', kind: 'credits', credits: 182 }
+    { productId: 'com.probationcall.app.credits.30', kind: 'credits', credits: 30 }
   ]);
-  assert.strictEqual(a.productFor(cat, 'com.probationcall.app.credits.90').credits, 90);
+  assert.strictEqual(a.productFor(cat, 'com.probationcall.app.credits.30').credits, 30);
+  assert.strictEqual(a.productFor(cat, 'com.probationcall.app.credits.31'), null, 'replaced by .30 (2026-10-16)');
+  assert.strictEqual(a.productFor(cat, 'com.probationcall.app.credits.90'), null, '90 is website-only (2026-10-16)');
+  assert.strictEqual(a.productFor(cat, 'com.probationcall.app.credits.182'), null, '182 is website-only (2026-10-16)');
   assert.strictEqual(a.productFor(cat, 'com.probationcall.app.credits.1000'), null, 'nothing the server does not sell');
   assert.match(server, /appstoreRules\.productCatalogue\(SUBSCRIPTION_CREDITS_PER_PAYMENT\)/, 'one number for both kinds of subscription');
   assert.match(server, /appStore: \{ products: appStoreProducts\(\) \}/, '/pricing serves it');
+  // The App Store matches the website exactly: the pack is the month pass's
+  // 30, the subscription is the Stripe subscription's per-payment count.
+  assert.match(server, /metadata: \{ user_id: req\.user\.id, package_id: 'month_pass', credits: '30' \}/);
+  assert.strictEqual(cat.find((p) => p.kind === 'credits').credits, 30);
+  assert.match(server, /const SUBSCRIPTION_CREDITS_PER_PAYMENT = 31;/);
 });
 
 const prodUSD = (price) => ({ environment: 'Production', currency: 'USD', price: price });
@@ -165,6 +172,9 @@ test('wiring: only App Store grants send the Apple key to the ledger', () => {
   assert.ok(!/appleTransactionId: String\(tx\.originalTransactionId\)/.test(grant));
   assert.match(grant, /if \(!production && !sandboxGrantAllowed\(profile\)\)/);
   assert.match(grant, /if \(isNew && production\) await accrueAppleCommission/, 'no commission on Sandbox or a repeat');
+  const acc = server.slice(server.indexOf('async function accrueAppleCommission('), server.indexOf('async function checkDuplicateSubscriptions('));
+  assert.match(acc, /var rate = AFFILIATE_COMMISSION_PERCENT_RECURRING;/, 'the 30 pack pays the month pass\'s (subscription) rate');
+  assert.ok(!/AFFILIATE_COMMISSION_PERCENT_ONETIME/.test(acc));
 });
 
 test('wiring: refunds never go below zero, and Apple purchases are refunded only by Apple', () => {

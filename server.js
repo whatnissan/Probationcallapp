@@ -7176,7 +7176,11 @@ async function accrueAppleCommission(profile, tx, purchaseId, product) {
       return;
     }
     if (ref.id === profile.id) return;
-    var rate = product.kind === 'subscription' ? AFFILIATE_COMMISSION_PERCENT_RECURRING : AFFILIATE_COMMISSION_PERCENT_ONETIME;
+    // The subscription rate for BOTH App Store products (Dave, 2026-10-16):
+    // the 30 pack is the App Store twin of the website's month pass, which
+    // pays the recurring rate (see the month_pass note in the Stripe
+    // one-time path). Bundles of any other size are website-only.
+    var rate = AFFILIATE_COMMISSION_PERCENT_RECURRING;
     var cents = appstoreRules.netCommissionCents(tx, rate);
     if (cents <= 0) return;
     await accrueCommission({
