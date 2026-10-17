@@ -498,8 +498,10 @@ object:
   Render it as "You're paying for two subscriptions" with both ways to
   cancel; the server has already emailed the person once and alerted the
   owner, and cancels neither (Dave's ruling).
-- A Sandbox App Store subscription counts only for the demo and internal
-  accounts (§4.21).
+- A Sandbox App Store subscription counts for any account (2026-10-17 —
+  App Review subscribes in Sandbox, possibly on a fresh account), but it is
+  never a `duplicate` (it charges nothing), and a Production subscription
+  speaks before it (§4.21).
 Once a subscription has existed the object is always present, including
 after cancellation, because "was a subscriber, now cancelled, still has
 credits" is a state the app has to render.
@@ -2975,7 +2977,7 @@ server has it can lose the purchase.
 |---|---|
 | `granted` | Credits added now |
 | `already_granted` | This transaction was granted before (an earlier post, or Apple's notification got there first); `creditsGranted` is `0` |
-| `sandbox_not_granted` | A Sandbox purchase on an account that is not the demo or an internal one: recorded, nothing granted. TestFlight purchases are Sandbox and cost the tester nothing |
+| `sandbox_not_granted` | A Sandbox purchase past the account's lifetime Sandbox cap (150 credits; see below): verified and recorded, nothing granted. Show "Test purchase — no credits added" |
 | `revoked` | Apple has already refunded or revoked it: nothing granted |
 
 `balance` is the account's credits after the call. Read `/me` for the rest.
@@ -2996,8 +2998,20 @@ one per purchase and one per renewal — so this endpoint and §4.22 can both
 see a purchase and it is granted once. A purchase row is recorded with
 `source: "apple_iap"`.
 
-- **Sandbox** grants credits only to the App Review demo account and our
-  internal accounts, and never counts as revenue or affiliate commission.
+- **Sandbox** purchases grant credits on **any** account (2026-10-17): App
+  Review buys in Sandbox and may use a fresh account, and "no credits added"
+  would read as a broken purchase. They are recorded as Sandbox and never
+  count as revenue (no dollar amount), affiliate commission, a purchase for
+  the referral rule (§4.14), or a duplicate subscription.
+- **Lifetime Sandbox cap: 150 credits per account**, accelerated Sandbox
+  renewals included. TestFlight purchases are Sandbox and cost the tester
+  nothing, so without a cap a tester could mint free credits on a real
+  account. A grant happens only if it fits whole (120 + a 30 pack = 150 is
+  granted; 124 + 30 is not — nothing is granted in part). Past the cap the
+  purchase is still verified and recorded, grants nothing, and answers
+  `sandbox_not_granted`; a Sandbox subscription still shows in §3
+  `subscription`. The App Review demo account and our internal accounts are
+  exempt.
 - **Affiliate commission** on an App Store purchase is 20% of what is left
   after Apple's commission (Stripe's stays 20% of the gross), US dollars
   only, under the same 12-month window and hold. Both App Store products pay
@@ -3024,7 +3038,7 @@ Signed by Apple; verified like §4.21; each notification is processed once.
 | `DID_FAIL_TO_RENEW`, `GRACE_PERIOD_EXPIRED` | Subscription → `past_due` |
 | `EXPIRED` | Subscription → `canceled` |
 | `DID_CHANGE_RENEWAL_STATUS` | Auto-renew off/on → `cancelAtPeriodEnd` |
-| `REFUND`, `REVOKE` | Takes the credits back, **never below zero** (a prorated refund takes its share); flags the account for the owner; reverses the affiliate commission on a full refund; ends the subscription |
+| `REFUND`, `REVOKE` | Takes the credits back, **never below zero** (a prorated refund takes its share); flags the account for the owner (an `apple_refund` review flag, in the daily integrity digest — an open flag also holds that account's own affiliate payouts until resolved); reverses the affiliate commission on a full refund; ends the subscription |
 | `REFUND_REVERSED` | Gives back the credits that refund took |
 | anything else | Recorded |
 
