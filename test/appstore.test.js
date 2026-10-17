@@ -8,8 +8,10 @@ const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
 
 // App Store In-App Purchase (build 23). Dave's rulings, 2026-10-15:
 // refunds take credits back to no lower than zero and flag the account;
-// REFUND_REVERSED gives them back; Sandbox grants only to the demo and
-// internal accounts; commission is 20% of NET; two subscriptions are
+// REFUND_REVERSED gives them back; Sandbox purchases grant on ANY account
+// (revised 2026-10-17) up to 150 lifetime credits (demo and internal exempt),
+// and are never revenue, commission, a purchase for the referral rule, or a
+// duplicate subscription; commission is 20% of NET; two subscriptions are
 // reported, never cancelled; products are the subscription (31) and packs
 // of 30, served from /pricing — matching the website's subscription (31)
 // and one-time month pass (30); 90 and 182 are website-only (2026-10-16).
@@ -50,6 +52,15 @@ test('commission is 20% of what is left after Apple\'s 15%', () => {
   assert.strictEqual(a.netCommissionCents({ environment: 'Sandbox', currency: 'USD', price: 14990 }, 20), 0);
   assert.strictEqual(a.netCommissionCents({ environment: 'Production', currency: 'GBP', price: 14990 }, 20), 0);
   assert.strictEqual(a.APPLE_COMMISSION_PERCENT, 15);
+});
+
+test('the Sandbox cap: 150 lifetime credits, a grant only if it fits whole', () => {
+  assert.strictEqual(a.SANDBOX_LIFETIME_CREDIT_CAP, 150);
+  assert.strictEqual(a.sandboxCapAllows(0, 30), true);
+  assert.strictEqual(a.sandboxCapAllows(120, 30), true, '150 exactly');
+  assert.strictEqual(a.sandboxCapAllows(124, 30), false, 'nothing in part');
+  assert.strictEqual(a.sandboxCapAllows(119, 31), true, 'a renewal that lands on 150');
+  assert.strictEqual(a.sandboxCapAllows(150, 31), false);
 });
 
 test('a refund takes back the credits, or the refunded share of a prorated one', () => {
@@ -141,8 +152,15 @@ test('one subscription answer, whichever store it came from', () => {
   assert.deepStrictEqual(both.duplicate, { source: 'apple', currentPeriodEnd: '2026-11-10T00:00:00Z' }, 'both active: reported, neither hidden');
   assert.strictEqual(st.effectiveSubscription({ subscription_status: 'canceled', subscription_current_period_end: '2026-09-01T00:00:00Z' }, [APPLE()]).source, 'apple', 'the active one speaks');
   assert.strictEqual(st.effectiveSubscription({ subscription_status: 'past_due' }, [APPLE({ status: 'canceled', expires_at: '2026-01-01T00:00:00Z' })]).status, 'past_due');
-  assert.strictEqual(st.effectiveSubscription({}, [APPLE({ environment: 'Sandbox' })]), null, 'a Sandbox subscription is nobody\'s by default');
-  assert.strictEqual(st.effectiveSubscription({}, [APPLE({ environment: 'Sandbox' })], { includeSandbox: true }).source, 'apple', 'but the demo account\'s counts');
+  // Sandbox (2026-10-17): it counts for ANY account — App Review subscribes
+  // in Sandbox on whatever account it uses, and must see the subscription —
+  // but it is never "paying twice", and a real one outranks it.
+  assert.strictEqual(st.effectiveSubscription({}, [APPLE({ environment: 'Sandbox' })]).source, 'apple');
+  const withSandbox = st.effectiveSubscription(STRIPE_ACTIVE, [APPLE({ environment: 'Sandbox' })]);
+  assert.strictEqual(withSandbox.source, 'stripe');
+  assert.strictEqual(withSandbox.duplicate, null, 'a Sandbox subscription charges nothing');
+  assert.strictEqual(st.effectiveSubscription({}, [APPLE({ environment: 'Sandbox', expires_at: '2027-01-01T00:00:00Z' }), APPLE()]).currentPeriodEnd,
+    '2026-11-10T00:00:00Z', 'a Production subscription speaks before a Sandbox one');
   assert.strictEqual(st.isRenewingSubscriber(st.effectiveSubscription({}, [APPLE({ auto_renew: false })])), false);
   assert.strictEqual(st.isRenewingSubscriber(st.effectiveSubscription({}, [APPLE()])), true);
 });
@@ -170,11 +188,32 @@ test('wiring: only App Store grants send the Apple key to the ledger', () => {
   const grant = server.slice(server.indexOf('async function grantAppleTransaction('), server.indexOf('async function applyAppleRefund('));
   assert.match(grant, /appleTransactionId: String\(tx\.transactionId\)/, 'keyed on transactionId, never originalTransactionId');
   assert.ok(!/appleTransactionId: String\(tx\.originalTransactionId\)/.test(grant));
-  assert.match(grant, /if \(!production && !sandboxGrantAllowed\(profile\)\)/);
+  assert.ok(!/sandboxGrantAllowed/.test(grant), 'Sandbox grants on any account (2026-10-17), not only demo/internal');
+  assert.match(grant, /if \(!production && !sandboxCapExempt\(profile\)\) \{/, 'the lifetime cap, with the exemption');
+  assert.match(grant, /\.eq\('user_id', profile\.id\)\.eq\('apple_environment', 'Sandbox'\)/, 'counted from the account\'s Sandbox purchases — renewals included');
+  assert.match(grant, /return \{ outcome: 'sandbox_not_granted', creditsGranted: 0, balance: profile\.credits \|\| 0 \};/);
+  assert.match(grant, /var seen = sbxRows\.some\(function\(r\) \{ return r\.apple_transaction_id === String\(tx\.transactionId\); \}\);/,
+    'a re-post of a granted transaction is not refused by the cap');
+  assert.ok(grant.indexOf("outcome: 'sandbox_not_granted'") < grant.indexOf('await recordCreditAdd('), 'checked before anything is granted');
+  const exempt = server.slice(server.indexOf('function sandboxCapExempt('), server.indexOf('// One subscription answer for this account'));
+  assert.match(exempt, /profile\.is_demo === true \|\| \(!!email && isDev\(email\)\) \|\| internalAccountEmails\(\)\.indexOf\(email\) >= 0/);
+  assert.match(grant, /amount_cents: appstoreRules\.usdCents\(tx\)/, 'and is recorded with no revenue (NULL outside Production USD)');
+  assert.match(grant, /apple_environment: tx\.environment/);
   assert.match(grant, /if \(isNew && production\) await accrueAppleCommission/, 'no commission on Sandbox or a repeat');
   const acc = server.slice(server.indexOf('async function accrueAppleCommission('), server.indexOf('async function checkDuplicateSubscriptions('));
   assert.match(acc, /var rate = AFFILIATE_COMMISSION_PERCENT_RECURRING;/, 'the 30 pack pays the month pass\'s (subscription) rate');
   assert.ok(!/AFFILIATE_COMMISSION_PERCENT_ONETIME/.test(acc));
+});
+
+test('a Sandbox purchase is not a purchase: referral rule, duplicate check, admin numbers', () => {
+  assert.match(server, /from\('purchases'\)\.select\('id'\)\.eq\('user_id', userId\)\s*\.or\('apple_environment\.is\.null,apple_environment\.neq\.Sandbox'\)\.limit\(1\)/,
+    'the referral after-purchase rule ignores Sandbox rows');
+  const dup = server.slice(server.indexOf('async function checkDuplicateSubscriptions('), server.indexOf('async function grantAppleTransaction('));
+  assert.match(dup, /filter\(function\(r\) \{ return r\.environment === 'Production'; \}\)/, 'only a Production App Store subscription is paying twice');
+  assert.match(server, /var revenueSum = await sumColumn\('purchases', 'amount_cents'\);/, 'admin revenue sums amount_cents, which is NULL for Sandbox');
+  const admin = fs.readFileSync(path.join(__dirname, '..', 'public', 'admin.html'), 'utf8');
+  assert.match(admin, /p\.apple_environment==="Sandbox"[\s\S]{0,200}Sandbox · not revenue/);
+  assert.match(admin, /p\.source==="apple_iap"[\s\S]{0,300}Refund via Apple/, 'no Stripe refund button on an App Store row');
 });
 
 test('wiring: refunds never go below zero, and Apple purchases are refunded only by Apple', () => {
@@ -182,6 +221,7 @@ test('wiring: refunds never go below zero, and Apple purchases are refunded only
   assert.match(refund, /supabase\.rpc\('deduct_credits_capped'/, 'the capped deduction: greatest(0, …)');
   assert.match(refund, /\.is\('refunded_at', null\)\.select\('id'\)/, 'one delivery claims the refund');
   assert.match(refund, /billing_flagged_at: now/);
+  assert.match(refund, /await recordReviewFlag\(\{\s*user_id: p\.user_id, reason: 'apple_refund',/, 'and into the review list, so the daily digest shows it');
   assert.match(server, /if \(purchase\.source === 'apple_iap'\) \{\s*return res\.status\(400\)/);
 });
 

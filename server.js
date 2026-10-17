@@ -5965,7 +5965,10 @@ async function applyReferralForUser(userId, rawCode, opts) {
   // fail on a query it does not need.
   var hasPurchase = false;
   if (!existingCode) {
-    var paid = await supabase.from('purchases').select('id').eq('user_id', userId).limit(1);
+    // A Sandbox App Store purchase costs nothing and is not a purchase here
+    // (2026-10-17): it must not close the referral window.
+    var paid = await supabase.from('purchases').select('id').eq('user_id', userId)
+      .or('apple_environment.is.null,apple_environment.neq.Sandbox').limit(1);
     if (paid.error) {
       console.error(tag + 'purchase check failed:', briefErr(paid.error));
       return { ok: false, outcome: 'internal', code: code, bonusCredits: 0, alreadyAttributed: false };
@@ -7018,9 +7021,10 @@ async function loadAllSchedules() {
 //
 // Dave's rulings are in lib/appstore.js. In short: refunds take credits back
 // to no lower than zero and flag the account; REFUND_REVERSED gives them
-// back; Sandbox grants only to the demo and internal accounts; commission is
-// 20% of net after Apple's cut; two subscriptions are reported, not
-// cancelled. Account deletion is NOT changed here (on hold for the Privacy
+// back; Sandbox purchases grant on any account up to a lifetime cap of 150
+// credits (demo and internal accounts exempt) and are never revenue,
+// commission or a real purchase; commission is 20% of net after Apple's cut;
+// two subscriptions are reported, not cancelled. Account deletion is NOT changed here (on hold for the Privacy
 // Policy): apple_subscriptions keeps its rows with the user link nulled, so
 // later notifications are recognised and alerted, never granted.
 
@@ -7049,11 +7053,9 @@ function appStore() {
   return _appStore;
 }
 
-// Who may receive credits for a Sandbox purchase: the App Review demo account
-// and our own internal accounts. Anyone else's Sandbox purchase (a TestFlight
-// tester's, which costs them nothing) is recorded in apple_events and grants
-// nothing.
-function sandboxGrantAllowed(profile) {
+// Exempt from the lifetime Sandbox cap (Dave, 2026-10-17): the App Review demo
+// account and our own internal accounts (dev emails, INTERNAL_ACCOUNT_EMAILS).
+function sandboxCapExempt(profile) {
   if (!profile) return false;
   var email = String(profile.email || '').toLowerCase();
   return profile.is_demo === true || (!!email && isDev(email)) || internalAccountEmails().indexOf(email) >= 0;
@@ -7061,7 +7063,7 @@ function sandboxGrantAllowed(profile) {
 
 // One subscription answer for this account, Stripe and App Store merged
 // (lib/subscription-state.js). `profile` needs the Stripe subscription
-// columns; email and is_demo decide whether Sandbox rows count. An unreadable
+// columns. Sandbox App Store rows count for every account. An unreadable
 // apple_subscriptions (before migration 072, or a read error) gives the
 // Stripe-only answer, which is what every caller had before.
 async function subscriptionStateFor(userId, profile) {
@@ -7070,7 +7072,7 @@ async function subscriptionStateFor(userId, profile) {
     .select('original_transaction_id, status, auto_renew, expires_at, environment').eq('user_id', userId);
   if (r.error) console.error('[SUBSCRIPTION] apple_subscriptions read failed for ' + String(userId).slice(0, 8) + ':', briefErr(r.error));
   else rows = r.data || [];
-  return subscriptionState.effectiveSubscription(profile || null, rows, { includeSandbox: sandboxGrantAllowed(profile) });
+  return subscriptionState.effectiveSubscription(profile || null, rows);
 }
 
 // An alert to Dave: ALERT_EMAIL, or every admin when it is unset (and they
@@ -7206,7 +7208,9 @@ async function checkDuplicateSubscriptions(userId) {
     if (!prof || prof.subscription_status !== 'active') return false;
     var rows = await supabase.from('apple_subscriptions')
       .select('original_transaction_id, status, environment').eq('user_id', userId).eq('status', 'active');
-    var apple = (rows.data || []).filter(function(r) { return r.environment === 'Production' || sandboxGrantAllowed(prof); })[0];
+    // Production only: a Sandbox subscription charges nothing, so it is never
+    // "paying twice".
+    var apple = (rows.data || []).filter(function(r) { return r.environment === 'Production'; })[0];
     if (!apple) return false;
     var claim = await supabase.from('apple_subscriptions').update({ duplicate_notified_at: new Date().toISOString() })
       .eq('original_transaction_id', apple.original_transaction_id).is('duplicate_notified_at', null).select('original_transaction_id');
@@ -7236,6 +7240,10 @@ async function checkDuplicateSubscriptions(userId) {
 //   { outcome, creditsGranted, balance }
 // outcome: 'granted' | 'already_granted' | 'sandbox_not_granted' |
 //          'revoked' | 'unknown_product' | 'no_user'
+// A Sandbox purchase grants on any account (2026-10-17) and is recorded with
+// apple_environment 'Sandbox' and amount_cents NULL: no revenue, no
+// commission, not a purchase for the referral rule, not a duplicate. Past
+// the lifetime Sandbox cap it grants nothing: 'sandbox_not_granted'.
 // Throws only when the grant itself failed — the caller answers 5xx so the
 // app (or Apple) tries again; the ledger key makes the retry safe.
 async function grantAppleTransaction(tx, userId, opts) {
@@ -7248,11 +7256,34 @@ async function grantAppleTransaction(tx, userId, opts) {
   var profile = pr.data;
   if (!profile) return { outcome: 'no_user', creditsGranted: 0, balance: null };
   var production = tx.environment === 'Production';
-  if (!production && !sandboxGrantAllowed(profile)) {
-    return { outcome: 'sandbox_not_granted', creditsGranted: 0, balance: profile.credits || 0 };
-  }
   var isSub = product.kind === 'subscription';
   var renewal = isSub && String(tx.transactionId) !== String(tx.originalTransactionId);
+
+  // THE SANDBOX CAP: 150 lifetime Sandbox credits per account, renewals
+  // included, demo and internal accounts exempt. Counted from this account's
+  // Sandbox purchase rows. A transaction already recorded skips the check,
+  // so a re-post of a granted purchase still answers already_granted. Over
+  // the cap: verified, recorded in apple_events by the caller, nothing
+  // granted — and a Sandbox subscription's state is still kept, because it
+  // is real in Sandbox. (Two Sandbox purchases racing can overshoot by one
+  // grant; Sandbox money is not real, so that is accepted.)
+  if (!production && !sandboxCapExempt(profile)) {
+    var sbx = await supabase.from('purchases').select('apple_transaction_id, credits_purchased')
+      .eq('user_id', profile.id).eq('apple_environment', 'Sandbox');
+    if (sbx.error) throw new Error('sandbox total read: ' + briefErr(sbx.error));
+    var sbxRows = sbx.data || [];
+    var seen = sbxRows.some(function(r) { return r.apple_transaction_id === String(tx.transactionId); });
+    if (!seen) {
+      var used = sbxRows.reduce(function(n, r) { return n + (r.credits_purchased || 0); }, 0);
+      if (!appstoreRules.sandboxCapAllows(used, product.credits)) {
+        if (isSub) await upsertAppleSubscription(tx, opts.subscriptionPatch || appstoreRules.subscriptionPatch(null, null, tx, null), profile.id);
+        console.log('[IAP] Sandbox cap: ' + profile.id.slice(0, 8) + ' has ' + used + ' of ' + appstoreRules.SANDBOX_LIFETIME_CREDIT_CAP +
+          ' Sandbox credits; transaction ' + tx.transactionId + ' (' + product.credits + ') recorded, not granted');
+        return { outcome: 'sandbox_not_granted', creditsGranted: 0, balance: profile.credits || 0 };
+      }
+    }
+  }
+
   var balance = await recordCreditAdd({
     userId: profile.id,
     amount: product.credits,
@@ -7335,6 +7366,15 @@ async function applyAppleRefund(tx, notificationUuid, data, renewal, notificatio
 
   var full = appstoreRules.isFullRefund(tx.revocationType);
   if (p.user_id) {
+    // The review list (Dave, 2026-10-17): it is in the daily integrity digest,
+    // and an open flag also HOLDS the account's own affiliate payouts until
+    // it is resolved. One open 'apple_refund' flag per account — a second
+    // refund before it is resolved is in the alert email and the profile.
+    await recordReviewFlag({
+      user_id: p.user_id, reason: 'apple_refund',
+      details: { transaction: String(tx.transactionId), product: p.apple_product_id || tx.productId,
+        credits_taken: taken, credits_due: toTake, full: full, environment: p.apple_environment }
+    });
     await supabase.from('profiles').update({
       billing_flagged_at: now,
       billing_flag_reason: 'App Store refund of ' + (p.apple_product_id || 'a purchase') + ' (transaction ' + tx.transactionId + '): ' +
@@ -7386,14 +7426,6 @@ async function applyAppleRefundReversed(tx, notificationUuid) {
   return { outcome: 'refund_reversed', userId: p.user_id, detail: back + ' credits' };
 }
 
-// A Sandbox subscription's state is kept only for the accounts whose Sandbox
-// purchases count (the demo and internal accounts) — not for every tester.
-async function sandboxOwnerAllowed(userId) {
-  if (!userId) return false;
-  var pr = await supabase.from('profiles').select('email, is_demo').eq('id', userId).maybeSingle();
-  return sandboxGrantAllowed(pr.data);
-}
-
 async function handleAppleNotification(type, data, tx, renewal, notificationUuid) {
   if (type === 'TEST') return { outcome: 'test' };
   if (!tx) return { outcome: 'ignored' };
@@ -7429,7 +7461,6 @@ async function handleAppleNotification(type, data, tx, renewal, notificationUuid
     case 'PRICE_INCREASE': {
       if (!isSub) return { outcome: 'ignored' };
       var who = await appleTransactionOwner(tx);
-      if (tx.environment !== 'Production' && !(await sandboxOwnerAllowed(who))) return { outcome: 'sandbox_ignored', userId: who };
       await upsertAppleSubscription(tx, subPatch, who);
       return { outcome: 'subscription_updated', userId: who };
     }

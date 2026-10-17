@@ -454,7 +454,8 @@ function loadUserIdentity(uid){
 function loadCreditHistory(uid){fetch('/api/admin/user/'+uid+'/credit-history',{headers:{Authorization:'Bearer '+token}}).then(function(r){return r.json()}).then(function(d){var rows=d.history||[];var el=document.getElementById('creditHistoryArea');if(!el)return;var html='<div class="section-title">Credit History ('+rows.length+')</div>';if(!rows.length){html+='<p class="text-muted">No credit events recorded</p>';el.innerHTML=html;return}html+='<div style="max-height:400px;overflow-y:auto"><table><thead><tr><th>Date</th><th>+Credits</th><th>Source</th><th>Note</th><th>Balance</th></tr></thead><tbody>';rows.forEach(function(r){var when=new Date(r.created_at).toLocaleString();var amount='+'+r.amount;var source=fmtCreditSource(r);var note=r.note?esc(r.note):'';var bal=r.balance_after==null?'<span class="text-muted">—</span>':String(r.balance_after);html+='<tr><td>'+when+'</td><td class="text-green"><b>'+amount+'</b></td><td>'+esc(source)+'</td><td style="font-size:0.8rem;color:#8892b0">'+note+'</td><td class="text-cyan">'+bal+'</td></tr>'});html+='</tbody></table></div>';el.innerHTML=html}).catch(function(e){var el=document.getElementById('creditHistoryArea');if(el)el.innerHTML='<div class="section-title">Credit History</div><p class="text-muted">Failed to load: '+(e.message||'unknown')+'</p>'})}
 function renderPayouts(payouts){var pend=payouts.filter(function(p){return p.status==="pending"});var h="";if(!pend.length){h="<p class='text-muted'>No pending payouts</p>"}else{pend.forEach(function(p){h+="<div class='payout-card'><div class='payout-amount'>$"+(p.amount_cents/100).toFixed(2)+" <span class='badge pending'>Pending</span></div><div style='color:#8892b0;margin:10px 0'>User: "+esc(p.user_email||"?")+" | PayPal: "+esc(p.payout_email)+"</div><div style='display:flex;gap:10px'><button class='btn btn-success' onclick=\"doPayout('"+p.id+"','paid')\">Paid</button><button class='btn btn-danger' onclick=\"doPayout('"+p.id+"','rejected')\">Reject</button></div></div>"})}$("pendingPayouts").innerHTML=h}
 function renderPurchases(purchases){var h="";purchases.forEach(function(p){
-  var amt=(p.amount_cents/100).toFixed(2);
+  // NULL for an App Store Sandbox grant (and a non-USD storefront): no money.
+  var amt=p.amount_cents==null?null:(p.amount_cents/100).toFixed(2);
   var status,action;
   if(p.refunded_at){
     // Refunded rows keep a disabled button rather than hiding it, so the
@@ -463,11 +464,19 @@ function renderPurchases(purchases){var h="";purchases.forEach(function(p){
     var clawTxt=clawed===null?"":(clawed>0?(" · "+clawed+" credits reclaimed"):" · goodwill, credits kept");
     status="<span class='badge disabled'>Refunded</span> <span class='text-muted' style='font-size:0.72rem'>"+new Date(p.refunded_at).toLocaleDateString()+esc(clawTxt)+"</span>";
     action="<button class='btn btn-sm' disabled style='opacity:0.4;padding:2px 8px;font-size:0.7rem'>Refunded</button>";
+  }else if(p.apple_environment==="Sandbox"){
+    // App Store Sandbox (App Review, TestFlight): credits granted, no money.
+    status="<span class='badge disabled'>Sandbox · not revenue</span>";
+    action="";
+  }else if(p.source==="apple_iap"){
+    // Only Apple can refund an App Store purchase; the server refuses here too.
+    status="<span class='badge active'>Paid · App Store</span>";
+    action="<button class='btn btn-sm' disabled title='Refunded by Apple only' style='opacity:0.4;padding:2px 8px;font-size:0.7rem'>Refund via Apple</button>";
   }else{
     status="<span class='badge active'>Paid</span>";
     action="<button class='btn btn-sm btn-danger' style='padding:2px 8px;font-size:0.7rem' onclick=\"confirmRefund('"+esc(p.id)+"')\">Refund</button>";
   }
-  h+="<tr><td>"+esc(p.user_email||"?")+"</td><td>"+esc(p.package_name)+"</td><td class='text-green'>$"+amt+"</td><td>"+new Date(p.created_at).toLocaleDateString()+"</td><td>"+status+" "+action+"</td></tr>"});
+  h+="<tr><td>"+esc(p.user_email||"?")+"</td><td>"+esc(p.package_name)+"</td><td class='text-green'>"+(amt===null?"—":"$"+amt)+"</td><td>"+new Date(p.created_at).toLocaleDateString()+"</td><td>"+status+" "+action+"</td></tr>"});
   $("purchasesTable").innerHTML=h||"<tr><td colspan=5 class='text-muted'>No purchases</td></tr>"}
 
 // Refund confirmation. Shows exactly who/what/when/how much before anything
