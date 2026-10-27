@@ -8786,17 +8786,41 @@ async function initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notify
   // until the next restart. Call Now and the admin trigger pass
   // opts.manual and are not gated. A read failure dials (lib/dial-guard.js).
   // Returns the shape callers already tolerate for a refused dial.
+  //
+  // The same read supplies WHAT is dialled (2026-10-28): the PIN, hotline
+  // number and notification details as they are now, not as they were when
+  // the job or retry was queued — a fixed PIN used to be ignored until the
+  // morning's retries ran out (lib/dial-guard.js liveDialParams). A
+  // schedule that has since moved to Fort Bend is refused.
   if (userId && !(opts && opts.manual)) {
-    var liveSched = await supabase.from('user_schedules').select('enabled, paused_reason').eq('user_id', userId).maybeSingle();
+    var liveSched = await supabase.from('user_schedules').select(dialGuard.LIVE_COLUMNS).eq('user_id', userId).maybeSingle();
     var gate = dialGuard.automaticDialDecision({ error: liveSched.error, row: liveSched.data });
     if (gate.reason === 'read_failed') {
-      console.error('[DIAL-GUARD] schedule read FAILED for ' + String(userId).slice(0, 8) + ' — dialling anyway (a missed morning is the worse harm):', briefErr(liveSched.error));
+      console.error('[DIAL-GUARD] schedule read FAILED for ' + String(userId).slice(0, 8) + ' — dialling anyway with the queued details (a missed morning is the worse harm):', briefErr(liveSched.error));
     }
     if (!gate.dial) {
       console.log('[DIAL-GUARD] refused automatic dial for ' + String(userId).slice(0, 8) + ': ' + gate.reason +
         (gate.pausedReason ? ' (' + gate.pausedReason + ')' : '') + (retryCount > 0 ? ', retry #' + retryCount : '') + '. Nothing was dialled.');
-      return { success: false, refused: gate.reason, message: 'The schedule is paused — the hotline was not dialled.' };
+      return { success: false, refused: gate.reason, message: gate.reason === 'county_changed'
+        ? 'The schedule is now Fort Bend — the Montgomery hotline was not dialled.'
+        : 'The schedule is paused — the hotline was not dialled.' };
     }
+    var live = dialGuard.liveDialParams({ targetNumber: targetNumber, pin: pin, notifyNumber: notifyNumber, notifyEmail: notifyEmail, notifyMethod: notifyMethod },
+      liveSched.error ? null : liveSched.data);
+    if (String(live.pin) !== String(pin)) {
+      console.log('[DIAL-GUARD] ' + String(userId).slice(0, 8) + ' — PIN changed since this dial was queued; dialling the PIN on file now.');
+    }
+    // The demo tripwire above checked the queued PIN; check the live one too.
+    if (String(live.pin) === demoAccount.DEMO_PIN) {
+      console.error('[DEMO] TRIPWIRE: refused to dial ' + live.targetNumber + ' with the demo PIN (user ' + String(userId).slice(0, 8) + '). Nothing was dialled.');
+      alertAdminDemoTripwire(userId, live.targetNumber).catch(function() {});
+      return { success: false, refused: 'demo_pin', message: 'Demo PIN — the hotline was not dialled.' };
+    }
+    targetNumber = live.targetNumber;
+    pin = live.pin;
+    notifyNumber = live.notifyNumber;
+    notifyEmail = live.notifyEmail;
+    notifyMethod = live.notifyMethod;
   }
   var callId = 'call_' + Date.now();
   log(callId, 'Starting call to ' + targetNumber + (retryCount > 0 ? ' (retry #' + retryCount + ')' : ''), 'info');
@@ -14314,11 +14338,12 @@ cron.schedule('* * * * *', async function() {
       continue;
     }
 
-    // Paused (or deleted) since this retry was queued (2026-10-27)? Then the
+    // Paused, deleted or moved to Fort Bend since this retry was queued
+    // (2026-10-27; Fort Bend 2026-10-28)? Then the
     // sequence ends here: no dial, no re-transcription, and no "no result
     // after every try" notice at cutoff. Same rule as the dial-time check
     // in initiateCall (a read failure carries on).
-    var retrySched = await supabase.from('user_schedules').select('enabled, paused_reason').eq('user_id', userId).maybeSingle();
+    var retrySched = await supabase.from('user_schedules').select(dialGuard.LIVE_COLUMNS).eq('user_id', userId).maybeSingle();
     var retryGate = dialGuard.automaticDialDecision({ error: retrySched.error, row: retrySched.data });
     if (!retryGate.dial) {
       console.log('[RETRY-POLLER] ' + userId.slice(0, 8) + ' — ' + retryGate.reason + (retryGate.pausedReason ? ' (' + retryGate.pausedReason + ')' : '') +
@@ -14332,14 +14357,17 @@ cron.schedule('* * * * *', async function() {
     // instead of firing.
     if (wouldExceedCutoff(new Date(), tz)) {
       console.log('[RETRY-POLLER] Cutoff exceeded for ' + userId.slice(0, 8) + ' — final-fail instead of firing');
+      // The notice goes where the schedule says NOW (lib/dial-guard.js).
+      var cutoffLive = dialGuard.liveDialParams({ targetNumber: row.target_number, pin: row.pin, notifyNumber: row.notify_number,
+        notifyEmail: row.notify_email, notifyMethod: row.notify_method }, retrySched.error ? null : retrySched.data);
       await finalFailMorning({
         user_id: userId,
         county: row.county,
         target_number: row.target_number,
         pin: row.pin,
-        notify_number: row.notify_number,
-        notify_email: row.notify_email,
-        notify_method: row.notify_method,
+        notify_number: cutoffLive.notifyNumber,
+        notify_email: cutoffLive.notifyEmail,
+        notify_method: cutoffLive.notifyMethod,
         attempt_number: row.attempt_number,
         last_result: row.last_result,
         last_call_sid: row.last_call_sid,
