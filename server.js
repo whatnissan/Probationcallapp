@@ -1300,8 +1300,12 @@ async function handleScheduledMorningNoResult(config, result, callSid, transcrip
   }
 }
 
+// Null-safe (2026-10-27): a profile with no email used to throw here, and the
+// callers include the morning job, billing, Fort Bend delivery and recovery —
+// one such account would have crashed its own call every morning. It could
+// not fire only because every profile happened to have an email.
 function isDev(email) {
-  return DEV_EMAILS.includes(email.toLowerCase());
+  return DEV_EMAILS.includes(String(email || '').toLowerCase());
 }
 
 // app_settings (migration 044): values the DATABASE and the app both read,
