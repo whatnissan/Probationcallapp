@@ -44,6 +44,9 @@ const countyView = require('./lib/county-view');
 // App Store In-App Purchase (build 23): the rules, and one subscription state
 // whether it came from Stripe or Apple.
 const appstoreRules = require('./lib/appstore');
+// The dial-time pause check (2026-10-27): every automatic dial asks the
+// schedule row as it is NOW.
+const dialGuard = require('./lib/dial-guard');
 const subscriptionState = require('./lib/subscription-state');
 const apns = require('./lib/apns');
 const { fallbackFieldsFor } = require('./lib/push');
@@ -4824,6 +4827,9 @@ app.post('/api/v1/schedule/pause', authV1, async function(req, res) {
     if (!(upd.data || []).length) {
       return v1Error(res, 404, 'schedule_missing', 'Set up your daily call first.');
     }
+    // Stop the morning job and any queued retries now (2026-10-27). Until
+    // this, the pause only wrote the row and the job kept dialling.
+    await stopScheduledCalls(req.user.id, '[V1-PAUSE]');
     // The free-text reason is the user's note to themselves; the column only
     // stores 'user' (a §2 enum value), so log it rather than inventing a field.
     var note = req.body && req.body.reason ? String(req.body.reason).slice(0, 120) : null;
@@ -6900,6 +6906,20 @@ async function writeDemoMorningRow(userId, sched) {
   }
 }
 
+// Stop a user's queued automatic calls now: the morning job and any retries
+// already queued (2026-10-27). The pause route and the STOP pause call it,
+// as the streak, expired-PIN and no-credits pauses already stopped the job.
+// Defence in depth: the dial-time check in initiateCall already refuses a
+// paused user, and this is meant to be redundant with it. Never throws.
+async function stopScheduledCalls(userId, tag) {
+  if (scheduledJobs.has(userId)) {
+    scheduledJobs.get(userId).stop();
+    scheduledJobs.delete(userId);
+  }
+  var del = await supabase.from('pending_retries').delete().eq('user_id', userId);
+  if (del && del.error) console.error((tag || '[PAUSE]') + ' could not clear queued retries for ' + String(userId).slice(0, 8) + ':', del.error.message);
+}
+
 function rescheduleUser(userId, sched) {
   if (scheduledJobs.has(userId)) {
     scheduledJobs.get(userId).stop();
@@ -6926,6 +6946,20 @@ function rescheduleUser(userId, sched) {
     setTimeout(async function() {
       console.log('[SCHED] Running for ' + userId.slice(0,8) + '... (after ' + staggerLabel + ' stagger)');
       try {
+        // The schedule AS IT IS NOW (2026-10-27), not the copy this job was
+        // created with: a pause, a STOP switch to email or a START switch
+        // back since then must take effect this morning, not at the next
+        // restart. A paused or deleted schedule stops here and retires this
+        // job. A read failure falls back to the copy and dials — the same
+        // rule as the check in initiateCall, which stays authoritative.
+        var liveRead = await supabase.from('user_schedules').select('*').eq('user_id', userId).maybeSingle();
+        if (!liveRead.error && (!liveRead.data || liveRead.data.enabled === false)) {
+          console.log('[SCHED] ' + userId.slice(0, 8) + ' is ' + (liveRead.data ? 'paused (' + (liveRead.data.paused_reason || 'untagged') + ')' : 'without a schedule') + ' — not dialling; retiring this job');
+          if (scheduledJobs.get(userId) === job) { job.stop(); scheduledJobs.delete(userId); }
+          return;
+        }
+        if (liveRead.error) console.error('[SCHED] schedule re-read failed for ' + userId.slice(0, 8) + ' — using the copy from scheduling time:', briefErr(liveRead.error));
+        sched = liveRead.data || sched;
         var profileResult = await supabase.from('profiles').select('credits, email, is_disabled, is_demo, subscription_status').eq('id', userId).single();
         var profile = profileResult.data;
 
@@ -8625,7 +8659,9 @@ app.post('/api/call', auth, async function(req, res) {
 
   try {
     // Credit is deducted in /webhook/recording once a result is known.
-    var result = await initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notifyMethod, req.user.id, 0, county);
+    // manual: the person asked for this call now — the pause check is for
+    // automatic dials only.
+    var result = await initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notifyMethod, req.user.id, 0, county, undefined, { manual: true });
     res.json(result);
   } catch(e) {
     res.status(500).json({ error: e.message });
@@ -8686,6 +8722,26 @@ async function initiateCall(targetNumber, pin, notifyNumber, notifyEmail, notify
     // Shape callers already tolerate: the retry path checks .callId, the
     // scheduler ignores the return, /api/call echoes it as JSON.
     return { success: false, refused: 'demo_pin', message: 'Demo PIN — the hotline was not dialled.' };
+  }
+  // THE AUTHORITATIVE PAUSE CHECK (2026-10-27). Every automatic dial — the
+  // morning job, the retry queue, the empty-transcript re-dial, recovery, the
+  // first-day call — re-reads the schedule row here, at the moment of
+  // dialling, because the state can change after a dial is queued: until
+  // this date a paused user was dialled, charged and notified every morning
+  // until the next restart. Call Now and the admin trigger pass
+  // opts.manual and are not gated. A read failure dials (lib/dial-guard.js).
+  // Returns the shape callers already tolerate for a refused dial.
+  if (userId && !(opts && opts.manual)) {
+    var liveSched = await supabase.from('user_schedules').select('enabled, paused_reason').eq('user_id', userId).maybeSingle();
+    var gate = dialGuard.automaticDialDecision({ error: liveSched.error, row: liveSched.data });
+    if (gate.reason === 'read_failed') {
+      console.error('[DIAL-GUARD] schedule read FAILED for ' + String(userId).slice(0, 8) + ' — dialling anyway (a missed morning is the worse harm):', briefErr(liveSched.error));
+    }
+    if (!gate.dial) {
+      console.log('[DIAL-GUARD] refused automatic dial for ' + String(userId).slice(0, 8) + ': ' + gate.reason +
+        (gate.pausedReason ? ' (' + gate.pausedReason + ')' : '') + (retryCount > 0 ? ', retry #' + retryCount : '') + '. Nothing was dialled.');
+      return { success: false, refused: gate.reason, message: 'The schedule is paused — the hotline was not dialled.' };
+    }
   }
   var callId = 'call_' + Date.now();
   log(callId, 'Starting call to ' + targetNumber + (retryCount > 0 ? ' (retry #' + retryCount + ')' : ''), 'info');
@@ -10243,7 +10299,12 @@ async function applySmsOptOutToUser(userId, e164) {
       .update({ enabled: false, paused_reason: 'sms_opted_out' })
       .eq('user_id', userId);
     if (pause.error) console.error('[SMS-OPTOUT] could not pause ' + userId.slice(0, 8) + ':', pause.error.message);
-    else console.log('[SMS-OPTOUT] ' + userId.slice(0, 8) + ' (' + tail + ') PAUSED — no email on file, no channel left');
+    else {
+      console.log('[SMS-OPTOUT] ' + userId.slice(0, 8) + ' (' + tail + ') PAUSED — no email on file, no channel left');
+      // Stop the job and queued retries now (2026-10-27): the pause used to
+      // write the row only, so the number kept being dialled and charged.
+      await stopScheduledCalls(userId, '[SMS-OPTOUT]');
+    }
   } else {
     console.log('[SMS-OPTOUT] ' + userId.slice(0, 8) + ' (' + tail + ') already paused (' + (s.paused_reason || 'unrecorded') + '), no email on file');
   }
@@ -12252,7 +12313,18 @@ app.post('/webhook/sms-incoming', validateTwilio, async function(req, res) {
         .update({ enabled: true, paused_reason: null })
         .eq('notify_number', e164).eq('paused_reason', 'sms_opted_out').select('user_id');
       if (back.error) console.error('[SMS-IN] could not resume sms_opted_out schedules for ' + String(e164).slice(-4) + ':', back.error.message);
-      else if (back.data && back.data.length) console.log('[SMS-OPTOUT] resumed ' + back.data.length + ' schedule(s) paused for sms_opted_out on ' + String(e164).slice(-4));
+      else if (back.data && back.data.length) {
+        console.log('[SMS-OPTOUT] resumed ' + back.data.length + ' schedule(s) paused for sms_opted_out on ' + String(e164).slice(-4));
+        // Rebuild each Montgomery job (2026-10-27). The pause stops the job
+        // now, so a resume that only writes the row would leave the person
+        // undialled until a restart. Fort Bend has no job (rescheduleUser
+        // returns for it).
+        for (var rb = 0; rb < back.data.length; rb++) {
+          var rbRow = await supabase.from('user_schedules').select('*').eq('user_id', back.data[rb].user_id).maybeSingle();
+          if (rbRow.data) rescheduleUser(rbRow.data.user_id, rbRow.data);
+          else console.error('[SMS-OPTOUT] could not reload ' + String(back.data[rb].user_id).slice(0, 8) + ' to rebuild its job:', rbRow.error && rbRow.error.message);
+        }
+      }
       await restoreNotifyMethodAfterStart(e164);
       return;
     }
@@ -12475,7 +12547,9 @@ app.post('/api/admin/trigger-call/:userId', adminAuth, async function(req, res) 
         sched.notify_method,
         userId,
         0,
-        sched.county
+        sched.county,
+        undefined,
+        { manual: true }   // an admin asked for this call: not gated on pause
       );
       console.log('[ADMIN] Initiated Montgomery call for ' + userId.slice(0,8));
       res.json({ success: true, message: 'Call initiated for Montgomery County' });
@@ -14181,6 +14255,19 @@ cron.schedule('* * * * *', async function() {
     }
     if (confirmedToday) {
       console.log('[RETRY-POLLER] Orphan pending_retries row for ' + userId.slice(0, 8) + ' — morning already resolved by confirmed result. Deleting, not firing.');
+      await supabase.from('pending_retries').delete().eq('id', row.id);
+      continue;
+    }
+
+    // Paused (or deleted) since this retry was queued (2026-10-27)? Then the
+    // sequence ends here: no dial, no re-transcription, and no "no result
+    // after every try" notice at cutoff. Same rule as the dial-time check
+    // in initiateCall (a read failure carries on).
+    var retrySched = await supabase.from('user_schedules').select('enabled, paused_reason').eq('user_id', userId).maybeSingle();
+    var retryGate = dialGuard.automaticDialDecision({ error: retrySched.error, row: retrySched.data });
+    if (!retryGate.dial) {
+      console.log('[RETRY-POLLER] ' + userId.slice(0, 8) + ' — ' + retryGate.reason + (retryGate.pausedReason ? ' (' + retryGate.pausedReason + ')' : '') +
+        ' since this retry was queued. Deleting it, not firing.');
       await supabase.from('pending_retries').delete().eq('id', row.id);
       continue;
     }
