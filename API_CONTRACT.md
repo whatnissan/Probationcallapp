@@ -243,6 +243,24 @@ send fails for any other reason, the SMS goes immediately. We already know
 push failed at that point, and `MUST_TEST` is not a result to gamble ten
 minutes on.
 
+**Push is a stored choice (2026-10-28).** `push` in `notifyMethods` (§3,
+§4.7) is the account's Push preference. **Off:** no push at all, and the text
+and email go at once — nothing is held. **On** (the default for every account,
+including one with no device yet):
+
+- **Every device seen within 14 days gets the push**, newest first, and the
+  text is held behind it. An acknowledgement from ANY of them cancels the text
+  (§4.12a). `lastSeenAt` (§4.12) moves when the app registers, at most daily,
+  so "seen within 14 days" means "opened on that device in the last two
+  weeks". Until this date only the single most recently seen device got the
+  push, and a second device (an iPad) got nothing.
+- **No device seen within 14 days**: the freshest still gets a courtesy push,
+  but **the text goes at once and is not held** — a push to a device nobody
+  has opened for weeks is probably never seen. On 2026-10-28 this was 4 of
+  the 8 accounts with a device, whose texts had been arriving four minutes
+  late every morning.
+- **No device at all**: the text goes at once, as before.
+
 **Push covers both counties.** Montgomery pushes from the per-user call
 result. Fort Bend pushes from the per-user notification queue, at the user's
 preferred send time, one delivery row per user per morning — one office
@@ -350,6 +368,13 @@ readable through §4.2 `?county=`, and never part of any current number
 Apr–Sep 2026") and keeps it out of the main list. `[]` means the summary
 could not be read, not that there is no history. With no schedule, the
 current county is the county of the most recent result.
+
+**`notifyMethods`** lists how this account is told: `sms` and/or `email`
+(the stored method), with **`push` first when the Push preference is on**
+(§2, §4.7). Until 2026-10-28 `push` was never returned, whatever was saved;
+the example above (`["push", "sms"]`) is what an account with Push on and
+texts on now gets. `push` never appears alone — §4.7 requires `sms` or
+`email` beside it.
 
 **`schedules` is an array even though it always has exactly one element today.**
 `user_schedules` is one row per user keyed on `user_id`, and dual-county is
@@ -1029,12 +1054,31 @@ the write is refused with `400 phone_not_verified`. Verify first (§4.17).
 The website keeps its current behaviour so live web schedules are not
 stranded.
 
-**`push` in `notifyMethods` is accepted but NOT stored in `notify_method`.**
-Push is driven by registered devices (§4.12), so the column only records the
-`sms`/`email` part and the response echoes what was actually saved — a caller
-who sends `["push","sms"]` gets `["sms"]` back and can see the difference.
-`["push"]` alone is rejected: §2 makes SMS the backstop, and push with no
-fallback is no delivery guarantee at all.
+**`push` in `notifyMethods` is the stored Push preference (2026-10-28).** The
+`sms`/`email` part is stored as before; `push` is stored on its own
+(`user_schedules.notify_push`, default on), and the response echoes it —
+`["push","sms"]` comes back as `["push","sms"]`. `["push"]` alone is still
+rejected: §2 makes SMS the backstop, and push with no fallback is no delivery
+guarantee at all.
+
+**THE BUILD GATE — `push` ABSENT turns Push off only from build 25 on.** Until
+build 25 the server never returned `push`, so every older build's Account
+sheet reopened with Push unticked whatever the person had chosen, and saving
+any notification change sent `notifyMethods` without `push` — by accident.
+So the server reads the app build from the request's `User-Agent`
+(`probationcall/<build>`):
+
+| Save | Effect on Push |
+|---|---|
+| `push` included, any build | **on** |
+| `push` absent, build ≥ 25 | **off** |
+| `push` absent, build < 25, or no build in the `User-Agent` (the website) | **unchanged** |
+| legacy single-value `notifyMethod` | **unchanged** |
+
+The cut-over build is the Railway variable `PUSH_PREF_MIN_BUILD`, not a
+constant; while it is unset, no build can turn Push off. **A client from
+build 25 on must load Push from `notifyMethods` and send it back exactly as
+shown** — leaving it out is an explicit "off".
 
 **`ftbendColor` is writable here.** It resolves through the server-owned colour
 catalogue (§4.11), so an unrecognised colour is a `400` naming `ftbendColor`
@@ -2009,13 +2053,30 @@ Pruned devices are omitted. `lastSeenAt` is refreshed on every registration,
 so it is how the client tells "this device" from an old one — and how a stale
 registration becomes visible to the person who owns it.
 
+**`receivesResults`** `bool` (2026-10-28) — whether this device would get
+tomorrow's result push: every device seen within 14 days, or, when none is,
+the freshest one (a courtesy push, with the text not held — §2). `false` for
+every device when Push is off.
+
+**When iOS notification permission is off, the app MUST unregister**
+(2026-10-28): on launch and on every return to the foreground, if
+notifications cannot be shown and this device holds a registration, `DELETE
+/devices/{token}` and forget it; register again when permission returns.
+Without this the server keeps pushing to a token iOS will not display, APNs
+accepts it, and the text is held behind a push nobody sees — four minutes late,
+every morning. (A device whose app is never reopened is covered from the other
+side: after 14 days it stops holding the text, §2.)
+
 ### 4.12a `POST /push/{deliveryId}/ack`
 
 → `{ "acked": true, "fallbackCancelled": true }`
 
-The app calls this when the user opens the notification. **This is what
-cancels the SMS fallback**, so it is the difference between one notification
-and two. The window is `PUSH_SMS_FALLBACK_MINUTES` (§2), a Railway variable
+The app calls this when the user opens the notification, **and when the
+notification is shown while the app is open** (`willPresent`, 2026-10-28: the
+person is already looking at the app, and a text four minutes later is a
+duplicate). An ack from **any** of the account's devices counts — every device
+pushed that morning carries the same `deliveryId`. **This is what cancels the
+SMS fallback**, so it is the difference between one notification and two. The window is `PUSH_SMS_FALLBACK_MINUTES` (§2), a Railway variable
 set to 4 minutes since 2026-09-17; the app does not need to know the number,
 only that an ack after the text has gone returns `fallbackCancelled: false`.
 `deliveryId` arrives in the push payload's custom data:
