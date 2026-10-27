@@ -47,6 +47,8 @@ const appstoreRules = require('./lib/appstore');
 // The dial-time pause check (2026-10-27): every automatic dial asks the
 // schedule row as it is NOW.
 const dialGuard = require('./lib/dial-guard');
+// The Push choice and which devices get a result push (2026-10-28).
+const pushTargets = require('./lib/push-targets');
 const subscriptionState = require('./lib/subscription-state');
 const apns = require('./lib/apns');
 const { fallbackFieldsFor } = require('./lib/push');
@@ -2192,10 +2194,11 @@ var FTBEND_OFFICE_META = {
 var ftbend = require('./lib/ftbend');
 var V1_FTBEND_OFFICES = ftbend.OFFICES;
 function v1Time(h, m) { return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0'); }
-function v1NotifyMethods(m) {
-  if (m === 'both') return ['email', 'sms'];
-  if (m === 'sms') return ['sms'];
-  return ['email'];
+// §3 notifyMethods: the stored sms/email part, with 'push' first when the
+// Push preference (user_schedules.notify_push, migration 075) is on. Until
+// 2026-10-28 push was never returned — it was accepted and discarded.
+function v1NotifyMethods(m, notifyPush) {
+  return pushTargets.notifyMethodsFor(m, !!notifyPush);
 }
 // Every schedule is kept on its COUNTY's clock, never the device's (§1).
 // Both counties are Central today; the map exists so a third county in
@@ -2270,7 +2273,9 @@ function v1Schedule(row, profile, activeIds) {
     pauseReason: row.paused_reason || null,
     noCreditSkipCount: row.no_credit_skip_count || 0,
     consecutivePinExpired: row.consecutive_pin_expired || 0,
-    notifyMethods: v1NotifyMethods(row.notify_method || 'email'),
+    // A row read before migration 075 has no notify_push: that is "on", the
+    // column's default — never read a missing value as "off".
+    notifyMethods: v1NotifyMethods(row.notify_method || 'email', row.notify_push !== false),
     notifyNumber: row.notify_number || null,
     notifyEmail: row.notify_email || null,
     quietMode: !!row.quiet_mode
@@ -3164,13 +3169,13 @@ function pushLocalDate(config) {
   }
 }
 
-// quiet_mode lives on the schedule and the transcription path doesn't carry
-// it, so fetch just that. Failure returns null, which pushAllowed treats as
+// quiet_mode and notify_push live on the schedule and the transcription path
+// doesn't carry them, so fetch just those. Failure returns null, which pushAllowed treats as
 // "not quiet" — the same notification behaviour as today.
 async function pushSchedule(userId) {
   if (!userId) return null;
   try {
-    var r = await supabase.from('user_schedules').select('quiet_mode').eq('user_id', userId).maybeSingle();
+    var r = await supabase.from('user_schedules').select('quiet_mode, notify_push').eq('user_id', userId).maybeSingle();
     return r.data || null;
   } catch (e) {
     return null;
@@ -3245,28 +3250,30 @@ async function tryPushFirst(opts) {
       return false;
     }
 
-    // FRESHEST FIRST. The loop below stops at the first token Apple accepts,
-    // so the ORDER decides which device gets the morning's notification —
-    // and this query had no ORDER BY, i.e. whatever PostgREST returned.
-    //
-    // On 2026-09-05 that picked a token last seen 2026-09-04T15:38 over one
-    // last seen 2026-09-05T00:35, for an account holding three live
-    // production tokens. Apple ACCEPTED it — a 200 and an apns-id — because
-    // APNs only reports Unregistered once it knows a token is dead, which
-    // can take days after an app is deleted or replaced. So "accepted" is
-    // not evidence the app is still installed behind that token, and the
-    // notification can be delivered to a device that no longer exists while
-    // the one in the person's hand gets nothing.
-    //
-    // last_seen_at is written on every device registration, so it is the
-    // best available proxy for "which handset is actually running the app".
-    // nullsFirst:false puts a never-seen token last rather than first.
-    var devices = await supabase.from('device_tokens')
-      .select('token, environment, last_seen_at')
-      .eq('user_id', opts.userId)
-      .is('unregistered_at', null)
-      .order('last_seen_at', { ascending: false, nullsFirst: false });
-    var live = (devices.data || []);
+    // THE PUSH PREFERENCE (migration 075, 2026-10-28). Turned off: no push,
+    // and the caller texts and emails now — no four-minute hold. A schedule
+    // read without the column (null) is "on", its default.
+    var pushOff = !!(opts.schedule && opts.schedule.notify_push === false);
+
+    // WHICH DEVICES (lib/push-targets.js). Every device seen within 14 days,
+    // newest first — not only the single freshest, which until 2026-10-28
+    // left a second device (an iPad) without its result. Freshest-first is
+    // still the order, and the freshest is always in the set, so the
+    // 2026-09-05 failure (a stale token pushed while the live phone got
+    // nothing) cannot recur. No recent device: a courtesy push to the
+    // freshest, and the text goes NOW rather than held behind a push that
+    // is probably never seen. last_seen_at is written on every device
+    // registration — the best proxy for "this handset is running the app".
+    var live = [];
+    if (!pushOff) {
+      var devices = await supabase.from('device_tokens')
+        .select('token, environment, last_seen_at')
+        .eq('user_id', opts.userId)
+        .is('unregistered_at', null)
+        .order('last_seen_at', { ascending: false, nullsFirst: false });
+      live = devices.data || [];
+    }
+    var plan = pushOff ? { mode: 'off', targets: [], holdText: false } : pushTargets.choosePushTargets(live, Date.now());
 
     // One delivery row per user per morning (unique index). If a row already
     // exists this morning was already handled — never push or text twice.
@@ -3279,16 +3286,12 @@ async function tryPushFirst(opts) {
       // never has to guess county wording (migration 041).
       fallback_message: opts.fallbackMessage ? String(opts.fallbackMessage) : null
     };
-    if (!live.length) {
-      // No device: the CALLER delivers now, per the ruling — don't make
-      // someone wait out a timer for a notification that was never going to
-      // arrive. The row is marked fallback_sent_at in the same insert so the
-      // sweep can never deliver a second copy (2026-09-02: it did, to every
-      // Montgomery user, one minute after the direct SMS).
-      Object.assign(row, fallbackFieldsFor('no_device', Date.now(), pushFallbackMinutes()));
-    } else {
-      Object.assign(row, fallbackFieldsFor('sent', Date.now(), pushFallbackMinutes()));
-    }
+    // Who owns the text (lib/push.fallbackFieldsFor): the SWEEP after the hold
+    // when the push goes to a recent device; otherwise the CALLER, now. The
+    // row is marked sent in the same insert in every caller-owned case so the
+    // sweep can never deliver a second copy (2026-09-02).
+    var outcome = plan.mode === 'off' ? 'push_off' : plan.mode === 'none' ? 'no_device' : plan.mode === 'stale' ? 'stale_device' : 'sent';
+    Object.assign(row, fallbackFieldsFor(outcome, Date.now(), pushFallbackMinutes()));
     var created = await supabase.from('push_deliveries').insert(row).select('id').single();
     if (created.error) {
       // Unique (user_id, local_date) violation: this morning ALREADY has a
@@ -3309,7 +3312,11 @@ async function tryPushFirst(opts) {
       return false;
     }
     var deliveryId = created.data.id;
-    if (!live.length) {
+    if (plan.mode === 'off') {
+      console.log('[PUSH] Push is off for ' + opts.userId.slice(0, 8) + ' — no push; text/email now');
+      return false;
+    }
+    if (plan.mode === 'none') {
       console.log('[PUSH] no live device for ' + opts.userId.slice(0, 8) + ' — SMS now');
       return false;
     }
@@ -3326,9 +3333,9 @@ async function tryPushFirst(opts) {
       resultAvailable: true
     });
 
-    var accepted = null, lastReason = null;
-    for (var i = 0; i < live.length; i++) {
-      var d = live[i];
+    var acceptedList = [], lastReason = null;
+    for (var i = 0; i < plan.targets.length; i++) {
+      var d = plan.targets[i];
       // BOTH environments, production first — device_tokens.environment is
       // only what the app claimed, and on 2026-09-04 that claim was wrong
       // for every live token in the fleet. See lib/apns.js.
@@ -3359,23 +3366,38 @@ async function tryPushFirst(opts) {
       // would retire a live token that was merely sent to the wrong host.
       if (r.unregistered) await pruneDeviceToken(d.token, r.reason || 'unregistered');
       if (r.environmentFixed) await correctDeviceEnvironment(d.token, r.environmentUsed);
-      if (r.ok) { accepted = { token: d.token, apnsId: r.apnsId }; break; }
+      // EVERY target, not the first that Apple accepts (2026-10-28).
+      if (r.ok) { acceptedList.push({ token: d.token, apnsId: r.apnsId }); continue; }
       lastReason = (r.reason || ('status ' + r.status)) +
         ' [' + r.attempts.map(function(a) { return a.environment + ':' + (a.reason || a.status); }).join(' ') + ']';
     }
 
-    if (accepted) {
+    if (plan.mode === 'stale') {
+      // The courtesy push: recorded, but the text is the caller's, now.
       await supabase.from('push_deliveries').update({
-        token: accepted.token,
-        apns_id: accepted.apnsId,
-        sent_at: new Date().toISOString()
+        token: acceptedList.length ? acceptedList[0].token : null,
+        apns_id: acceptedList.length ? acceptedList[0].apnsId : null,
+        sent_at: acceptedList.length ? new Date().toISOString() : null,
+        accepted_count: acceptedList.length
+      }).eq('id', deliveryId);
+      console.log('[PUSH] ' + opts.userId.slice(0, 8) + ' has no device seen in ' + pushTargets.RECENT_DAYS + ' days — courtesy push ' +
+        (acceptedList.length ? 'accepted' : 'not accepted') + '; text/email now, not held');
+      return false;
+    }
+
+    if (acceptedList.length) {
+      await supabase.from('push_deliveries').update({
+        token: acceptedList[0].token,
+        apns_id: acceptedList[0].apnsId,
+        sent_at: new Date().toISOString(),
+        accepted_count: acceptedList.length
       }).eq('id', deliveryId);
       // Only the SMS waits on the ack. The email goes now (migration 060):
       // the grace period avoids a push AND a text for one result, and an
       // email beside a push is not that duplication. A method-both user
       // waited ten minutes for an email until 2026-09-17.
       var emailNow = await sendEmailAlongsidePush(deliveryId, opts);
-      console.log('[PUSH] sent to ' + opts.userId.slice(0, 8) + ' (' + opts.result + '); ' +
+      console.log('[PUSH] sent to ' + acceptedList.length + ' device(s) for ' + opts.userId.slice(0, 8) + ' (' + opts.result + '); ' +
         (emailNow === 'sent' ? 'email sent now; ' : emailNow === 'failed' ? 'email FAILED (sweep will retry); ' : '') +
         'SMS held for ' + pushFallbackMinutes() + ' min unless acked');
       return true;
@@ -3974,6 +3996,14 @@ app.get('/api/v1/devices', authV1, async function(req, res) {
       console.error('[PUSH] device list failed:', r.error.message);
       return v1Error(res, 500, 'internal', 'Could not list your devices.', true);
     }
+    // receivesResults (2026-10-28): would this device get tomorrow's result
+    // push? The same rule the morning uses (lib/push-targets.js): every
+    // device seen within 14 days, or — if none is — the freshest, as a
+    // courtesy. Nothing does when Push is off. A failed schedule read
+    // reports the device rule alone (Push's default is on).
+    var ps = await supabase.from('user_schedules').select('notify_push').eq('user_id', req.user.id).maybeSingle();
+    var pushIsOff = !!(ps.data && ps.data.notify_push === false);
+    var targets = pushIsOff ? [] : pushTargets.choosePushTargets(r.data || [], Date.now()).targets.map(function(t) { return t.token; });
     res.json({
       devices: (r.data || []).map(function(d) {
         return {
@@ -3983,7 +4013,8 @@ app.get('/api/v1/devices', authV1, async function(req, res) {
           appVersion: d.app_version || null,
           osVersion: d.os_version || null,
           createdAt: d.created_at,
-          lastSeenAt: d.last_seen_at
+          lastSeenAt: d.last_seen_at,
+          receivesResults: targets.indexOf(d.token) >= 0
         };
       })
     });
@@ -4617,11 +4648,9 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
     }
     // A delivery method with no destination means the user silently gets
     // nothing — the exact failure this service cannot have.
-    // notifyMethods is the documented shape (§3): an ARRAY. The column stores
-    // a single email|sms|both, so the array is mapped onto it — and `push` is
-    // deliberately NOT stored there: push is driven by registered devices
-    // (§4.12), not by this field. The response echoes what was actually saved,
-    // so a caller who sends push can see it did not persist here.
+    // notifyMethods is the documented shape (§3): an ARRAY. Its sms/email part
+    // is stored in notify_method (email|sms|both); `push` is stored on its own
+    // in notify_push (migration 075, 2026-10-28) — see the build gate below.
     var notifyMethod;
     if (Array.isArray(b.notifyMethods)) {
       var wanted = b.notifyMethods.map(function(x) { return String(x).trim().toLowerCase(); });
@@ -4691,6 +4720,25 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
       }
     }
 
+    // THE PUSH PREFERENCE, behind a BUILD GATE (lib/push-targets.js,
+    // test/push-targets.test.js). 'push' present turns it on from any build.
+    // 'push' ABSENT turns it off only from build PUSH_PREF_MIN_BUILD (25)
+    // on: older builds never saw a stored value — their Account sheet always
+    // reopened Push unticked — so their saves omit it by accident, and
+    // honouring that would switch off push for anyone who edits their
+    // notification settings. Unset PUSH_PREF_MIN_BUILD: nobody can turn it
+    // off yet. The build is read from THIS request's User-Agent.
+    var reqBuild = appBuildFromUA(req.headers['user-agent']);
+    var pushMinBuild = pushTargets.minBuildFromEnv(process.env.PUSH_PREF_MIN_BUILD);
+    var pushPref = pushTargets.pushPreferenceFromSave({
+      notifyMethods: Array.isArray(b.notifyMethods) ? b.notifyMethods : undefined,
+      build: reqBuild, minBuild: pushMinBuild
+    });
+    if (pushPref === undefined && Array.isArray(b.notifyMethods)) {
+      console.log('[V1-SCHEDULE] ' + req.user.id.slice(0, 8) + ' saved without push from build ' + (reqBuild || 'unknown') +
+        ' — Push preference left as it was (cut-over build ' + (pushMinBuild || 'not set') + ')');
+    }
+
     var data = {
       user_id: req.user.id,
       county: county,
@@ -4711,6 +4759,9 @@ app.put('/api/v1/schedule', authV1, async function(req, res) {
       // existing row is read: a save no longer undoes a pause the person
       // chose (§4.7). b.enabled is ignored — resuming is /schedule/resume.
     };
+    // Written only when the save decides it; otherwise the stored value (or,
+    // on a new schedule, the column default: on) stands.
+    if (pushPref !== undefined) data.notify_push = pushPref;
 
     // ftbendColor was previously ignored outright — the colour was only
     // writable through the website. Accept it here, resolved through the

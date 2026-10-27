@@ -80,7 +80,8 @@ CALL_STAGGER_SECONDS (spacing between Montgomery dials sharing a call time; defa
 ALERT_EMAIL (where the 10:00 AM Fort Bend recording check sends problems — Dave; unset = every admin, with a note saying so),
 APPSTORE_APP_APPLE_ID (the app's numeric Apple ID — required to verify Production In-App Purchases),
 APPSTORE_ISSUER_ID, APPSTORE_KEY_ID, APPSTORE_PRIVATE_KEY (App Store Connect In-App Purchase key, the .p8 — the App Store Server API cross-check; optional),
-APPSTORE_BUNDLE_ID (defaults to com.probationcall.app)
+APPSTORE_BUNDLE_ID (defaults to com.probationcall.app),
+PUSH_PREF_MIN_BUILD (first iOS build that loads and shows the Push choice — 25; until set, no build can turn Push off by omitting it)
 ```
 
 ---
