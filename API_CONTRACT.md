@@ -127,7 +127,7 @@ The outcome of a day's call.
 | `NO_COLOR` | Announcement heard and recorded, but the account has no colour on file, so no verdict is possible. Fort Bend only | Yes |
 | `HOTLINE_DOWN` | Hotline unreachable | **No** |
 | `CALL_FAILED` | Call never connected | **No** |
-| `PIN_EXPIRED` | PIN no longer valid at the hotline. Montgomery only | **No** |
+| `PIN_EXPIRED` | PIN no longer valid at the hotline. Montgomery only. Two on **consecutive days** pause the schedule as `pin_expired` (consecutive since 2026-10-28) | **No** |
 | `WRONG_PIN` | The hotline rejected the PIN — it asked for the ID number again after we entered it. Montgomery only. Emitted since 2026-10-28; see below | **No** |
 | `IN_PROGRESS` | Call running or retries pending | n/a |
 | `SCHEDULED` | Enabled; this morning's call hasn't started yet. The user's answer is "wait" | n/a |
@@ -152,9 +152,11 @@ fault and hits everyone, so a verdict needs all of:
 - **Two hearings on a scheduled morning, on the same PIN.** One hearing is
   retried (it may be a dropped tone); a PIN changed in between starts over.
   Call Now has no retries, so one hearing is its answer.
-- **Another Montgomery account got a result heard that morning** — proof the
-  line is accepting our tones. Without it the morning keeps retrying and, if
-  it ends unproven, is `UNKNOWN`. This protects the day's earliest call.
+- **Another Montgomery subscriber got a result heard that morning** — proof
+  the line is accepting our tones. Not the demo account, whose fake morning
+  result is written before anyone is dialled, and not one of our own
+  accounts. Without it the morning keeps retrying and, if it ends unproven,
+  is `UNKNOWN`. This protects the day's earliest call.
 - **Fewer than 3 accounts heard the repeat that morning.** At 3 or more it
   is treated as our problem: nobody gets `WRONG_PIN` for it, those mornings
   carry on as ordinary no-result retries, and admins are alerted.
@@ -163,9 +165,11 @@ A scheduled morning that runs out of attempts before confirming is `UNKNOWN`.
 `WRONG_PIN` is final for the morning, **never bills**, and **never pushes**:
 like `PIN_EXPIRED` it is an action item ("check your PIN, and call the
 hotline yourself today") and goes by SMS and email, never quieted. Two
-scheduled mornings of `WRONG_PIN` in a row on the PIN on file pause the
-schedule with `pause_reason` `wrong_pin`, which only saving a **different**
-PIN lifts (§4.7, §4.8). Call Now never counts toward it.
+scheduled mornings of `WRONG_PIN` on **consecutive days**, on the PIN on
+file, pause the schedule with `pause_reason` `wrong_pin`, which only saving a
+**different** PIN lifts (§4.7, §4.8). Any other morning in between — a
+result, `UNKNOWN`, a skipped or paused day — starts the count over. Call Now
+never counts toward it.
 
 `WRONG_PIN` and `PIN_EXPIRED` are different failures with different fixes:
 `WRONG_PIN` is the person's to fix (a typo — correct the PIN);
@@ -212,7 +216,14 @@ outcome exists yet (`SCHEDULED` / `IN_PROGRESS` / `NOT_CALLED`).
 | `no_credits` | **Yes** | Buy credits. No Resume button — it'd be dead. |
 | `unknown_streak` | No | Call the hotline yourself; check whether the PIN changed |
 | `pin_expired` | No | Contact your officer for a new PIN. Saving the **new** PIN resumes (§4.7); saving the same PIN does not. **No Resume button** — `POST /schedule/resume` is refused with `409 pin_expired` (§4.8) |
-| `wrong_pin` | No | The hotline rejected the PIN on 2 mornings (§2 `WRONG_PIN`, 2026-10-28). Check it for a typo; saving a **different** PIN resumes (§4.7), saving the same PIN or any other change does not. **No Resume button** — `POST /schedule/resume` is refused with `409 wrong_pin` (§4.8). Route the person to PIN entry |
+| `wrong_pin` | No | The hotline rejected the PIN on 2 consecutive mornings (§2 `WRONG_PIN`, 2026-10-28). Check it for a typo; saving a **different** PIN resumes (§4.7), saving the same PIN or any other change does not. **No Resume button** — `POST /schedule/resume` is refused with `409 wrong_pin` (§4.8). Route the person to PIN entry |
+
+`pin_expired` and `wrong_pin` cannot be stepped round (2026-10-28): pausing
+keeps the reason (§4.8), so pause-then-resume does not lift them, and a
+schedule deleted while so paused, or moved to Fort Bend and back, then saved
+with the **same** PIN comes back paused for the same reason (§4.7).
+`sms_opted_out` is kept by pause the same way. Moving the schedule to **Fort
+Bend** does lift a PIN pause: there is no PIN there to be wrong about.
 | `sms_opted_out` | No (resumes on START) | Switch to email. **No Resume button** — see below |
 | `user` | No | Resume |
 
@@ -983,7 +994,11 @@ counters).
 Server-side rules that already exist and must be preserved: a **PIN change**
 clears `consecutive_pin_expired` (2026-10-06 — until then every save did, so
 an unrelated edit the day after a first `PIN_EXPIRED` pushed the auto-pause
-back a day), and the `WRONG_PIN` count the same way (2026-10-28).
+back a day), and the `WRONG_PIN` count the same way (2026-10-28). Montgomery
+writes `pin`; its row also stores `ftbend_office: 'missouri'`, a placeholder
+that means nothing on a Montgomery schedule, and its save refuses
+`ftbendColor` and leaves the profile's colour alone. Fort Bend writes null
+`pin`.
 
 **A save applies to this morning's remaining calls (2026-10-28).** Every
 automatic dial — the morning call, each retry, recovery, the first-day call —
@@ -991,8 +1006,18 @@ reads the schedule when it dials and uses the PIN, hotline number and
 notification details on file at that moment. Until this date a retry used
 the copy taken when it was queued, so a PIN corrected at 7 AM was ignored
 until the 2 PM cutoff. A schedule moved to Fort Bend is no longer dialled on
-the Montgomery line. Montgomery writes `pin` and null office/color; Fort Bend writes
-null `pin`.
+the Montgomery line.
+
+**A PIN pause follows the PIN (2026-10-28).**
+- Moving a schedule paused `pin_expired` or `wrong_pin` to **Fort Bend**
+  lifts the pause and clears both PIN counts: there is no PIN there, and
+  nothing else could ever lift it.
+- A Montgomery schedule put back on the line **without** the save that lifts
+  a PIN pause — re-created after a delete, or moved back from Fort Bend — on
+  the **same** PIN the hotline last rejected comes back `enabled: false` with
+  that `pauseReason`, unless the account has had a `MUST_TEST` or `NO_TEST`
+  since. Until this date both were ways to start calling that PIN again. A
+  different PIN starts normally.
 
 **A save does not undo a pause the person chose (2026-09-30).** Until this
 date every save forced `enabled: true` and cleared `paused_reason`. That rule
@@ -1006,8 +1031,8 @@ nothing told them. A save now lifts a pause only when its cause is gone:
 | `user` | **Still paused.** Only `POST /schedule/resume` lifts it |
 | `no_credits` | Still paused at a zero balance (the top-up auto-resumes it); resumed if the account has credits |
 | `sms_opted_out` | Resumed only if the saved channel delivers — `email` in `notifyMethods` with an address, or a number that is not opted out. Otherwise still paused |
-| `pin_expired` | Resumed **only if the save carries a different PIN** (2026-10-06). The same PIN would fail the same way: calls restart, report `PIN_EXPIRED` again and re-pause a day or two later |
-| `wrong_pin` | Resumed **only if the save carries a different PIN** (2026-10-28), for the same reason |
+| `pin_expired` | Resumed **only if the save carries a different PIN** (2026-10-06), or moves the schedule to Fort Bend (2026-10-28). The same PIN would fail the same way: calls restart, report `PIN_EXPIRED` again and re-pause a day or two later |
+| `wrong_pin` | Resumed **only if the save carries a different PIN**, or moves the schedule to Fort Bend (2026-10-28), for the same reason |
 | `unknown_streak` | Resumed |
 | `null` on a paused schedule (untagged; predates tagging) | Resumed |
 | any other value | Still paused. A save never undoes a pause it does not know |
@@ -1227,6 +1252,11 @@ replace and runs every save rule; use this for an office-only edit.
 
 Pause takes `{"reason":"vacation until 9/2"}` and writes `enabled=false`,
 `paused_reason='user'`. Resume writes `enabled=true, paused_reason=null`.
+
+Pause on a schedule **already paused** `pin_expired`, `wrong_pin` or
+`sms_opted_out` changes nothing and returns `200` with that `pauseReason`
+(2026-10-28). Overwriting it with `user` let Resume lift a pause whose remedy
+is a new PIN or a working channel.
 Resume is the only way to lift a `user` pause: a `PUT /schedule` leaves it in
 place (§4.7, 2026-09-30).
 
