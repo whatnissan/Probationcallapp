@@ -1407,6 +1407,7 @@ function loadUser() {
           no_credits: '⏸ Checks paused — out of credits',
           unknown_streak: '⏸ Checks paused — recent calls got no result',
           pin_expired: '⏸ Checks paused — your PIN expired',
+          wrong_pin: '⏸ Checks paused — the hotline rejected your PIN. Check it for a typo and save the correct PIN below.',
           sms_opted_out: '⏸ Checks paused — you stopped texts and we have no email for you. Add an email below and choose Email or Both to resume.',
           // Only the app can pause, and a save here does not undo it (§4.7).
           user: '⏸ Checks paused — you paused them in the app. Resume them there.'
@@ -2025,6 +2026,7 @@ async function connectWS() {
       if (d.result === 'NO_TEST') { st.className = 'status success'; st.textContent = '✅ No test today!'; }
       else if (d.result === 'MUST_TEST') { st.className = 'status error'; st.textContent = '🚨 TEST REQUIRED!'; }
       else if (d.result === 'RETRY_PENDING') { st.className = 'status retry'; st.textContent = '🔄 Retrying in 5 min...'; }
+      else if (d.result === 'WRONG_PIN') { st.className = 'status warning'; st.textContent = '🔑 The hotline didn\'t accept your PIN — check it for a typo'; }
       else { st.className = 'status warning'; st.textContent = '⚠️ Unknown result'; }
       loadUser();
     }
@@ -2195,6 +2197,7 @@ document.getElementById('scheduleForm').onsubmit = function(e) {
       user: 'You paused them in the ProbationCall app — resume them there.',
       no_credits: 'Add credits and they restart automatically.',
       pin_expired: 'The hotline said your PIN expired. Enter the new PIN from your officer — the checks restart when the PIN changes.',
+      wrong_pin: 'The hotline rejected this PIN on two mornings. Check it for a typo — the checks restart when you save a different PIN.',
       sms_opted_out: 'Texts are stopped for this number — add an email and choose Email or Both to resume.'
     };
     if (d.success && d.enabled === false) { alert('✅ Schedule saved — your daily checks are still paused.' + (STILL_PAUSED[d.pausedReason] ? '\n\n' + STILL_PAUSED[d.pausedReason] : '')); loadUser(); }
@@ -3268,7 +3271,7 @@ function loadHistoryArchivePage() {
     .then(function(r) { return r.json(); })
     .then(function(d) {
       if (_historyArchive.county !== asked) return;      // they switched views meanwhile
-      var RESULT_TEXT = { MUST_TEST: 'MUST TEST', NO_TEST: 'NO TEST', NO_COLOR: 'NO COLOUR SET', NOT_CALLED: 'NOT CALLED', UNKNOWN: 'NO RESULT' };
+      var RESULT_TEXT = { MUST_TEST: 'MUST TEST', NO_TEST: 'NO TEST', NO_COLOR: 'NO COLOUR SET', NOT_CALLED: 'NOT CALLED', UNKNOWN: 'NO RESULT', WRONG_PIN: 'PIN REJECTED' };
       (d.items || []).forEach(function(it) {
         var item = mkEl('div'); item.className = 'history-item';
         var head = mkEl('div'); head.className = 'history-header';

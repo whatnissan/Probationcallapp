@@ -60,7 +60,8 @@ test('the PIN-expired count resets only on a new schedule or a changed PIN', () 
   assert.strictEqual(pinChanged({ pin: '111111' }, { pin: '222222' }), true);
   assert.strictEqual(pinChanged({ pin: '111111' }, { pin: '111111' }), false, 'an unrelated save keeps the count');
   assert.strictEqual(pinChanged({}, { pin: '222222' }), false, 'unknown stored PIN: no reset');
-  assert.match(server, /if \(!existing \|\| pinChanged\(existing, data\)\) data\.consecutive_pin_expired = 0;/, 'applyPauseOnSave owns the reset');
+  assert.match(server, /if \(!existing \|\| pinChanged\(existing, data\)\) \{ data\.consecutive_pin_expired = 0; data\.consecutive_wrong_pin = 0; \}/,
+    'applyPauseOnSave owns the reset — of both PIN counts (wrong_pin since 2026-10-28)');
   assert.ok(!/^\s*consecutive_pin_expired: 0\s*$/m.test(server), 'no writer resets it unconditionally any more');
 });
 

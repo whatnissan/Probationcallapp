@@ -22,7 +22,7 @@ const { createClient } = require('@supabase/supabase-js');
 const {
   FTBEND_COLORS, FTBEND_PHASES, FTBEND_MISRECOGNITIONS, KEYWORDS,
   validateFtbendColor, detectColor, detectPhaseColors, detectPinExpired,
-  phoneticMatch, doCrossCheck, setColorVocabulary
+  detectPinReprompt, phoneticMatch, doCrossCheck, setColorVocabulary
 } = require('./lib/detection');
 const { formatLocalDay, localDayBoundsUtc, daysBetweenLocalDays, shiftLocalDay, localWeekday, todayMD, wouldExceedCutoff, wouldExceedFtbendCutoff, ftbendRetryDelayMs, endOfLocalDayEpochSeconds } = require('./lib/time');
 const { computeTieredPriceCents, creditPricing, MAX_EXACT_CREDITS } = require('./lib/pricing');
@@ -47,6 +47,7 @@ const appstoreRules = require('./lib/appstore');
 // The dial-time pause check (2026-10-27): every automatic dial asks the
 // schedule row as it is NOW.
 const dialGuard = require('./lib/dial-guard');
+const wrongPin = require('./lib/wrong-pin');
 // The Push choice and which devices get a result push (2026-10-28).
 const pushTargets = require('./lib/push-targets');
 const subscriptionState = require('./lib/subscription-state');
@@ -882,7 +883,7 @@ async function deductCreditOnce(userId, idempotencyKey, options) {
       console.log('[CREDITS] billed 1 from ' + userId.slice(0, 8) + ' (-> ' + newCredits + ') key=' + idempotencyKey);
       // A successful billable result resets both skip counters: the user is
       // back in good standing on credits AND the hotline accepted their PIN.
-      await supabase.from('user_schedules').update({ no_credit_skip_count: 0, consecutive_pin_expired: 0 }).eq('user_id', userId);
+      await supabase.from('user_schedules').update({ no_credit_skip_count: 0, consecutive_pin_expired: 0, consecutive_wrong_pin: 0 }).eq('user_id', userId);
       // Earned extension (migration 044) — BUILT AND HELD: earned_grant_enabled
       // is false until the September 2026 paywall cohort resolves. When on,
       // the database decides (real billed results, a MUST_TEST, low balance,
@@ -981,10 +982,12 @@ var NO_RESULT_STATUSES = ['UNKNOWN', 'CALL_FAILED', 'HOTLINE_DOWN', 'TRANSCRIBER
 async function checkConsecutiveUnknown(userId, lastReason, notifyNumber, notifyEmail, notifyMethod) {
   // PIN_EXPIRED is filtered OUT here so it neither contributes to nor
   // occupies a slot in the no-result streak. Its own counter handles it.
+  // WRONG_PIN likewise (2026-10-28): consecutive_wrong_pin owns it.
   var recent = await supabase.from('call_history')
     .select('result, created_at')
     .eq('user_id', userId)
     .neq('result', 'PIN_EXPIRED')
+    .neq('result', 'WRONG_PIN')
     .order('created_at', { ascending: false })
     .limit(UNKNOWN_STREAK_THRESHOLD);
   if (recent.error || !recent.data) return;
@@ -1126,6 +1129,152 @@ async function handlePinExpiredResult(userId, lastTranscript, notifyNumber, noti
   }
 }
 
+// WRONG_PIN (2026-10-28, Dave): the hotline asked for the ID number again
+// after we entered the PIN — on two attempts this morning, with other
+// accounts getting through (lib/wrong-pin.js has every rule and why).
+// Every WRONG_PIN morning tells the person; WRONG_PIN_PAUSE_MORNINGS of them
+// in a row on the PIN on file pause the schedule as 'wrong_pin', which only
+// saving a DIFFERENT PIN lifts. Never pushes and is never quieted: it is an
+// action item, like PIN_EXPIRED. Never billed. The PIN is in the message
+// because the likeliest cause is a typo the person can spot.
+var MONTGOMERY_HOTLINE_DISPLAY = '+1 (936) 283-4848';
+function wrongPinFirstNotice(pin) {
+  return '⚠️ The hotline didn\'t accept your PIN\n\nThis morning the hotline asked for your ID number again after we entered your PIN — twice. That usually means the PIN on your account has a typo.\n\nPIN we entered: ' + pin + '\n\nPlease:\n1. Call the hotline yourself today to check whether you need to test:\n' + MONTGOMERY_HOTLINE_DISPLAY + '\n2. Check your PIN in the app or at probationcall.com, and correct it if it\'s wrong.\n\nYou were not charged a credit for today. If the hotline rejects this PIN again on your next check, we\'ll pause your daily checks until the PIN is changed.\n\n- ProbationCall.com';
+}
+function wrongPinPauseNotice(pin) {
+  return '⏸ ProbationCall paused\n\nThe hotline has rejected your PIN on ' + wrongPin.WRONG_PIN_PAUSE_MORNINGS + ' mornings in a row — it asks for your ID number again after we enter it. Calling with the same PIN would fail the same way, so we\'ve paused your daily checks.\n\nPIN we entered: ' + pin + '\n\nWhat to do:\n1. Call the hotline yourself to check whether you need to test:\n' + MONTGOMERY_HOTLINE_DISPLAY + '\n2. Correct your PIN in the app or at probationcall.com — saving a different PIN restarts your checks.\n3. If you\'re sure this PIN is right, reply or contact us and we\'ll look into it.\n\nYou were not charged for these mornings.\n\n- ProbationCall.com';
+}
+function wrongPinCallNowNotice(pin) {
+  return '⚠️ The hotline didn\'t accept your PIN\n\nWhen we entered your PIN, the hotline asked for your ID number again. Please check the PIN on your account for a typo.\n\nPIN we entered: ' + pin + '\n\nCall the hotline yourself to check whether you need to test:\n' + MONTGOMERY_HOTLINE_DISPLAY + '\n\nYou were not charged.\n\n- ProbationCall.com';
+}
+
+async function handleWrongPinResult(userId, pin, notifyNumber, notifyEmail, notifyMethod) {
+  var schedRes = await supabase.from('user_schedules')
+    .select('consecutive_wrong_pin, enabled')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (schedRes.error || !schedRes.data) {
+    // No count, so no pause decision — but the person still hears today.
+    console.error('[WRONG-PIN] Count read failed for ' + userId.slice(0, 8) + ' — sending the first notice:', schedRes.error ? schedRes.error.message : 'no schedule');
+    await notify(notifyNumber, notifyEmail, notifyMethod, wrongPinFirstNotice(pin), 'wrong_pin_first')
+      .catch(function(e) { console.error('[WRONG-PIN] first notice failed for ' + userId.slice(0, 8) + ':', e.message); });
+    return;
+  }
+  var newCount = (schedRes.data.consecutive_wrong_pin || 0) + 1;
+  await supabase.from('user_schedules').update({ consecutive_wrong_pin: newCount }).eq('user_id', userId);
+  console.log('[WRONG-PIN] User ' + userId.slice(0, 8) + ' consecutive count: ' + newCount + '/' + wrongPin.WRONG_PIN_PAUSE_MORNINGS);
+
+  if (!wrongPin.pausesAfter(newCount)) {
+    await notify(notifyNumber, notifyEmail, notifyMethod, wrongPinFirstNotice(pin), 'wrong_pin_first')
+      .catch(function(e) { console.error('[WRONG-PIN] first notice failed for ' + userId.slice(0, 8) + ':', e.message); });
+    return;
+  }
+  if (schedRes.data.enabled === false) {
+    console.log('[WRONG-PIN] Schedule already paused for ' + userId.slice(0, 8) + ' — not re-notifying');
+    return;
+  }
+  // Tagged, so it never reads as the person's own pause, the no_credits
+  // auto-resume never touches it, and only a different PIN lifts it
+  // (lib/schedule-pause.js, POST /schedule/resume).
+  await supabase.from('user_schedules').update({ enabled: false, paused_reason: 'wrong_pin' }).eq('user_id', userId);
+  await stopScheduledCalls(userId, '[WRONG-PIN]');
+  console.log('[WRONG-PIN] Schedule auto-paused for ' + userId.slice(0, 8));
+  await notify(notifyNumber, notifyEmail, notifyMethod, wrongPinPauseNotice(pin), 'wrong_pin').catch(function() {});
+
+  var adminResult = await supabase.from('profiles').select('id').eq('is_admin', true);
+  if (adminResult.data) {
+    for (var a = 0; a < adminResult.data.length; a++) {
+      var adminSched = await supabase.from('user_schedules').select('notify_number').eq('user_id', adminResult.data[a].id).maybeSingle();
+      if (adminSched.data && adminSched.data.notify_number) {
+        await sendSMS(adminSched.data.notify_number,
+          '⚠️ ADMIN: User ' + userId.slice(0, 8) + ' auto-paused: the hotline rejected their PIN on ' + wrongPin.WRONG_PIN_PAUSE_MORNINGS + ' mornings in a row (asked for the ID number again). Only a new PIN resumes it.',
+          'wrong_pin_admin').catch(function() {});
+      }
+    }
+  }
+}
+
+// Many accounts hearing the repeated prompt on one morning is OUR problem
+// (lib/wrong-pin.js rule 1). One alert per day: nobody is being told their
+// PIN is wrong for it, and the mornings carry on as no-result retries.
+var _repromptFaultDate = null;
+async function alertAdminRepromptFault(accounts, toldEarlier) {
+  try {
+    var today = formatLocalDay(new Date(), 'America/Chicago');
+    if (_repromptFaultDate === today) return;
+    _repromptFaultDate = today;
+    var admins = await supabase.from('profiles').select('id, email').eq('is_admin', true);
+    var text = '🚨 ProbationCall ADMIN: ' + accounts + ' Montgomery accounts heard the hotline ask for the ID number again this morning, after we entered their PINs. ' +
+      'That is a tone or hotline problem, not ' + accounts + ' wrong PINs: no WRONG_PIN verdicts or wrong-PIN pauses are being issued for it, and those mornings carry on as ordinary no-result retries. Listen to a recording.' +
+      (toldEarlier > 0 ? ' ' + toldEarlier + ' account(s) were told their PIN was rejected earlier this morning, before the count reached ' + wrongPin.SYSTEM_FAULT_ACCOUNTS + ' — check them.' : '') +
+      ' 1 alert/day.';
+    for (var i = 0; i < ((admins.data) || []).length; i++) {
+      var as = await supabase.from('user_schedules').select('notify_number').eq('user_id', admins.data[i].id).maybeSingle();
+      if (as && as.data && as.data.notify_number) await sendSMS(as.data.notify_number, text, 'wrong_pin_fault_admin');
+      if (admins.data[i].email) await sendEmail(admins.data[i].email, text, 'wrong_pin_fault_admin');
+    }
+  } catch (e) {
+    console.error('[WRONG-PIN] fault alert failed:', e.message);
+  }
+}
+
+// A Montgomery call heard the repeated ID prompt. Records the hearing in
+// pin_reprompts (migration 076 — awaited, because the count below must
+// include it; not call_attempts, whose readers count every row as a dial),
+// reads the facts lib/wrong-pin.js decides on, and returns its verdict. A
+// failed read counts as "the line is unproven": no verdict without the
+// evidence for one.
+async function decideReprompt(config) {
+  var tz = 'America/Chicago';
+  var today = formatLocalDay(new Date(), tz);
+  var bounds = localDayBoundsUtc(today, tz);
+  await supabase.from('pin_reprompts').insert({
+    user_id: config.userId, call_sid: config.callSid || null,
+    is_scheduled: config.isScheduledMorning === true
+  }).then(function(r) {
+    if (r && r.error) console.error('[WRONG-PIN] could not record the hearing for ' + config.userId.slice(0, 8) + ':', r.error.message);
+  }, function(e) { console.error('[WRONG-PIN] could not record the hearing for ' + config.userId.slice(0, 8) + ':', e.message); });
+
+  var heard = await supabase.from('pin_reprompts').select('user_id')
+    .gte('created_at', bounds.start).lt('created_at', bounds.end);
+  var accounts = {};
+  accounts[config.userId] = true;
+  (heard.data || []).forEach(function(r) { if (r.user_id) accounts[r.user_id] = true; });
+
+  var resolved = await supabase.from('call_history').select('user_id')
+    .eq('county', 'montgomery').in('result', ['MUST_TEST', 'NO_TEST', 'PIN_EXPIRED'])
+    .neq('user_id', config.userId)
+    .gte('created_at', bounds.start).lt('created_at', bounds.end);
+  var others = {};
+  (resolved.data || []).forEach(function(r) { others[r.user_id] = true; });
+
+  var earlierSamePin = false;
+  if (config.isScheduledMorning) {
+    var pr = await supabase.from('pending_retries').select('last_result, pin, created_at').eq('user_id', config.userId).maybeSingle();
+    earlierSamePin = !!(pr.data && pr.data.last_result === 'WRONG_PIN' &&
+      String(pr.data.pin) === String(config.pin) &&
+      formatLocalDay(new Date(pr.data.created_at), tz) === today);
+  }
+
+  var readFailed = !!(heard.error || resolved.error);
+  if (readFailed) console.error('[WRONG-PIN] count read failed for ' + config.userId.slice(0, 8) + ' — treating the line as unproven');
+  var v = wrongPin.repromptVerdict({
+    scheduled: config.isScheduledMorning === true,
+    earlierSamePin: earlierSamePin,
+    accountsRepromptedToday: heard.error ? 1 : Object.keys(accounts).length,
+    othersResolvedToday: readFailed ? 0 : Object.keys(others).length
+  });
+  console.log('[WRONG-PIN] ' + config.userId.slice(0, 8) + ' heard the ID prompt repeat — ' + v.why +
+    ' (accounts today ' + Object.keys(accounts).length + ', others through ' + Object.keys(others).length +
+    ', earlier same PIN ' + earlierSamePin + ') → ' + v.result + (v.final ? ' final' : ' retry'));
+  if (v.why === 'system_fault') {
+    var told = await supabase.from('call_history').select('user_id').eq('result', 'WRONG_PIN')
+      .gte('created_at', bounds.start).lt('created_at', bounds.end);
+    alertAdminRepromptFault(Object.keys(accounts).length, (told.data || []).length).catch(function() {});
+  }
+  return v;
+}
+
 // ========== AUTO-RETRY-ON-UNKNOWN (morning-aggregated retry) ==========
 // Built-in retry sequence for the daily Montgomery scheduled call. When a
 // scheduled-morning call resolves to a no-result outcome (UNKNOWN /
@@ -1172,6 +1321,9 @@ async function getUserTimezone(userId) {
 async function finalFailMorning(state, existingRow) {
   var userId = state.user_id;
   var attemptsMade = state.attempt_number;
+  // A WRONG_PIN still waiting for its confirming attempt was never
+  // confirmed: the morning is UNKNOWN like any other (lib/wrong-pin.js).
+  var morningResult = wrongPin.finalFailResult(state.last_result);
 
   // Streak check FIRST so its lookback SELECT doesn't race with our INSERT.
   await checkConsecutiveUnknown(userId, '(retry sequence exhausted after ' + attemptsMade + ' attempts — last: ' + state.last_result + ')', state.notify_number, state.notify_email, state.notify_method)
@@ -1182,7 +1334,7 @@ async function finalFailMorning(state, existingRow) {
     call_sid: state.last_call_sid || 'unknown',
     target_number: state.target_number || '+19362834848',
     pin_used: state.pin,
-    result: state.last_result,
+    result: morningResult,
     transcript: state.last_transcript || null,
     recording_url: state.last_recording_url,
     // Completes migration 034 for the retry-exhausted path: these mornings
@@ -1262,7 +1414,17 @@ async function handleScheduledMorningNoResult(config, result, callSid, transcrip
   }
 
   if (row) {
+    // The PIN and contact details travel with the row from the attempt that
+    // just ran — which, since 2026-10-28, used the schedule as it was at
+    // dial time (initiateCall). Keeps the row's PIN the one last tried, so a
+    // repeated ID prompt is only confirmed as WRONG_PIN on the SAME PIN, and
+    // keeps a cutoff final-fail from writing to old contact details.
     var upd = await supabase.from('pending_retries').update({
+      pin: config.pin || row.pin,
+      target_number: config.targetNumber || row.target_number,
+      notify_number: config.notifyNumber || null,
+      notify_email: config.notifyEmail || null,
+      notify_method: config.notifyMethod || row.notify_method,
       attempt_number: attemptsCompleted,
       last_result: result,
       last_call_sid: callSid,
@@ -2414,7 +2576,7 @@ app.get('/api/v1/me', authV1, async function(req, res) {
 // kinds require a call_events table (backlogged, not built) and are not
 // emitted — synthesizing them would narrate a call from data we never
 // stored.
-var V1_USABLE_TODAY = /^(MUST_TEST|NO_TEST|NO_COLOR|PIN_EXPIRED|UNKNOWN|HOTLINE_DOWN|CALL_FAILED|TRANSCRIBER_DOWN|RECORDING_UNAVAILABLE|COLOR:|P1:)/;
+var V1_USABLE_TODAY = /^(MUST_TEST|NO_TEST|NO_COLOR|PIN_EXPIRED|WRONG_PIN|UNKNOWN|HOTLINE_DOWN|CALL_FAILED|TRANSCRIBER_DOWN|RECORDING_UNAVAILABLE|COLOR:|P1:)/;
 app.get('/api/v1/today', authV1, async function(req, res) {
   try {
     // Build visibility (migration 051): which build this person is on, from
@@ -4505,7 +4667,7 @@ async function applyPauseOnSave(userId, existing, data, tag) {
   var st = pauseStateOnSave(existing, data, await pauseContextForSave(userId, existing, data));
   data.enabled = st.enabled;
   data.paused_reason = st.paused_reason;
-  if (!existing || pinChanged(existing, data)) data.consecutive_pin_expired = 0;
+  if (!existing || pinChanged(existing, data)) { data.consecutive_pin_expired = 0; data.consecutive_wrong_pin = 0; }
   if (existing && existing.enabled === false) {
     console.log(tag + ' ' + userId.slice(0, 8) + ' saved while paused (' + (existing.paused_reason || 'untagged') + ') — ' +
       (st.enabled ? 'save removed the cause, resumed' : 'pause kept'));
@@ -4910,6 +5072,12 @@ app.post('/api/v1/schedule/resume', authV1, async function(req, res) {
     // sms_opted_out — and checked before credits, which would not help.
     if (cur.data && cur.data.paused_reason === 'pin_expired') {
       return v1Error(res, 409, 'pin_expired', 'The hotline said your PIN expired, so your calls stay paused until the PIN changes. Enter the new PIN from your probation officer — saving it restarts your calls.');
+    }
+    // wrong_pin (2026-10-28): the hotline rejected this PIN on two mornings.
+    // Same remedy and same reason as pin_expired — only a different PIN,
+    // saved through PUT /schedule, lifts it (Dave).
+    if (cur.data && cur.data.paused_reason === 'wrong_pin') {
+      return v1Error(res, 409, 'wrong_pin', 'The hotline rejected your PIN on two mornings in a row, so your calls stay paused until the PIN changes. Check it for a typo and save the correct PIN — that restarts your calls.');
     }
     var prof = await supabase.from('profiles').select('credits').eq('id', req.user.id).maybeSingle();
     var credits = (prof.data && prof.data.credits) || 0;
@@ -9387,6 +9555,11 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
       // (or, in pathological mixed-audio transcripts, NO_TEST/MUST_TEST).
       var result = 'UNKNOWN';
       var isFtbend = config.county === 'ftbend';
+      // The hotline asked for the ID number again: a rejected PIN, or our
+      // tones not arriving. lib/wrong-pin.js decides which (2026-10-28).
+      // detectPinReprompt excludes expiry and test/no-test wording, so this
+      // never competes with the branches below it.
+      var reprompt = (!isFtbend && config.userId && detectPinReprompt(transcript)) ? await decideReprompt(config) : null;
       if (detectPinExpired(transcript)) {
         result = 'PIN_EXPIRED';
         console.log('[TRANSCRIBE] 🪪 PIN_EXPIRED detected for', callId);
@@ -9438,6 +9611,24 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
             fallbackMessage: noTestMsg
           });
           if (!noTestPushed) await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, noTestMsg, callId);
+        }
+      } else if (reprompt && reprompt.result === 'WRONG_PIN' && !reprompt.final) {
+        // Scheduled morning, not confirmed yet (first hearing, or no other
+        // account through yet): the retry engine carries on, and the row it
+        // keeps is marked WRONG_PIN so the next attempt can confirm it. The
+        // morning stays undecided — no row, no notice (result stays UNKNOWN
+        // here, which is what skips the insert below).
+        console.log('[TRANSCRIBE] 🔑 ID prompt repeated for', callId, '— not confirmed yet (' + reprompt.why + '), retrying');
+        await handleScheduledMorningNoResult(config, 'WRONG_PIN', config.callSid, transcript, recordingUrl + '.mp3', recordingDurationSeconds);
+      } else if (reprompt && reprompt.result === 'WRONG_PIN') {
+        result = 'WRONG_PIN';
+        console.log('[TRANSCRIBE] 🔑 WRONG_PIN for', callId, '(' + reprompt.why + ')');
+        if (config.isScheduledMorning) {
+          await handleWrongPinResult(config.userId, config.pin, config.notifyNumber, config.notifyEmail, config.notifyMethod)
+            .catch(function(e) { console.error('[WRONG-PIN] handler failed:', e.message); });
+        } else {
+          // Call Now: the answer, once, and never toward the pause.
+          await notify(config.notifyNumber, config.notifyEmail, config.notifyMethod, wrongPinCallNowNotice(config.pin), callId, 'wrong_pin_heard');
         }
       } else {
         console.log('[TRANSCRIBE] ⚠️ Unknown result for', callId, ':', transcript);
@@ -9497,7 +9688,7 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
       // Suppress the per-attempt UNKNOWN row when this is a scheduled-morning
       // retry — handleScheduledMorningNoResult either queued the next attempt
       // (no row needed yet) or final-failed (already wrote ONE morning row).
-      // MUST_TEST / NO_TEST / PIN_EXPIRED still write here as normal.
+      // MUST_TEST / NO_TEST / PIN_EXPIRED / WRONG_PIN still write here as normal.
       var skipInsertForRetryFlow = config.isScheduledMorning && config.userId && result === 'UNKNOWN';
       if (config.userId && !skipInsertForRetryFlow) {
         var row = {
@@ -9526,7 +9717,7 @@ var TRANSCRIBE_FETCH_TIMEOUT_MS = 30000;
         // A confirmed result ends the morning — clean up any in-flight
         // retry sequence. Covers scheduled-morning AND manual paths (e.g.
         // user clicks "Call Now" mid-retry and gets an answer).
-        if (!insertResult.error && (result === 'MUST_TEST' || result === 'NO_TEST' || result === 'PIN_EXPIRED')) {
+        if (!insertResult.error && (result === 'MUST_TEST' || result === 'NO_TEST' || result === 'PIN_EXPIRED' || result === 'WRONG_PIN')) {
           await supabase.from('pending_retries').delete().eq('user_id', config.userId).then(function() {}, function(e) {
             console.error('[RETRY] Failed to clean pending_retries on confirmed result:', e.message);
           });
@@ -10164,6 +10355,7 @@ var EMAIL_SUBJECTS = {
   earned_extension:   { subject: 'We added credits so your checks keep running', stamp: false, emoji: '🎁', color: '#22c55e' },
   unknown_streak:     { subject: 'Your daily checks are paused — we couldn\'t read your results', stamp: false, emoji: '⏸', color: '#f59e0b' },
   pin_expired:        { subject: 'Your daily checks are paused — your PIN has expired', stamp: false, emoji: '⏸', color: '#f59e0b' },
+  wrong_pin:          { subject: 'Your daily checks are paused — the hotline rejected your PIN', stamp: false, emoji: '⏸', color: '#f59e0b' },
   low_credit:         { subject: 'You\'re running low on credits', stamp: false, emoji: '🔋', color: '#f59e0b' },
   welcome:            { subject: 'Your daily check-in is active', stamp: false, emoji: '🎉', color: '#22c55e' },
   // Per-morning failures — these ARE about today, so they say "call the
@@ -10177,6 +10369,8 @@ var EMAIL_SUBJECTS = {
   dial_failed:        { subject: 'We couldn\'t reach the hotline — trying again within the hour', stamp: true, emoji: '⚠️', color: '#f59e0b' },
   pin_expired_heard:  { subject: 'The hotline says your PIN has expired', stamp: true, emoji: '⚠️', color: '#f59e0b' },
   pin_expired_first:  { subject: 'We couldn\'t confirm your result today — call the hotline', stamp: true, emoji: '⚠️', color: '#f59e0b' },
+  wrong_pin_first:    { subject: 'The hotline didn\'t accept your PIN — call the hotline today', stamp: true, emoji: '⚠️', color: '#f59e0b' },
+  wrong_pin_heard:    { subject: 'The hotline didn\'t accept your PIN', stamp: true, emoji: '⚠️', color: '#f59e0b' },
   ftbend_recording_check: { subject: 'ALERT: Fort Bend recordings — problems at the 10:00 check', stamp: true, emoji: '⚠️' },
   first_day_failed:   { subject: 'We couldn\'t reach the hotline for your first check — call it today', stamp: true, emoji: '⚠️', color: '#f59e0b' },
   ftbend_final_fail:  { subject: 'We couldn\'t get today\'s Fort Bend color — call the hotline', stamp: true, emoji: '⚠️', color: '#f59e0b' },
@@ -10184,6 +10378,7 @@ var EMAIL_SUBJECTS = {
   verify_volume_admin:  { subject: 'ADMIN: verification text volume alert', stamp: true, emoji: '🛠' },
   account_delete_admin: { subject: 'ADMIN: account deletion blocked', stamp: true, emoji: '🛠' },
   demo_tripwire_admin:  { subject: 'ADMIN: demo PIN tripwire fired', stamp: true, emoji: '🛠' },
+  wrong_pin_fault_admin: { subject: 'ADMIN: many accounts heard the hotline repeat the PIN prompt', stamp: true, emoji: '🛠' },
   integrity_digest:     { subject: 'ADMIN: integrity digest', stamp: true, emoji: '🛠' }
 };
 
@@ -11398,8 +11593,8 @@ app.get('/api/admin/dashboard', adminAuth, async function(req, res) {
 // past the 1000-row cap and aggregated here.
 var RELIABILITY_ATTEMPTS_EPOCH = '2026-08-15';
 var RELIABILITY_NOTIF_EPOCH = '2026-08-06';
-var USABLE_RESULTS = /^(MUST_TEST|NO_TEST|PIN_EXPIRED|COLOR:|P1:)/;
-var RESULT_NOTIF_KIND = /^(call_\d+|ftbend_daily|retry-final-fail|pin_expired)$/;
+var USABLE_RESULTS = /^(MUST_TEST|NO_TEST|PIN_EXPIRED|WRONG_PIN|COLOR:|P1:)/;
+var RESULT_NOTIF_KIND = /^(call_\d+|ftbend_daily|retry-final-fail|pin_expired|wrong_pin|wrong_pin_first)$/;
 
 app.get('/api/admin/reliability', adminAuth, async function(req, res) {
   try {
@@ -11920,6 +12115,7 @@ async function alertAdminNewSupportMessage(msg) {
         no_credits: 'paused (no credits)',
         unknown_streak: 'auto-paused (no-result streak)',
         pin_expired: 'auto-paused (PIN expired)',
+        wrong_pin: 'auto-paused (hotline rejected the PIN)',
         sms_opted_out: 'auto-paused (texted STOP, no email on file)',
         user: 'paused (by user)'
       };
@@ -14321,7 +14517,7 @@ cron.schedule('* * * * *', async function() {
       .select('id, result, created_at')
       .eq('user_id', userId)
       .gte('created_at', twentyFourAgo.toISOString())
-      .in('result', ['MUST_TEST', 'NO_TEST', 'PIN_EXPIRED']);
+      .in('result', ['MUST_TEST', 'NO_TEST', 'PIN_EXPIRED', 'WRONG_PIN']);
     var todayLocal = formatLocalDay(new Date(), tz);
     var confirmedToday = false;
     if (confirmedQuery.data) {
