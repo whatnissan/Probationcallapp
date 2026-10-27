@@ -114,3 +114,64 @@ test('hearings go to pin_reprompts; call_attempts still holds only dials', () =>
   assert.ok(o.hearingsRecorded >= 10);
   assert.deepStrictEqual(o.attemptOutcomes, ['dialed']);
 });
+
+// --- 2026-10-28, Dave's review. Each of these failed on the deployed code
+// (9934bab): the demo-only morning was judged, two WRONG_PINs three weeks
+// apart paused, pause-then-resume and delete-then-resave both lifted a PIN
+// pause, and a restart re-sent the fault alert.
+
+test('ONLY THE DEMO ACCOUNT (and one of ours) HAS RESOLVED: the 6:07 caller is not judged', () => {
+  const d = run().demoOnly;
+  assert.strictEqual(d.demoDialled, 0, 'the demo morning dials nothing');
+  assert.ok(['MUST_TEST', 'NO_TEST'].includes(d.demoRow[0]), 'and writes a Montgomery result — which used to count as proof the line works');
+  assert.deepStrictEqual(d.afterTwo, { rows: [], pending: 'WRONG_PIN', mail: 0 }, 'two hearings, no subscriber through: still retrying, nobody told');
+  assert.deepStrictEqual(d.afterSubscriber, { rows: ['WRONG_PIN'], count: 1 }, 'a subscriber getting through is the proof');
+});
+
+test('two WRONG_PINs three weeks apart do not pause; on consecutive days they do', () => {
+  const c = run().consecutive;
+  assert.deepStrictEqual(c.threeWeeksApart, { count: 1, day: '2026-11-03', enabled: true });
+  assert.deepStrictEqual(c.nextDay, { count: 2, enabled: false, reason: 'wrong_pin' });
+});
+
+for (const [key, reason] of [['bypassWrongPin', 'wrong_pin'], ['bypassPinExpired', 'pin_expired']]) {
+  test(reason + ': pause-then-resume does not lift it', () => {
+    const b = run()[key];
+    assert.deepStrictEqual(b.pause, { status: 200, pauseReason: reason, stored: reason }, 'the reason is kept');
+    assert.deepStrictEqual(b.resume, { status: 409, code: reason, enabled: false });
+  });
+  test(reason + ': delete-then-resave on the same PIN comes back paused; a different PIN runs', () => {
+    const b = run()[key];
+    assert.deepStrictEqual(b.deleted, { status: 200, gone: true });
+    assert.strictEqual(b.resaveSame.status, 200);
+    assert.strictEqual(b.resaveSame.enabled, false);
+    assert.strictEqual(b.resaveSame.reason, reason);
+    assert.deepStrictEqual(b.resaveSame.counts, reason === 'wrong_pin' ? [0, 2] : [2, 0], 'with the count that paused it');
+    assert.deepStrictEqual(b.resaveNew, { status: 200, enabled: true, reason: null });
+    assert.strictEqual(b.openPauses, 0, 'and no pause is left open behind a running schedule');
+  });
+}
+
+test('the once-a-day fault alert survives a restart', () => {
+  const o = run();
+  assert.strictEqual(o.fault.claimRecorded, 1, 'the day\'s send is claimed in the database');
+  assert.deepStrictEqual(o.alertAfterRestart, { faultSeen: 'UNKNOWN', newAlerts: 0 }, 'a claim made before a restart holds');
+});
+
+// Dave's follow-ups, same day. On the deployed code: two expiries three
+// weeks apart paused, and a PIN-paused schedule moved to Fort Bend stayed
+// paused with nothing able to lift it — while moving back to Montgomery on
+// the same PIN read as a PIN change and resumed it.
+
+test('the expired-PIN count is consecutive too', () => {
+  const p = run().pinExpired;
+  assert.deepStrictEqual(p.threeWeeksApart, { rows: ['PIN_EXPIRED'], count: 1, day: '2026-11-05', enabled: true });
+  assert.deepStrictEqual(p.nextDay, { count: 2, enabled: false, reason: 'pin_expired' });
+});
+
+test('a PIN pause lifts on a move to Fort Bend; back to Montgomery on the same PIN it returns; a new PIN runs', () => {
+  const f = run().fortBend;
+  assert.deepStrictEqual(f.toFortBend, { status: 200, county: 'ftbend', enabled: true, reason: null, counts: [0, 0] });
+  assert.deepStrictEqual(f.backSamePin, { status: 200, enabled: false, reason: 'wrong_pin' }, 'the round trip is not a way past');
+  assert.deepStrictEqual(f.backNewPin, { status: 200, enabled: true, reason: null });
+});

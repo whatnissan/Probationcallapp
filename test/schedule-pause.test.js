@@ -60,8 +60,8 @@ test('the PIN-expired count resets only on a new schedule or a changed PIN', () 
   assert.strictEqual(pinChanged({ pin: '111111' }, { pin: '222222' }), true);
   assert.strictEqual(pinChanged({ pin: '111111' }, { pin: '111111' }), false, 'an unrelated save keeps the count');
   assert.strictEqual(pinChanged({}, { pin: '222222' }), false, 'unknown stored PIN: no reset');
-  assert.match(server, /if \(!existing \|\| pinChanged\(existing, data\)\) \{ data\.consecutive_pin_expired = 0; data\.consecutive_wrong_pin = 0; \}/,
-    'applyPauseOnSave owns the reset — of both PIN counts (wrong_pin since 2026-10-28)');
+  assert.match(server, /if \(!existing \|\| pinChanged\(existing, data\) \|\| data\.county === 'ftbend'\) \{\s*data\.consecutive_pin_expired = 0; data\.consecutive_wrong_pin = 0; data\.last_pin_expired_day = null; data\.last_wrong_pin_day = null;\s*\}/,
+    'applyPauseOnSave owns the reset — of both PIN counts and their days (2026-10-28), and a Fort Bend schedule has no PIN to count');
   assert.ok(!/^\s*consecutive_pin_expired: 0\s*$/m.test(server), 'no writer resets it unconditionally any more');
 });
 
@@ -86,7 +86,7 @@ test('both writers read the pause and decide through the one helper', () => {
   const v1 = slice("app.put('/api/v1/schedule'", 16000);
   const web = slice("app.post('/api/schedule'", 12000);
   for (const [name, body] of [['v1 PUT', v1], ['website', web]]) {
-    assert.match(body, /select\('id, enabled, paused_reason, pin'\)/, name + ' reads the current pause and PIN');
+    assert.match(body, /select\('id, enabled, paused_reason, pin, county'\)/, name + ' reads the current pause, PIN and county');
     assert.match(body, /await applyPauseOnSave\(req\.user\.id, /, name + ' applies the rule');
     assert.ok(!/^\s*enabled: true,/m.test(body), name + ' no longer forces enabled: true');
   }
@@ -129,5 +129,67 @@ test('POST /schedule/resume refuses pin_expired with 409, before the credits rul
   assert.ok(refusal < h.indexOf('.update(resumeFields)'), 'and before anything is written');
   const contract = require('fs').readFileSync(require('path').join(__dirname, '..', 'API_CONTRACT.md'), 'utf8');
   assert.match(contract, /Resume must also \*\*reject with `409 pin_expired`\*\*/);
-  assert.match(contract, /`pin_expired` \(§4\.8\),/, 'listed with the standard codes');
+  assert.match(contract, /`pin_expired`, `wrong_pin` \(both §4\.8\),/, 'listed with the standard codes');
+});
+
+// 2026-10-28 (Dave's review): two ways round a PIN pause, closed.
+const { userPauseKeeps } = require('../lib/schedule-pause');
+
+test('the person\'s own pause never overwrites a pause only its own remedy lifts', () => {
+  for (const r of ['pin_expired', 'wrong_pin', 'sms_opted_out']) {
+    assert.strictEqual(userPauseKeeps({ enabled: false, paused_reason: r }), true, r + ': pause then resume would lift it');
+  }
+  for (const r of ['user', 'no_credits', 'unknown_streak', null]) {
+    assert.strictEqual(userPauseKeeps({ enabled: false, paused_reason: r }), false, String(r) + ': the person\'s pause applies');
+  }
+  assert.strictEqual(userPauseKeeps({ enabled: true, paused_reason: null }), false, 'a running schedule pauses as usual');
+  assert.strictEqual(userPauseKeeps(null), false);
+  const pause = server.slice(server.indexOf("app.post('/api/v1/schedule/pause'"), server.indexOf("app.post('/api/v1/schedule/resume'"));
+  assert.ok(pause.indexOf('userPauseKeeps(cur.data)') > 0 && pause.indexOf('userPauseKeeps(cur.data)') < pause.indexOf(".update({ enabled: false, paused_reason: 'user' })"),
+    'checked before anything is written');
+});
+
+test('a deleted schedule re-created on the rejected PIN comes back paused; any other PIN starts fresh', () => {
+  const prior = (reason) => ({ priorPinPause: { reason: reason, pin: '111111' } });
+  for (const reason of ['wrong_pin', 'pin_expired']) {
+    assert.deepStrictEqual(pauseStateOnSave(null, { pin: '111111' }, prior(reason)), { enabled: false, paused_reason: reason }, reason + ', same PIN');
+    assert.deepStrictEqual(pauseStateOnSave(null, { pin: ' 111111 ' }, prior(reason)), { enabled: false, paused_reason: reason }, 'whitespace is not a new PIN');
+    assert.deepStrictEqual(pauseStateOnSave(null, { pin: '222222' }, prior(reason)), RUNNING, reason + ', new PIN');
+    assert.deepStrictEqual(pauseStateOnSave(null, { pin: null }, prior(reason)), RUNNING, reason + ', a Fort Bend schedule has no PIN to carry it');
+  }
+  assert.deepStrictEqual(pauseStateOnSave(null, { pin: '111111' }, { priorPinPause: { reason: 'user', pin: '111111' } }), RUNNING, 'only PIN pauses are carried');
+  assert.deepStrictEqual(pauseStateOnSave(null, { pin: '111111' }, { priorPinPause: null }), RUNNING, 'nothing open: a new schedule runs');
+  assert.deepStrictEqual(pauseStateOnSave(null, { pin: '111111' }, {}), RUNNING, 'a failed lookup does not hold a new schedule back');
+});
+
+test('a PIN pause lifts when the schedule moves to Fort Bend — there is no PIN there to be wrong about', () => {
+  for (const reason of ['wrong_pin', 'pin_expired']) {
+    const paused = { id: 's1', enabled: false, paused_reason: reason, pin: '111111', county: 'montgomery' };
+    assert.deepStrictEqual(pauseStateOnSave(paused, { county: 'ftbend', pin: null }, {}), RUNNING, reason + ': moved to Fort Bend');
+    assert.deepStrictEqual(pauseStateOnSave(paused, { county: 'montgomery', pin: null }, {}), { enabled: false, paused_reason: reason }, reason + ': no PIN sent is not a move');
+  }
+  assert.deepStrictEqual(pauseStateOnSave({ id: 's1', enabled: false, paused_reason: 'user', county: 'montgomery' }, { county: 'ftbend', pin: null }, {}),
+    { enabled: false, paused_reason: 'user' }, 'the person\'s own pause is not a PIN pause');
+});
+
+test('back to Montgomery from Fort Bend on the rejected PIN restores the pause; a different PIN runs', () => {
+  const fortBend = { id: 's1', enabled: true, paused_reason: null, pin: null, county: 'ftbend' };
+  const prior = { priorPinPause: { reason: 'wrong_pin', pin: '111111' } };
+  assert.deepStrictEqual(pauseStateOnSave(fortBend, { county: 'montgomery', pin: '111111' }, prior), { enabled: false, paused_reason: 'wrong_pin' }, 'the round trip is not a way past');
+  assert.deepStrictEqual(pauseStateOnSave(fortBend, { county: 'montgomery', pin: '222222' }, prior), RUNNING);
+  assert.deepStrictEqual(pauseStateOnSave(fortBend, { county: 'ftbend', pin: null }, prior), RUNNING, 'a Fort Bend save stays Fort Bend');
+  const montgomery = { id: 's1', enabled: true, paused_reason: null, pin: '222222', county: 'montgomery' };
+  assert.deepStrictEqual(pauseStateOnSave(montgomery, { county: 'montgomery', pin: '111111' }, prior), RUNNING,
+    'an ordinary PIN edit on a running Montgomery schedule is not a way back onto the line');
+  const fbUserPaused = Object.assign({}, fortBend, { enabled: false, paused_reason: 'user' });
+  assert.deepStrictEqual(pauseStateOnSave(fbUserPaused, { county: 'montgomery', pin: '111111' }, prior), { enabled: false, paused_reason: 'user' },
+    'a pause already there stays as it is');
+});
+
+test('the save reads the last PIN pause for a new schedule or a move back from Fort Bend, and only if no PIN was accepted since', () => {
+  const ctx = server.slice(server.indexOf('async function pauseContextForSave('), server.indexOf('async function pauseContextForSave(') + 600);
+  assert.match(ctx, /if \(!existing \|\| \(existing\.county === 'ftbend' && saved\.county !== 'ftbend'\)\) \{\s*ctx\.priorPinPause = await priorPinPauseOf\(userId\);/);
+  const p = server.slice(server.indexOf('async function priorPinPauseOf('), server.indexOf('async function priorPinPauseOf(') + 1800);
+  assert.match(p, /\.in\('reason', PIN_PAUSES\)/, 'open or closed');
+  assert.match(p, /\.in\('result', \['MUST_TEST', 'NO_TEST'\]\)\.gt\('created_at', last\.paused_at\)/, 'a result heard since means a working PIN');
 });

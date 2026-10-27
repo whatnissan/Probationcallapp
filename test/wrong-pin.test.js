@@ -149,3 +149,48 @@ test('the pause handler tags wrong_pin and stops the calls', () => {
   assert.match(h, /await stopScheduledCalls\(userId, '\[WRONG-PIN\]'\);/);
   assert.match(h, /wrongPin\.pausesAfter\(newCount\)/);
 });
+
+// --- 2026-10-28, Dave's review --------------------------------------------
+
+const { nextConsecutiveDayCount } = require('../lib/time');
+
+test('"two mornings in a row" means consecutive days', () => {
+  const n = (count, lastDay) => nextConsecutiveDayCount({ count, lastDay, today: '2026-10-28' });
+  assert.strictEqual(n(1, '2026-10-27'), 2, 'yesterday, then today: two in a row');
+  assert.strictEqual(n(1, '2026-10-07'), 1, 'three weeks apart: starts over');
+  assert.strictEqual(n(1, '2026-10-26'), 1, 'an UNKNOWN, skipped or paused day in between: starts over');
+  assert.strictEqual(n(0, '2026-10-27'), 1, 'a result heard since (count reset to 0): starts over');
+  assert.strictEqual(n(0, null), 1, 'the first one');
+  assert.strictEqual(n(1, '2026-10-28'), 1, 'a second verdict the same day is not another morning');
+  assert.strictEqual(nextConsecutiveDayCount({ count: 1, lastDay: '2026-10-31', today: '2026-11-01' }), 2, 'across a month end, which is also the DST change');
+  assert.strictEqual(wp.pausesAfter(n(1, '2026-10-07')), false, 'so three weeks apart never pauses');
+});
+
+test('both PIN counts are kept by day, on the one rule', () => {
+  const h = fnBody('async function handleWrongPinResult(');
+  assert.match(h, /select\('consecutive_wrong_pin, last_wrong_pin_day, enabled'\)/);
+  assert.match(h, /nextConsecutiveDayCount\(\{ count: schedRes\.data\.consecutive_wrong_pin, lastDay: schedRes\.data\.last_wrong_pin_day, today: wpToday \}\)/);
+  assert.match(h, /update\(\{ consecutive_wrong_pin: newCount, last_wrong_pin_day: wpToday \}\)/);
+  // The expired-PIN count had the identical flaw (Dave: fix both).
+  const e = fnBody('async function handlePinExpiredResult(');
+  assert.match(e, /select\('consecutive_pin_expired, last_pin_expired_day, enabled'\)/);
+  assert.match(e, /nextConsecutiveDayCount\(\{ count: schedRes\.data\.consecutive_pin_expired, lastDay: schedRes\.data\.last_pin_expired_day, today: peToday \}\)/);
+  assert.match(e, /update\(\{ consecutive_pin_expired: newCount, last_pin_expired_day: peToday \}\)/);
+  assert.ok(!/\(schedRes\.data\.consecutive_pin_expired \|\| 0\) \+ 1/.test(e), 'no plain +1 left');
+});
+
+test('rule 2 counts subscribers only: the demo account and our own accounts are never the proof', () => {
+  const d = fnBody('async function decideReprompt(');
+  assert.match(d, /excluded = await countyPoolExcludedIds\(\);/, 'THE canonical exclusion set: demo, admins, dev and internal emails');
+  assert.match(d, /if \(excluded && !excluded\[r\.user_id\]\) others\[r\.user_id\] = true;/, 'and nobody counts if it cannot be read');
+  assert.match(d, /var readFailed = !!\(heard\.error \|\| resolved\.error \|\| excludedError\);/, 'an unreadable exclusion set is an unproven line');
+});
+
+test('the fault alert\'s once-a-day limit is a database claim, not memory', () => {
+  const a = fnBody('async function alertAdminRepromptFault(');
+  assert.match(a, /if \(!\(await claimDailyAlert\('wrong_pin_fault', today\)\)\) return;/);
+  const c = fnBody('async function claimDailyAlert(');
+  assert.match(c, /from\('admin_alert_days'\)\.insert\(\{ alert: alert, day: day \}\)/);
+  assert.match(c, /if \(r\.error\.code === '23505'\) return false;/, 'already claimed today');
+  assert.match(c, /sending anyway:', r\.error\.message\);\s*return true;\s*$/, 'any other failure sends anyway');
+});

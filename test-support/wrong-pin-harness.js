@@ -29,7 +29,8 @@ for (const mod of [http, https]) {
 
 const MG = '+19362834848';
 const id = (n) => '00000000-0000-4000-8000-0000000000' + String(n).padStart(2, '0');
-const U = { W1: id(1), OK: id(2), B3: id(3), FB: id(4), W5: id(5), W2: id(6), W3: id(7), W4: id(8), N1: id(9), W6: id(10), ADMIN: id(11) };
+const U = { W1: id(1), OK: id(2), B3: id(3), FB: id(4), W5: id(5), W2: id(6), W3: id(7), W4: id(8), N1: id(9), W6: id(10), ADMIN: id(11),
+  DEMO: id(12), W7: id(13), W8: id(14), PE: id(15), PX: id(16), FS: id(17) };
 const NAME = Object.fromEntries(Object.entries(U).map(([k, v]) => [v, k]));
 const prof = (uid, extra) => Object.assign({ id: uid, email: uid.slice(-2) + '@example.invalid', credits: 10, is_demo: false, is_admin: false, is_disabled: false, verified_phone: null }, extra || {});
 const mgSched = (uid, minute, extra) => Object.assign({ id: 's' + uid.slice(-2), user_id: uid, county: 'montgomery', target_number: MG, pin: '1234' + uid.slice(-2),
@@ -37,16 +38,29 @@ const mgSched = (uid, minute, extra) => Object.assign({ id: 's' + uid.slice(-2),
   notify_number: null, notify_push: true, consecutive_pin_expired: 0, consecutive_wrong_pin: 0, created_at: '2026-09-01T00:00:00Z' }, extra || {});
 
 const tables = {
-  profiles: [prof(U.W1), prof(U.OK), prof(U.B3), prof(U.FB), prof(U.W5), prof(U.W2), prof(U.W3), prof(U.W4), prof(U.N1), prof(U.W6), prof(U.ADMIN, { is_admin: true })],
+  profiles: [prof(U.W1), prof(U.OK), prof(U.B3), prof(U.FB), prof(U.W5), prof(U.W2), prof(U.W3), prof(U.W4), prof(U.N1), prof(U.W6), prof(U.ADMIN, { is_admin: true }),
+    prof(U.DEMO, { is_demo: true }), prof(U.W7), prof(U.W8), prof(U.PE), prof(U.PX), prof(U.FS, { user_color: 'gray' })],
   user_schedules: [
     mgSched(U.W1, 0, { pin: '111101' }), mgSched(U.OK, 5), mgSched(U.B3, 10), mgSched(U.W5, 15),
     mgSched(U.W2, 30), mgSched(U.W3, 31), mgSched(U.W4, 32), mgSched(U.W6, 40), mgSched(U.N1, 45),
     mgSched(U.FB, 20, { county: 'ftbend', ftbend_office: 'missouri', target_number: '+12812383669', pin: null }),
-    mgSched(U.ADMIN, 50, { enabled: false, paused_reason: 'user', notify_method: 'sms', notify_number: '+15555550111' })
+    mgSched(U.ADMIN, 50, { enabled: false, paused_reason: 'user', notify_method: 'sms', notify_number: '+15555550111' }),
+    mgSched(U.DEMO, 5, { hour: 5, pin: '000000' }), mgSched(U.W7, 7), mgSched(U.W8, 8, { consecutive_wrong_pin: 1, last_wrong_pin_day: '2026-10-13' }),
+    // Paused on an expired PIN before this run, with the pause event the 074
+    // trigger would have opened and the call that caused it.
+    mgSched(U.PE, 9, { enabled: false, paused_reason: 'pin_expired', consecutive_pin_expired: 2 }),
+    // Last expired-PIN morning three weeks ago.
+    mgSched(U.PX, 16, { consecutive_pin_expired: 1, last_pin_expired_day: '2026-10-13' }),
+    // Paused on a rejected PIN; about to move to Fort Bend and back.
+    mgSched(U.FS, 17, { enabled: false, paused_reason: 'wrong_pin', consecutive_wrong_pin: 2, last_wrong_pin_day: '2026-10-21' })
   ],
   pending_retries: [], credit_transactions: [], call_history: [], call_attempts: [], pin_reprompts: [], sms_opt_outs: [], sms_consents: [],
-  schema_migrations: [], device_tokens: [], push_deliveries: []
+  schema_migrations: [], device_tokens: [], push_deliveries: [], admin_alert_days: [],
+  schedule_pause_events: [{ id: 'ev0', user_id: U.PE, reason: 'pin_expired', paused_at: '2026-10-20T12:00:00Z', resumed_at: null },
+    { id: 'ev1', user_id: U.FS, reason: 'wrong_pin', paused_at: '2026-10-21T12:00:00Z', resumed_at: null }]
 };
+tables.call_history.push({ id: 'hPE', user_id: U.PE, county: 'montgomery', result: 'PIN_EXPIRED', pin_used: '123415', created_at: '2026-10-20T12:00:00Z' });
+tables.call_history.push({ id: 'hFS', user_id: U.FS, county: 'montgomery', result: 'WRONG_PIN', pin_used: '123417', created_at: '2026-10-21T12:00:00Z' });
 let seq = 1;
 const iso = () => new RealDate(NOW).toISOString();
 function builder(table) {
@@ -56,17 +70,25 @@ function builder(table) {
     if (p === 'then') return (res, rej) => {
       const match = (r) => f.every((t) => t(r));
       let out;
+      if (op === 'insert' && table === 'admin_alert_days') {
+        const it = Array.isArray(payload) ? payload[0] : payload;
+        if (rows().some((r) => r.alert === it.alert && String(r.day) === String(it.day))) {
+          return Promise.resolve({ data: null, error: { code: '23505', message: 'duplicate key value violates unique constraint "admin_alert_days_pkey"' } }).then(res, rej);
+        }
+      }
       if (op === 'insert' || op === 'upsert') {
         // Database defaults the real tables have: created_at now(), and
         // call_history.county 'montgomery'.
         const items = (Array.isArray(payload) ? payload : [payload]).map((it) => Object.assign({ id: 'r' + (seq++), created_at: iso() },
           table === 'call_history' ? { county: 'montgomery' } : {}, it));
+        if (table === 'user_schedules') items.forEach((it) => pauseTrigger(null, it));
         if (op === 'upsert' && table === 'user_schedules') {
           items.forEach((it) => { const ex = rows().find((r) => r.user_id === it.user_id); if (ex) Object.assign(ex, it); else rows().push(it); });
         } else rows().push(...items);
         out = { data: single ? items[0] : items, error: null };
       } else if (op === 'update') {
-        const hit = rows().filter(match); hit.forEach((r) => Object.assign(r, payload));
+        const hit = rows().filter(match);
+        hit.forEach((r) => { const next = Object.assign({}, r, payload); if (table === 'user_schedules') pauseTrigger(r, next); Object.assign(r, next); });
         out = { data: hit.map((r) => Object.assign({}, r)), error: null };
       } else if (op === 'delete') {
         const keep = rows().filter((r) => !match(r)); const gone = rows().length - keep.length; tables[table] = keep;
@@ -94,6 +116,23 @@ function builder(table) {
   }});
   return b;
 }
+// What migrations 074 + 077's trigger does to schedule_pause_events (the SQL
+// itself is tested against Postgres; this keeps the fake honest).
+function pauseTrigger(old, row) {
+  const ev = tables.schedule_pause_events;
+  const closeOpen = () => ev.filter((e) => e.user_id === row.user_id && !e.resumed_at).forEach((e) => { e.resumed_at = iso(); });
+  if (!old) {
+    closeOpen();
+    if (row.enabled === false) { row.paused_at = iso(); ev.push({ id: 'ev' + (seq++), user_id: row.user_id, reason: row.paused_reason, paused_at: row.paused_at, resumed_at: null }); }
+    else row.paused_at = null;
+    return;
+  }
+  if (row.enabled === false && old.enabled !== false) { row.paused_at = iso(); ev.push({ id: 'ev' + (seq++), user_id: row.user_id, reason: row.paused_reason, paused_at: row.paused_at, resumed_at: null }); }
+  else if (row.enabled !== false && old.enabled === false) { row.paused_at = null; closeOpen(); }
+  else if (row.enabled === false && old.enabled === false && row.paused_reason !== old.paused_reason) {
+    ev.filter((e) => e.user_id === row.user_id && !e.resumed_at).forEach((e) => { e.reason = row.paused_reason; });
+  }
+}
 const P = (uid) => tables.profiles.find((r) => r.id === uid);
 const rpc = async (name, a) => {
   if (name === 'deduct_credit_with_ledger') {
@@ -104,7 +143,7 @@ const rpc = async (name, a) => {
   if (name === 'add_credits_with_ledger') { const p = P(a.p_user_id); p.credits += a.p_amount; return { data: p.credits, error: null }; }
   return { data: null, error: null };
 };
-const tokens = { 'tok-w1': U.W1, 'tok-n1': U.N1 };
+const tokens = { 'tok-w1': U.W1, 'tok-n1': U.N1, 'tok-w8': U.W8, 'tok-pe': U.PE, 'tok-fs': U.FS };
 const fake = { from: builder, rpc,
   auth: { getUser: async (t) => tokens[t] ? { data: { user: { id: tokens[t], email: P(tokens[t]).email } }, error: null } : { data: { user: null }, error: { message: 'bad' } },
           admin: new Proxy({}, { get: () => async () => ({ data: null, error: null }) }) },
@@ -151,6 +190,7 @@ require(path.join(REPO, 'server.js'));
 const PROMPT = 'Please enter your ID number followed by the pound sign.';
 const REJECTED = 'Welcome. ' + PROMPT + ' ' + PROMPT + ' ' + PROMPT;
 const ACCEPTED_NO = 'Welcome. ' + PROMPT + ' Thank you. You do not need to test today. Goodbye.';
+const EXPIRED = 'Welcome. ' + PROMPT + ' This ID number has expired. Please contact your probation officer.';
 
 const tick = (ms) => new Promise((r) => setTimeout(r, ms));
 const call = (method, p, body, tok, form) => new Promise((ok) => {
@@ -161,7 +201,7 @@ const call = (method, p, body, tok, form) => new Promise((ok) => {
   req.end(s);
 });
 const at = (isoStr) => { NOW = Date.parse(isoStr); };
-const jobFor = (minute) => crons.filter((c) => c.expr === minute + ' 6 * * *').pop();
+const jobFor = (minute, hour) => crons.filter((c) => c.expr === minute + ' ' + (hour || 6) + ' * * *').pop();
 const minuteCron = () => crons.find((c) => c.expr === '* * * * *');
 const sched = (uid) => tables.user_schedules.find((r) => r.user_id === uid);
 const pending = (uid) => tables.pending_retries.find((r) => r.user_id === uid) || null;
@@ -176,12 +216,13 @@ async function pinDialled(callId) {
 }
 let recN = 0;
 async function hear(dial, transcript) {
+  if (!dial) return;                                 // nothing was dialled (the assertions say whether that is right)
   nextTranscript = transcript;
   await call('POST', '/webhook/recording?callId=' + encodeURIComponent(dial.callId),
     { RecordingUrl: 'https://api.twilio.com/2010-04-01/Accounts/AC0/Recordings/RE' + (++recN), RecordingDuration: '30' }, null, true);
   await tick(400);
 }
-async function fireJob(minute) { const before = dials.length; await jobFor(minute).fn(); await tick(300); return dials.slice(before); }
+async function fireJob(minute, hour) { const before = dials.length; await jobFor(minute, hour).fn(); await tick(300); return dials.slice(before); }
 async function firePoller() { const before = dials.length; await minuteCron().fn(); await tick(400); return dials.slice(before); }
 const resolvedRow = (uid) => tables.call_history.push({ id: 'h' + (seq++), user_id: uid, county: 'montgomery', result: 'NO_TEST', pin_used: '123402', created_at: iso() });
 
@@ -291,6 +332,89 @@ setTimeout(async () => {
     at('2026-10-31T19:30:00Z');
     d = await firePoller();
     out.cutoff = { dials: d.length, w6: rowsFor(U.W6), pendingLeft: !!pending(U.W6) };
+
+    out.fault.claimRecorded = tables.admin_alert_days.filter((r) => r.alert === 'wrong_pin_fault' && String(r.day) === '2026-10-31').length;
+
+    // ===== Day 5 (CST from Nov 1: 6:00 = 12:00Z) — ONLY the demo account
+    // and one of ours have a result: the 6:07 caller must not be judged ====
+    at('2026-11-02T11:05:00Z');
+    const demoDialled = (await fireJob(5, 5)).length; // the demo morning (lib/demo.js): a row, no dial
+    const demoRow = tables.call_history.filter((r) => r.user_id === U.DEMO).map((r) => r.result);
+    tables.call_history.push({ id: 'hA5', user_id: U.ADMIN, county: 'montgomery', result: 'NO_TEST', pin_used: '123411', created_at: '2026-11-02T11:50:00Z' });
+    at('2026-11-02T12:07:00Z');
+    d = await fireJob(7); await hear(d[0], REJECTED);
+    at('2026-11-02T12:13:00Z');
+    d = await firePoller(); await hear(d[0], REJECTED);
+    out.demoOnly = { demoRow, demoDialled,
+      afterTwo: { rows: rowsFor(U.W7), pending: pending(U.W7) && pending(U.W7).last_result, mail: mailTo(U.W7).length } };
+    resolvedRow(U.OK);                              // a subscriber gets through
+    at('2026-11-02T13:14:00Z');
+    d = await firePoller(); await hear(d[0], REJECTED);
+    out.demoOnly.afterSubscriber = { rows: rowsFor(U.W7), count: sched(U.W7).consecutive_wrong_pin };
+
+    // ===== Day 6 — W8's previous WRONG_PIN was three weeks ago ===========
+    const w8Morning = async (day) => {
+      at(day + 'T12:00:00Z'); resolvedRow(U.OK);
+      at(day + 'T12:08:00Z'); let x = await fireJob(8); await hear(x[0], REJECTED);
+      at(day + 'T12:14:00Z'); x = await firePoller(); await hear(x[0], REJECTED);
+    };
+    await w8Morning('2026-11-03');
+    out.consecutive = { threeWeeksApart: { count: sched(U.W8).consecutive_wrong_pin, day: sched(U.W8).last_wrong_pin_day, enabled: sched(U.W8).enabled } };
+    await w8Morning('2026-11-04');
+    out.consecutive.nextDay = { count: sched(U.W8).consecutive_wrong_pin, enabled: sched(U.W8).enabled, reason: sched(U.W8).paused_reason };
+
+    // ===== The ways round a PIN pause, for wrong_pin (W8) and pin_expired (PE)
+    const bypass = async (tok, uid, pin) => {
+      const r = {};
+      const pz = await call('POST', '/api/v1/schedule/pause', {}, tok);
+      r.pause = { status: pz.status, pauseReason: pz.j && pz.j.pauseReason, stored: sched(uid).paused_reason };
+      const rs = await call('POST', '/api/v1/schedule/resume', {}, tok);
+      r.resume = { status: rs.status, code: rs.j && rs.j.error && rs.j.error.code, enabled: sched(uid).enabled };
+      const body = (p) => ({ county: 'montgomery', pin: p, callTime: '06:00', timezone: 'America/Chicago', notifyMethods: ['email'], notifyEmail: uid.slice(-2) + '@example.invalid', quietMode: false });
+      const del1 = await call('DELETE', '/api/schedule', null, tok);
+      r.deleted = { status: del1.status, gone: !sched(uid) };
+      const same = await call('PUT', '/api/v1/schedule', body(pin), tok);
+      r.resaveSame = { status: same.status, enabled: sched(uid) && sched(uid).enabled, reason: sched(uid) && sched(uid).paused_reason,
+        counts: sched(uid) && [sched(uid).consecutive_pin_expired, sched(uid).consecutive_wrong_pin] };
+      await call('DELETE', '/api/schedule', null, tok);
+      const fresh = await call('PUT', '/api/v1/schedule', body('654321'), tok);
+      r.resaveNew = { status: fresh.status, enabled: sched(uid) && sched(uid).enabled, reason: sched(uid) && sched(uid).paused_reason };
+      r.openPauses = tables.schedule_pause_events.filter((e) => e.user_id === uid && !e.resumed_at).length;
+      return r;
+    };
+    at('2026-11-04T15:00:00Z');
+    out.bypassWrongPin = await bypass('tok-w8', U.W8, '123414');
+    out.bypassPinExpired = await bypass('tok-pe', U.PE, '123415');
+
+    // ===== Day 8 — the fault alert was already sent today by a process that
+    // has since restarted: the claim in the database holds ===============
+    at('2026-11-05T12:00:00Z'); resolvedRow(U.OK);
+    tables.admin_alert_days.push({ alert: 'wrong_pin_fault', day: '2026-11-05', sent_at: '2026-11-05T11:50:00Z' });
+    const alertsBefore = smsSent.filter((x) => x.to === '+15555550111' && /ask for the ID number again/.test(x.body)).length;
+    at('2026-11-05T12:30:00Z'); d = await fireJob(30); await hear(d[0], REJECTED);
+    at('2026-11-05T12:31:00Z'); d = await fireJob(31); await hear(d[0], REJECTED);
+    at('2026-11-05T12:32:00Z'); d = await fireJob(32); await hear(d[0], REJECTED);
+    out.alertAfterRestart = { faultSeen: pending(U.W4) && pending(U.W4).last_result,
+      newAlerts: smsSent.filter((x) => x.to === '+15555550111' && /ask for the ID number again/.test(x.body)).length - alertsBefore };
+
+    // ===== Days 8–9 — the expired-PIN count is consecutive too ==========
+    at('2026-11-05T12:16:00Z'); d = await fireJob(16); await hear(d[0], EXPIRED); await tick(300);
+    out.pinExpired = { threeWeeksApart: { rows: rowsFor(U.PX), count: sched(U.PX).consecutive_pin_expired, day: sched(U.PX).last_pin_expired_day, enabled: sched(U.PX).enabled } };
+    at('2026-11-06T12:16:00Z'); d = await fireJob(16); await hear(d[0], EXPIRED); await tick(300);
+    out.pinExpired.nextDay = { count: sched(U.PX).consecutive_pin_expired, enabled: sched(U.PX).enabled, reason: sched(U.PX).paused_reason };
+
+    // ===== A PIN pause and a move to Fort Bend, and back ==================
+    at('2026-11-06T15:00:00Z');
+    const mg = (pin) => ({ county: 'montgomery', pin: pin, callTime: '06:00', timezone: 'America/Chicago', notifyMethods: ['email'], notifyEmail: '17@example.invalid', quietMode: false });
+    const fb = { county: 'ftbend', ftbendOffice: 'missouri', callTime: '05:30', timezone: 'America/Chicago', notifyMethods: ['email'], notifyEmail: '17@example.invalid', quietMode: false };
+    const toFb = await call('PUT', '/api/v1/schedule', fb, 'tok-fs');
+    out.fortBend = { toFortBend: { status: toFb.status, err: toFb.j && toFb.j.error && toFb.j.error.code, county: sched(U.FS).county, enabled: sched(U.FS).enabled, reason: sched(U.FS).paused_reason,
+      counts: [sched(U.FS).consecutive_pin_expired, sched(U.FS).consecutive_wrong_pin] } };
+    const backSame = await call('PUT', '/api/v1/schedule', mg('123417'), 'tok-fs');
+    out.fortBend.backSamePin = { status: backSame.status, enabled: sched(U.FS).enabled, reason: sched(U.FS).paused_reason };
+    await call('PUT', '/api/v1/schedule', fb, 'tok-fs');
+    const backNew = await call('PUT', '/api/v1/schedule', mg('654317'), 'tok-fs');
+    out.fortBend.backNewPin = { status: backNew.status, enabled: sched(U.FS).enabled, reason: sched(U.FS).paused_reason };
 
     out.hearingsRecorded = tables.pin_reprompts.length;
     out.attemptOutcomes = Array.from(new Set(tables.call_attempts.map((a) => a.outcome))).sort();
