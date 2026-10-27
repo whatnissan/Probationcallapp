@@ -88,7 +88,7 @@ Standard codes: `unauthenticated`, `forbidden`, `not_found`, `validation_failed`
 `account_deletion_blocked` (all three §4.15), `phone_not_verified` (§4.7),
 `referral_already_applied`, `referral_after_purchase` (both §4.14),
 `sms_opted_out`, `sms_consent_required` (§4.7, §4.17), `ftbend_color_required` (§4.7),
-`pin_expired` (§4.8),
+`pin_expired`, `wrong_pin` (both §4.8),
 `sms_send_failed`, `verification_not_found`,
 `verification_expired`, `verification_locked`, `verification_incorrect`
 (§4.17), `iap_unavailable`, `iap_wrong_account`, `iap_unknown_product`
@@ -128,7 +128,7 @@ The outcome of a day's call.
 | `HOTLINE_DOWN` | Hotline unreachable | **No** |
 | `CALL_FAILED` | Call never connected | **No** |
 | `PIN_EXPIRED` | PIN no longer valid at the hotline. Montgomery only | **No** |
-| `WRONG_PIN` | PIN rejected as incorrect. Montgomery only. **Aspirational — not currently emitted**: the backend cannot yet distinguish a wrong PIN from an expired one. Clients keep the distinct UI so improved detection needs no client change. | **No** |
+| `WRONG_PIN` | The hotline rejected the PIN — it asked for the ID number again after we entered it. Montgomery only. Emitted since 2026-10-28; see below | **No** |
 | `IN_PROGRESS` | Call running or retries pending | n/a |
 | `SCHEDULED` | Enabled; this morning's call hasn't started yet. The user's answer is "wait" | n/a |
 | `NOT_CALLED` | Schedule paused/disabled; no call made. The user's answer is "nothing is coming" | n/a |
@@ -136,6 +136,44 @@ The outcome of a day's call.
 `SCHEDULED` and `NOT_CALLED` are deliberately separate states: overloading
 `NOT_CALLED` for "enabled but not yet called" renders the paused card — with a
 Resume affordance — at 5:02 AM on a perfectly healthy schedule.
+
+**`WRONG_PIN` (2026-10-28).** The Montgomery hotline never says "invalid" or
+"incorrect": when it rejects an ID it asks for the ID number again. Across
+every Montgomery transcript on file, the prompt was heard once on all 610
+calls that resolved and three times on six that did not — two accounts,
+three mornings each, on mornings when every other account got through.
+That repeat is how `WRONG_PIN` is recognised. Until this date those mornings
+came back `UNKNOWN`, retried on the same PIN until the cutoff, and after three
+paused as `unknown_streak`, a pause that named no cause and that any save
+lifted on the same bad PIN.
+
+The same sound comes from the hotline not receiving our tones, which is our
+fault and hits everyone, so a verdict needs all of:
+- **Two hearings on a scheduled morning, on the same PIN.** One hearing is
+  retried (it may be a dropped tone); a PIN changed in between starts over.
+  Call Now has no retries, so one hearing is its answer.
+- **Another Montgomery account got a result heard that morning** — proof the
+  line is accepting our tones. Without it the morning keeps retrying and, if
+  it ends unproven, is `UNKNOWN`. This protects the day's earliest call.
+- **Fewer than 3 accounts heard the repeat that morning.** At 3 or more it
+  is treated as our problem: nobody gets `WRONG_PIN` for it, those mornings
+  carry on as ordinary no-result retries, and admins are alerted.
+
+A scheduled morning that runs out of attempts before confirming is `UNKNOWN`.
+`WRONG_PIN` is final for the morning, **never bills**, and **never pushes**:
+like `PIN_EXPIRED` it is an action item ("check your PIN, and call the
+hotline yourself today") and goes by SMS and email, never quieted. Two
+scheduled mornings of `WRONG_PIN` in a row on the PIN on file pause the
+schedule with `pause_reason` `wrong_pin`, which only saving a **different**
+PIN lifts (§4.7, §4.8). Call Now never counts toward it.
+
+`WRONG_PIN` and `PIN_EXPIRED` are different failures with different fixes:
+`WRONG_PIN` is the person's to fix (a typo — correct the PIN);
+`PIN_EXPIRED` is not (the county retired a valid PIN — contact the officer).
+
+**`UNKNOWN` is final for the morning.** While retries are pending `/today`
+reports `IN_PROGRESS`; `UNKNOWN` means the morning ended without a result
+(not billed) and the person should call the hotline themselves.
 
 **`NO_COLOR` is not `UNKNOWN` (2026-09-30).** `UNKNOWN` means the recording
 could not be read. `NO_COLOR` means it was read perfectly and the account is
@@ -174,6 +212,7 @@ outcome exists yet (`SCHEDULED` / `IN_PROGRESS` / `NOT_CALLED`).
 | `no_credits` | **Yes** | Buy credits. No Resume button — it'd be dead. |
 | `unknown_streak` | No | Call the hotline yourself; check whether the PIN changed |
 | `pin_expired` | No | Contact your officer for a new PIN. Saving the **new** PIN resumes (§4.7); saving the same PIN does not. **No Resume button** — `POST /schedule/resume` is refused with `409 pin_expired` (§4.8) |
+| `wrong_pin` | No | The hotline rejected the PIN on 2 mornings (§2 `WRONG_PIN`, 2026-10-28). Check it for a typo; saving a **different** PIN resumes (§4.7), saving the same PIN or any other change does not. **No Resume button** — `POST /schedule/resume` is refused with `409 wrong_pin` (§4.8). Route the person to PIN entry |
 | `sms_opted_out` | No (resumes on START) | Switch to email. **No Resume button** — see below |
 | `user` | No | Resume |
 
@@ -944,7 +983,15 @@ counters).
 Server-side rules that already exist and must be preserved: a **PIN change**
 clears `consecutive_pin_expired` (2026-10-06 — until then every save did, so
 an unrelated edit the day after a first `PIN_EXPIRED` pushed the auto-pause
-back a day). Montgomery writes `pin` and null office/color; Fort Bend writes
+back a day), and the `WRONG_PIN` count the same way (2026-10-28).
+
+**A save applies to this morning's remaining calls (2026-10-28).** Every
+automatic dial — the morning call, each retry, recovery, the first-day call —
+reads the schedule when it dials and uses the PIN, hotline number and
+notification details on file at that moment. Until this date a retry used
+the copy taken when it was queued, so a PIN corrected at 7 AM was ignored
+until the 2 PM cutoff. A schedule moved to Fort Bend is no longer dialled on
+the Montgomery line. Montgomery writes `pin` and null office/color; Fort Bend writes
 null `pin`.
 
 **A save does not undo a pause the person chose (2026-09-30).** Until this
@@ -960,6 +1007,7 @@ nothing told them. A save now lifts a pause only when its cause is gone:
 | `no_credits` | Still paused at a zero balance (the top-up auto-resumes it); resumed if the account has credits |
 | `sms_opted_out` | Resumed only if the saved channel delivers — `email` in `notifyMethods` with an address, or a number that is not opted out. Otherwise still paused |
 | `pin_expired` | Resumed **only if the save carries a different PIN** (2026-10-06). The same PIN would fail the same way: calls restart, report `PIN_EXPIRED` again and re-pause a day or two later |
+| `wrong_pin` | Resumed **only if the save carries a different PIN** (2026-10-28), for the same reason |
 | `unknown_streak` | Resumed |
 | `null` on a paused schedule (untagged; predates tagging) | Resumed |
 | any other value | Still paused. A save never undoes a pause it does not know |
@@ -1197,6 +1245,11 @@ saved through `PUT /schedule`, which lifts the pause (§4.7); resuming with
 the same PIN would restart calls that fail the same way. This is checked
 **before** the credits rule, because adding credits would not help. Route the
 person to PIN entry, not a retry.
+
+Resume must also **reject with `409 wrong_pin`** when `pause_reason` is
+`wrong_pin` (2026-10-28) — the hotline rejected the PIN on two mornings. Same
+remedy, same order (before credits): route the person to PIN entry, where
+the likely fix is a typo.
 
 ### 4.9 Test tools — `POST /test/call` · `/test/sms` · `/test/email`
 
@@ -2103,8 +2156,8 @@ cancellation that did not occur.
 yourself" is an action item and goes out as SMS and email (§2). The
 no-result outcomes (`HOTLINE_DOWN`, `CALL_FAILED`, the transcriber codes)
 belong to the retry engine and produce at most one notice at cutoff, by SMS
-and email. `PIN_EXPIRED` and the pause notices are state changes, not
-results, and go by SMS and email. Quiet mode suppresses `NO_TEST` on every
+and email. `PIN_EXPIRED`, `WRONG_PIN` and the pause notices are action
+items, not results to glance at, and go by SMS and email. Quiet mode suppresses `NO_TEST` on every
 channel including push; `MUST_TEST` always pushes. The demo account never
 pushes.
 
