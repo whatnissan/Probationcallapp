@@ -70,7 +70,7 @@
 </div>
 </div>
 </div>
-<div class="tabs"><div class="tab active" id="tabUsers">Users</div><div class="tab" id="tabReliability">Reliability</div><div class="tab" id="tabPayouts">Payouts</div><div class="tab" id="tabPurchases">Purchases</div><div class="tab" id="tabCalls">Calls</div><div class="tab" id="tabPromos">Promos</div><div class="tab" id="tabTransfers">Transfers</div><div class="tab" id="tabSends">Sends</div><div class="tab" id="tabSupport">Support <span id="supportBadge" style="display:none;background:#ef4444;color:#fff;border-radius:10px;padding:1px 7px;font-size:0.72rem;margin-left:4px"></span></div></div>
+<div class="tabs"><div class="tab active" id="tabUsers">Users</div><div class="tab" id="tabReliability">Reliability</div><div class="tab" id="tabPayouts">Payouts</div><div class="tab" id="tabPurchases">Purchases</div><div class="tab" id="tabCalls">Calls</div><div class="tab" id="tabPromos">Promos</div><div class="tab" id="tabFunnel">Funnel</div><div class="tab" id="tabTransfers">Transfers</div><div class="tab" id="tabSends">Sends</div><div class="tab" id="tabSupport">Support <span id="supportBadge" style="display:none;background:#ef4444;color:#fff;border-radius:10px;padding:1px 7px;font-size:0.72rem;margin-left:4px"></span></div></div>
 <div id="usersTab" class="tab-content active"><div class="card"><h2>All Users (click to view) <button class="btn btn-sm btn-secondary" id="refreshBtn">Refresh</button> <span class="last-refresh" id="lastRefresh"></span></h2><div class="search-bar"><input type="text" id="userSearch" placeholder="Search..."><select id="userFilter"><option value="all">All</option><option value="active">Active</option><option value="disabled">Disabled</option><option value="admin">Admins</option><option value="scheduled">Scheduled</option><option value="locked">Locked to Affiliate</option></select></div><div style="max-height:500px;overflow-y:auto"><table><thead><tr><th class="sortable" data-sort="email">Email ↕</th><th class="sortable" data-sort="credits">Credits ↕</th><th>Locked To</th><th class="sortable" data-sort="schedule">Schedule ↕</th><th class="sortable" data-sort="calls">Calls ↕</th><th class="sortable" data-sort="spent">Spent ↕</th><th>Terms</th><th>Status</th><th class="sortable" data-sort="created">Created ↕</th><th class="sortable" data-sort="lastlogin">Last Login ↕</th></tr></thead><tbody id="usersTable"></tbody></table></div></div></div>
 <div id="reliabilityTab" class="tab-content"><div class="card"><h2>Reliability — end to end, not uptime <button class="btn btn-sm btn-secondary" id="reloadReliability">Refresh</button> <span id="relStatus" style="color:#8892b0;font-size:0.8rem"></span></h2>
 <div style="display:flex;gap:8px;margin-bottom:14px" id="relWindows">
@@ -88,6 +88,12 @@
 <div id="purchasesTab" class="tab-content"><div class="card"><h2>Purchases</h2><table><thead><tr><th>User</th><th>Package</th><th>Amount</th><th>Date</th><th>Status</th></tr></thead><tbody id="purchasesTable"></tbody></table></div></div>
 <div id="callsTab" class="tab-content"><div class="card"><h2>Calls</h2><table><thead><tr><th>User</th><th>Result</th><th>Date</th></tr></thead><tbody id="callsTable"></tbody></table></div></div>
 <div id="promosTab" class="tab-content"><div class="card"><h2>Promos <button class="btn btn-sm btn-primary" id="newPromoBtn">+ New</button></h2><table><thead><tr><th>Code</th><th>Credits</th><th>Used/Max</th><th>Actions</th></tr></thead><tbody id="promosTable"></tbody></table></div></div>
+<div id="funnelTab" class="tab-content"><div class="card"><h2>Partner-ID funnel <button class="btn btn-sm btn-secondary" id="reloadFunnel">Refresh</button> <select id="funnelDays" style="padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#fff"><option value="7">7 days</option><option value="14" selected>14 days</option><option value="30">30 days</option><option value="90">90 days</option></select> <span id="funnelStatus" style="color:#8892b0;font-size:0.8rem"></span></h2>
+<p style="color:#8892b0;font-size:0.82rem;margin-bottom:14px">The app has no code field (build 25), so the app reports its own steps: asked, answered, left for the browser, came back, applied, gave up. <b>src</b> is which surface opened the redeem page. Counts are people-times, not unique people — the same person retrying shows twice.</p>
+<div id="funnelCards"></div>
+<div class="section-title">Redeem page opens by source</div><div id="funnelSrcs"></div>
+<div class="section-title">Refusals by reason</div><div id="funnelFailures"></div>
+<div class="section-title">By day</div><div id="funnelDaysTable" style="max-height:420px;overflow-y:auto"></div></div></div>
 <div id="transfersTab" class="tab-content">
   <div class="card">
     <h2>Failed Transfers <button class="btn btn-sm btn-secondary" onclick="loadTransfers()">Refresh</button></h2>
@@ -123,7 +129,7 @@ document.getElementById("refreshBtn").addEventListener("click", function(e) {
         alert("Error: " + err.message);
     });
 });
-$("userSearch").onkeyup=filter;document.querySelectorAll(".sortable").forEach(function(th){th.onclick=function(){var col=this.dataset.sort;if(sortCol===col){sortDir*=-1}else{sortCol=col;sortDir=-1}filter()}});$("userFilter").onchange=filter;$("newPromoBtn").onclick=function(){fillPromoAffiliates();$("promoModal").classList.add("active")};$("closeUserModal").onclick=function(){$("userModal").classList.remove("active")};$("closeCreditsModal").onclick=function(){$("creditsModal").classList.remove("active")};$("closePromoModal").onclick=function(){$("promoModal").classList.remove("active")};$("reloadSends").onclick=loadSends;document.querySelectorAll(".rel-win").forEach(function(b){b.onclick=function(){relWin=this.dataset.win;renderReliability()}});$("reloadReliability").onclick=loadReliability;$("supportFilter").onchange=loadSupport;$("reloadSupport").onclick=loadSupport;$("closeRefundModal").onclick=closeRefundModal;$("refundCancelBtn").onclick=closeRefundModal;$("refundConfirmBtn").onclick=doRefund;$("applyCredits").onclick=doCredits;$("createPromo").onclick=doPromo;["Users","Reliability","Payouts","Purchases","Calls","Promos","Transfers","Support","Sends"].forEach(function(t){$("tab"+t).onclick=function(){document.querySelectorAll(".tab").forEach(function(x){x.classList.remove("active")});document.querySelectorAll(".tab-content").forEach(function(x){x.classList.remove("active")});this.classList.add("active");$(t.toLowerCase()+"Tab").classList.add("active");if(t==="Transfers")loadTransfers();if(t==="Support")loadSupport();if(t==="Sends")loadSends();if(t==="Reliability")loadReliability()}})}
+$("userSearch").onkeyup=filter;document.querySelectorAll(".sortable").forEach(function(th){th.onclick=function(){var col=this.dataset.sort;if(sortCol===col){sortDir*=-1}else{sortCol=col;sortDir=-1}filter()}});$("userFilter").onchange=filter;$("newPromoBtn").onclick=function(){fillPromoAffiliates();$("promoModal").classList.add("active")};$("closeUserModal").onclick=function(){$("userModal").classList.remove("active")};$("closeCreditsModal").onclick=function(){$("creditsModal").classList.remove("active")};$("closePromoModal").onclick=function(){$("promoModal").classList.remove("active")};$("reloadSends").onclick=loadSends;document.querySelectorAll(".rel-win").forEach(function(b){b.onclick=function(){relWin=this.dataset.win;renderReliability()}});$("reloadReliability").onclick=loadReliability;$("supportFilter").onchange=loadSupport;$("reloadSupport").onclick=loadSupport;$("closeRefundModal").onclick=closeRefundModal;$("refundCancelBtn").onclick=closeRefundModal;$("refundConfirmBtn").onclick=doRefund;$("applyCredits").onclick=doCredits;$("createPromo").onclick=doPromo;$("reloadFunnel").onclick=loadFunnel;$("funnelDays").onchange=loadFunnel;["Users","Reliability","Payouts","Purchases","Calls","Promos","Funnel","Transfers","Support","Sends"].forEach(function(t){$("tab"+t).onclick=function(){document.querySelectorAll(".tab").forEach(function(x){x.classList.remove("active")});document.querySelectorAll(".tab-content").forEach(function(x){x.classList.remove("active")});this.classList.add("active");$(t.toLowerCase()+"Tab").classList.add("active");if(t==="Transfers")loadTransfers();if(t==="Support")loadSupport();if(t==="Sends")loadSends();if(t==="Reliability")loadReliability();if(t==="Funnel")loadFunnel()}})}
 async function load(){
     window.adminSysStats=null;fetch("/api/system-stats",{headers:{Authorization:"Bearer "+token}}).then(function(r){return r.json();}).then(function(ss){window.adminSysStats=(ss&&ss.scheduledAvg)?ss:null;}).catch(function(){});
     var r=await fetch("/api/admin/dashboard",{headers:{Authorization:"Bearer "+token}});
@@ -547,6 +553,65 @@ function doRefund(){
 }
 function renderCalls(calls){var h="";calls.slice(0,500).forEach(function(c){var b=c.result==="NO_TEST"?"active":c.result==="MUST_TEST"?"disabled":"pending";h+="<tr><td>"+esc(c.user_email||"?")+"</td><td><span class='badge "+b+"'>"+esc(c.result)+"</span></td><td>"+new Date(c.created_at).toLocaleString()+"</td></tr>"});$("callsTable").innerHTML=h||"<tr><td colspan=3 class='text-muted'>No calls</td></tr>"}
 function renderPromos(promos){var h="";promos.forEach(function(p){h+="<tr><td class='mono text-cyan' style='font-weight:700'>"+p.code+"</td><td>"+p.credits+"</td><td>"+p.times_used+"/"+p.max_uses+"</td><td><button class='btn btn-sm btn-danger' onclick=\"delPromo('"+p.id+"')\">Del</button></td></tr>"});$("promosTable").innerHTML=h||"<tr><td colspan=4 class='text-muted'>No promos</td></tr>"}
+
+// §4.14c funnel. Raw counts, and the rates as a percentage OF THE ASKED, so
+// each one reads as "this share of the step's population got this far".
+// Rates are not uniques — a retry counts again, which is deliberate: it is
+// meant to show the step leaking, not to size the audience.
+var FUNNEL_ROWS = [
+  ["onboarding_partner_asked", "Asked"],
+  ["onboarding_partner_answered", "Answered"],
+  ["onboarding_partner_left", "Went to the browser"],
+  ["onboarding_partner_returned", "Came back"],
+  ["onboarding_partner_applied", "Applied"],
+  ["onboarding_partner_not_applied", "Not applied"],
+  ["onboarding_partner_abandoned", "Gave up"],
+  ["redeem_page_open", "Page opened"],
+  ["redeem_success", "Redeemed"],
+  ["redeem_failed", "Refused"]
+];
+function funnelTable(obj, label){
+  var keys = Object.keys(obj||{});
+  if (!keys.length) return "<p class='text-muted'>Nothing yet</p>";
+  keys.sort(function(a,b){ return obj[b]-obj[a]; });
+  var h = "<table><thead><tr><th>"+esc(label)+"</th><th>Count</th></tr></thead><tbody>";
+  keys.forEach(function(k){ h += "<tr><td class='mono'>"+esc(k)+"</td><td class='text-cyan'>"+obj[k]+"</td></tr>"; });
+  return h + "</tbody></table>";
+}
+function loadFunnel(){
+  var days = $("funnelDays").value || "14";
+  $("funnelStatus").textContent = "Loading…";
+  fetch("/api/admin/funnel?days=" + encodeURIComponent(days), {headers: {Authorization: "Bearer " + token}})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if (d.error) { $("funnelStatus").textContent = d.error; return; }
+      $("funnelStatus").textContent = "Last " + d.days + " days";
+      var t = d.totals || {}, r2 = d.rates || {};
+      var cards = "";
+      FUNNEL_ROWS.forEach(function(row){
+        cards += "<div class='stat-card'><div class='stat-num'>" + (t[row[0]] || 0) + "</div><div class='stat-label'>" + esc(row[1]) + "</div></div>";
+      });
+      cards += "<div class='stat-card green'><div class='stat-num'>" + (r2.saidYes == null ? "—" : r2.saidYes + "%") + "</div><div class='stat-label'>Said yes / asked</div></div>";
+      cards += "<div class='stat-card green'><div class='stat-num'>" + (r2.applied == null ? "—" : r2.applied + "%") + "</div><div class='stat-label'>Applied / asked</div></div>";
+      cards += "<div class='stat-card orange'><div class='stat-num'>" + (r2.redeemed == null ? "—" : r2.redeemed + "%") + "</div><div class='stat-label'>Redeemed / page opened</div></div>";
+      $("funnelCards").innerHTML = "<div class='stats-grid'>" + cards + "</div>";
+      $("funnelSrcs").innerHTML = funnelTable(d.srcs, "Source");
+      $("funnelFailures").innerHTML = funnelTable(d.failures, "Reason");
+      var rows = d.byDay || [];
+      if (!rows.length) { $("funnelDaysTable").innerHTML = "<p class='text-muted'>Nothing yet</p>"; return; }
+      var h = "<table><thead><tr><th>Day</th>";
+      FUNNEL_ROWS.forEach(function(r){ if (r[0].indexOf("onboarding_partner_") === 0) h += "<th>" + esc(r[1]) + "</th>"; });
+      h += "</tr></thead><tbody>";
+      rows.forEach(function(day){
+        h += "<tr><td class='mono'>" + esc(day.day) + "</td>";
+        FUNNEL_ROWS.forEach(function(r){ if (r[0].indexOf("onboarding_partner_") === 0) h += "<td>" + (day[r[0]] || 0) + "</td>"; });
+        h += "</tr>";
+      });
+      $("funnelDaysTable").innerHTML = h + "</tbody></table>";
+    })
+    .catch(function(e){ $("funnelStatus").textContent = "Failed: " + e.message; });
+}
+
 window.openCredits=function(uid,email,cur){$("creditsUid").value=uid;$("creditsEmail").textContent=email;$("creditsCurrent").textContent=cur;$("creditsAmount").value=10;$("userModal").classList.remove("active");$("creditsModal").classList.add("active")};
 function doCredits(){var uid=$("creditsUid").value,act=$("creditsAction").value,amt=parseInt($("creditsAmount").value)||0;fetch("/api/admin/user/"+uid+"/credits",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+token},body:JSON.stringify({action:act,amount:amt})}).then(function(){$("creditsModal").classList.remove("active");load();alert("Done!")})}
 window.setAdmin=function(uid,v){if(!confirm(v?"Make admin?":"Remove admin?"))return;fetch("/api/admin/user/"+uid+"/admin",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+token},body:JSON.stringify({isAdmin:v})}).then(function(){$("userModal").classList.remove("active");load()})};

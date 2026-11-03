@@ -31,6 +31,7 @@ const demoAccount = require('./lib/demo');
 const integrity = require('./lib/integrity');
 const phoneVerify = require('./lib/verify');
 const affiliate = require('./lib/affiliate');
+const funnel = require('./lib/funnel');
 const officesLib = require('./lib/offices');
 const returnPage = require('./lib/return-page');
 const { uaBucket } = require('./lib/ua-bucket');
@@ -2085,6 +2086,65 @@ app.get('/api/user', auth, async function(req, res) {
       payoutEmail: req.profile.payout_email
     }
   });
+});
+
+// §4.14c funnel: the partner-ID step end to end, and the redeem page's opens.
+//
+// Deliberately raw counts rather than a single "conversion rate" number: the
+// question this answers is which step leaks, and a percentage hides that.
+// `days` is capped at 90 because the aggregate happens in JS.
+app.get('/api/admin/funnel', adminAuth, async function(req, res) {
+  try {
+    var days = Math.min(Math.max(parseInt(req.query.days, 10) || 14, 1), 90);
+    var since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    var r = await supabase.from('funnel_events')
+      .select('name, src, props, created_at')
+      .gte('created_at', since)
+      .order('created_at', { ascending: false })
+      .limit(20000);
+    if (r.error) return res.status(500).json({ error: r.error.message });
+
+    var byDay = {};
+    var totals = {};
+    var srcs = {};
+    var failures = {};
+    funnel.EVENTS && Object.keys(funnel.EVENTS).forEach(function(n) { totals[n] = 0; });
+    (r.data || []).forEach(function(row) {
+      var day = String(row.created_at).slice(0, 10);
+      totals[row.name] = (totals[row.name] || 0) + 1;
+      if (row.src) srcs[row.src] = (srcs[row.src] || 0) + 1;
+      if (row.name === 'redeem_failed') {
+        var reason = (row.props && row.props.reason) || 'unknown';
+        failures[reason] = (failures[reason] || 0) + 1;
+      }
+      // Only the step events belong in the day series; page opens and
+      // redemption outcomes have their own totals.
+      if (row.name.indexOf('onboarding_partner_') === 0) {
+        byDay[day] = byDay[day] || {};
+        byDay[day][row.name] = (byDay[day][row.name] || 0) + 1;
+      }
+    });
+
+    function rate(num, den) { return den ? Math.round((num / den) * 1000) / 10 : null; }
+    res.json({
+      days: days,
+      totals: totals,
+      srcs: srcs,
+      failures: failures,
+      byDay: Object.keys(byDay).sort().reverse().map(function(day) {
+        return Object.assign({ day: day }, byDay[day]);
+      }),
+      // Percentages of the people who were ASKED, so each one says how much
+      // of the step's population got that far.
+      rates: {
+        answered: rate((totals.onboarding_partner_answered || 0), totals.onboarding_partner_asked || 0),
+        saidYes: rate((totals.onboarding_partner_left || 0), totals.onboarding_partner_asked || 0),
+        applied: rate((totals.onboarding_partner_applied || 0), totals.onboarding_partner_asked || 0),
+        pageOpened: rate((totals.redeem_page_open || 0), totals.onboarding_partner_left || 0),
+        redeemed: rate((totals.redeem_success || 0), totals.redeem_page_open || 0)
+      }
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // Global Montgomery Test Analytics (for learning patterns)
@@ -5297,7 +5357,62 @@ app.get('/api/v1/referral', authV1, async function(req, res) {
 //    Resubmitting the SAME code is a success (200, bonusCredits 0 — this
 //    call granted nothing). A DIFFERENT code is referral_already_applied.
 //    Being past the first purchase is referral_after_purchase.
-// §4.x POST /redeem — redeem a promo code, and attribute the referral when
+// §4.14c FUNNEL EVENTS — how far people get, and from where.
+//
+// Build 25 takes the code field out of the app, so the referral ID alone can
+// no longer say whether the step works: it only records successes. These
+// events put the misses back — asked, answered, left, returned, applied,
+// not applied, abandoned — and the redeem page reports its own opens with
+// the `src` the app's link carried. No session, no token, no device id.
+//
+// WHITELIST, NOT A FREE-FORM LOG. Names, allowed props and `src` values live
+// in lib/funnel.js, where they are tested without booting the server.
+//
+// NEVER THROWS, NEVER BLOCKS. Every caller is on somebody else's critical
+// path (a redemption, a step render), so a lost count is lost quietly and
+// the request goes on.
+async function recordFunnelEvent(opts) {
+  try {
+    var name = opts && opts.name;
+    if (!funnel.known(name)) return false;
+    var r = await supabase.from('funnel_events').insert({
+      user_id: opts.userId || null,
+      name: name,
+      src: funnel.source(opts.src),
+      props: funnel.props(name, opts.props)
+    });
+    if (r.error) {
+      console.error('[FUNNEL] ' + name + ' insert failed:', briefErr(r.error));
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.error('[FUNNEL] ' + (opts && opts.name) + ' threw:', e.message);
+    return false;
+  }
+}
+
+// The app's own step events. 201 with `recorded: false` is a normal answer —
+// the client ignores it, the name is simply not one we keep.
+app.post('/api/v1/events', authV1, rateLimit('events', 60, 60 * 1000), async function(req, res) {
+  var name = String((req.body && req.body.name) || '');
+  if (!funnel.isAppEvent(name)) {
+    return res.status(201).json({ recorded: false });
+  }
+  var ok = await recordFunnelEvent({ userId: req.user.id, name: name, props: req.body.props });
+  res.status(201).json({ recorded: ok });
+});
+
+// The redeem page's own open, sent on load from redeem.html. Unauthenticated
+// on purpose: the page usually opens signed out on the website, and the
+// account is not known until sign-in. The row therefore has no user_id —
+// pairing it to an account is the redemption's job, not the view's.
+app.post('/api/v1/events/open', rateLimit('event_open', 40, 60 * 1000), async function(req, res) {
+  await recordFunnelEvent({ name: 'redeem_page_open', src: req.body && req.body.src });
+  res.status(204).end();
+});
+
+// §4.14b POST /redeem — redeem a promo code, and attribute the referral when
 // the code names an affiliate. Bail bonds offices sign people up in person;
 // the free credits are the pitch that makes a walk-in type the code, and the
 // same keystroke credits the office.
@@ -5326,24 +5441,31 @@ app.get('/api/v1/referral', authV1, async function(req, res) {
 // account guessing is the real threat, and a legitimate user redeems once.
 app.post('/api/v1/redeem', authV1, rateLimit('redeem', 5, 60 * 60 * 1000), async function(req, res) {
   try {
+    var src = funnel.source(req.body && req.body.src);
+    // Every way out of this handler reports its reason (§4.14c): a page that
+    // opened and went nowhere has to be visible as a refusal, not a gap.
+    function fail(status, code, message, retryable, field) {
+      recordFunnelEvent({ userId: req.user.id, name: 'redeem_failed', src: src, props: { reason: code } });
+      return v1Error(res, status, code, message, retryable, field);
+    }
     var code = String((req.body && req.body.code) || '').trim().toUpperCase();
     if (!/^[A-Z0-9]{4,24}$/.test(code)) {
-      return v1Error(res, 400, 'validation_failed', 'Enter the code exactly as it was given to you.', false, 'code');
+      return fail(400, 'validation_failed', 'Enter the code exactly as it was given to you.', false, 'code');
     }
 
     var pr = await supabase.from('promo_codes').select('*').eq('code', code).maybeSingle();
     if (pr.error) {
       console.error('[PROMO] lookup failed for ' + code + ':', briefErr(pr.error));
-      return v1Error(res, 500, 'internal', 'Could not check that code. Please try again.', true);
+      return fail(500, 'internal', 'Could not check that code. Please try again.', true);
     }
     var promo = pr.data;
-    if (!promo) return v1Error(res, 404, 'promo_not_found', 'That code is not valid.');
+    if (!promo) return fail(404, 'promo_not_found', 'That code is not valid.');
     // Expiry and exhaustion are DIFFERENT conditions with different messages.
     if (promo.expires_at && Date.parse(promo.expires_at) <= Date.now()) {
-      return v1Error(res, 400, 'promo_expired', 'That code has expired.');
+      return fail(400, 'promo_expired', 'That code has expired.');
     }
     if (promo.times_used >= promo.max_uses) {
-      return v1Error(res, 400, 'promo_exhausted', 'That code has been fully used.');
+      return fail(400, 'promo_exhausted', 'That code has been fully used.');
     }
 
     // The insert is the real gate: migration 012's unique index on
@@ -5352,7 +5474,7 @@ app.post('/api/v1/redeem', authV1, rateLimit('redeem', 5, 60 * 60 * 1000), async
     var claim = await supabase.from('promo_redemptions')
       .insert({ user_id: req.user.id, promo_code_id: promo.id });
     if (claim.error) {
-      return v1Error(res, 400, 'promo_already_used', 'You have already used that code.');
+      return fail(400, 'promo_already_used', 'You have already used that code.');
     }
     await supabase.from('promo_codes').update({ times_used: promo.times_used + 1 }).eq('id', promo.id);
 
@@ -5367,7 +5489,7 @@ app.post('/api/v1/redeem', authV1, rateLimit('redeem', 5, 60 * 60 * 1000), async
       await supabase.from('promo_redemptions').delete()
         .eq('user_id', req.user.id).eq('promo_code_id', promo.id);
       await supabase.from('promo_codes').update({ times_used: promo.times_used }).eq('id', promo.id);
-      return v1Error(res, 500, 'internal', 'Could not apply that code. Please try again.', true);
+      return fail(500, 'internal', 'Could not apply that code. Please try again.', true);
     }
 
     // ATTRIBUTION, only after the credits are safely granted. Its result is
@@ -5389,6 +5511,10 @@ app.post('/api/v1/redeem', authV1, rateLimit('redeem', 5, 60 * 60 * 1000), async
       }
     }
     console.log('[PROMO] ' + req.user.id.slice(0, 8) + ' redeemed ' + code + ' (+' + promo.credits + ' -> ' + granted + ') attribution=' + attribution.state + (attribution.reason ? ':' + attribution.reason : ''));
+    // After the grant and the attribution are both settled, never in their
+    // way: `await`ed only because the response is not sent yet either.
+    await recordFunnelEvent({ userId: req.user.id, name: 'redeem_success', src: src,
+                              props: { credits: promo.credits } });
     res.json({ credits: promo.credits, attribution: attribution });
   } catch (e) {
     console.error('[PROMO] redeem failed:', e.message);

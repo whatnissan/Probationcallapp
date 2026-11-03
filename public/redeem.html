@@ -84,6 +84,29 @@ function cleanCode(v) { return String(v || '').trim().toUpperCase(); }
 var fromLink = cleanCode(new URLSearchParams(window.location.search).get('code'));
 if (CODE_RE.test(fromLink)) input.value = fromLink;
 
+// Where this visit came from (ios-onboarding / ios-account / ios-buy, or
+// absent). The app appends it; it is logged with the page open and carried
+// through redemption so a refusal is attributable too. Only ever used as a
+// string, never a link or a redirect.
+var SRC_RE = /^[a-z0-9-]{1,32}$/;
+var srcParam = String(new URLSearchParams(window.location.search).get('src') || '');
+var SRC = SRC_RE.test(srcParam) ? srcParam : null;
+
+// One open per load. Unauthenticated and fire-and-forget: it must never
+// delay or break the page, and `keepalive` lets it finish if the person
+// leaves immediately.
+function logOpen() {
+  try {
+    fetch('/api/v1/events/open', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ src: SRC }),
+      keepalive: true
+    }).catch(function() {});
+  } catch (e) {}
+}
+logOpen();
+
 function show(kind, text, note) {
   statusEl.className = 'status ' + kind;
   statusEl.textContent = text;
@@ -96,10 +119,14 @@ function show(kind, text, note) {
 }
 
 // Where /login should bring the person back to. /login only accepts this
-// exact shape (?next=/redeem?code=...), so the value cannot redirect away.
+// exact shape (?next=/redeem?code=... [&src=...]), so the value cannot
+// redirect away.
 function returnPath() {
   var c = cleanCode(input.value);
-  return '/redeem' + (CODE_RE.test(c) ? '?code=' + c : '');
+  var q = [];
+  if (CODE_RE.test(c)) q.push('code=' + c);
+  if (SRC) q.push('src=' + SRC);
+  return '/redeem' + (q.length ? '?' + q.join('&') : '');
 }
 function refreshLinks() {
   var next = encodeURIComponent(returnPath());
@@ -154,7 +181,7 @@ redeemBtn.addEventListener('click', async function() {
     res = await fetch('/api/v1/redeem', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + session.access_token },
-      body: JSON.stringify({ code: code })
+      body: JSON.stringify({ code: code, src: SRC })
     });
     try { body = await res.json(); } catch (e) { body = {}; }
   } catch (e) {

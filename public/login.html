@@ -75,7 +75,31 @@ var supabase = window.supabase.createClient(SUPA_URL, SUPA_KEY);
 var AFTER_LOGIN_KEY = 'afterLogin';
 function safeAfterLogin(p) {
   var s = String(p == null ? '' : p);
-  return /^\/redeem(\?code=[A-Za-z0-9]{4,24})?$/.test(s) ? s : null;
+  if (!/^\/redeem(\?[A-Za-z0-9=&%.-]*)?$/.test(s)) return null;
+  var q = s.indexOf('?') === -1 ? '' : s.slice(s.indexOf('?') + 1);
+  if (!q) return s;
+  var parts = q.split('&').filter(Boolean);
+  if (parts.length > 2) return null;
+  var seen = {};
+  for (var i = 0; i < parts.length; i++) {
+    var kv = parts[i].split('=');
+    var k = kv[0], v = kv[1] || '';
+    // The `src` the app appended rides along, so a sign-in round trip does
+    // not lose where the visit came from. It is decoration: an unreadable
+    // one is dropped, while an unreadable `code` refuses the whole value.
+    if (k === 'code') {
+      if (!/^[A-Za-z0-9]{4,24}$/.test(v)) return null;
+      seen.code = v;
+    } else if (k === 'src') {
+      if (/^[a-z0-9-]{1,32}$/.test(v)) seen.src = v;
+    } else {
+      return null;
+    }
+  }
+  var out = [];
+  if (seen.code) out.push('code=' + seen.code);
+  if (seen.src) out.push('src=' + seen.src);
+  return '/redeem' + (out.length ? '?' + out.join('&') : '');
 }
 (function rememberNext() {
   var n = safeAfterLogin(new URLSearchParams(window.location.search).get('next'));

@@ -26,8 +26,12 @@ test('only an explicit tap redeems — never page load', () => {
   const script = page.slice(page.indexOf('<script>\n'));
   const fetchAt = script.indexOf("fetch('/api/v1/redeem'");
   const clickAt = script.indexOf("redeemBtn.addEventListener('click'");
-  assert.ok(clickAt > 0 && fetchAt > clickAt, 'the only fetch is inside the click handler');
-  assert.strictEqual((script.match(/fetch\(/g) || []).length, 1);
+  assert.ok(clickAt > 0 && fetchAt > clickAt, 'the only redeem fetch is inside the click handler');
+  assert.strictEqual((script.match(/fetch\('\/api\/v1\/redeem'/g) || []).length, 1);
+  // The open beacon is the only other fetch, and it sends nothing that can
+  // spend a code: it is unauthenticated and posts a src at most.
+  assert.strictEqual((script.match(/fetch\(/g) || []).length, 2);
+  assert.match(script, /fetch\('\/api\/v1\/events\/open'/);
 });
 
 test('the code from the URL never reaches the page as HTML', () => {
@@ -55,6 +59,12 @@ test('login returns to /redeem only — no open redirect', () => {
   const safe = loginFn();
   assert.strictEqual(safe('/redeem?code=WELCOME25'), '/redeem?code=WELCOME25');
   assert.strictEqual(safe('/redeem'), '/redeem');
+  // The app's `src` may ride along, and is re-validated like everything else.
+  assert.strictEqual(safe('/redeem?code=WELCOME25&src=ios-onboarding'), '/redeem?code=WELCOME25&src=ios-onboarding');
+  assert.strictEqual(safe('/redeem?src=ios-account&code=WELCOME25'), '/redeem?code=WELCOME25&src=ios-account');
+  assert.strictEqual(safe('/redeem?src=ios-account'), '/redeem?src=ios-account');
+  assert.strictEqual(safe('/redeem?code=WELCOME25&src=%3Cscript%3E'), '/redeem?code=WELCOME25');
+  assert.strictEqual(safe('/redeem?code=WELCOME25&src=ios-buy&extra=1'), null);
   for (const bad of ['https://evil.example', '//evil.example', '/redeem?code=X1', '/redeem?code=ABC123&next=//evil', '/redeem?code=<script>', 'javascript:alert(1)', '/dashboard', '/redeem/../admin', '', null, undefined, '/Redeem?code=ABCD']) {
     assert.strictEqual(safe(bad), null, 'refused: ' + bad);
   }

@@ -46,23 +46,37 @@ test('signed out: the code is prefilled and sign-in brings them back to it', asy
   assert.strictEqual(p.els.code.value, 'WELCOME25');
   assert.ok(!p.els.signInBtn.classList.contains('hidden'));
   assert.strictEqual(p.els.signInBtn.href, '/login?next=' + encodeURIComponent('/redeem?code=WELCOME25'));
-  assert.strictEqual(p.sent.length, 0, 'nothing is redeemed by loading the page');
+  // The open beacon is the one thing a load sends; redemption still needs a tap.
+  assert.strictEqual(p.sent.length, 1);
+  assert.strictEqual(p.sent[0].url, '/api/v1/events/open');
 });
 
 test('signed in: one tap redeems through /api/v1/redeem and says what happened', async () => {
   const p = load({ query: '?code=WELCOME25', session: SESSION, respond: reply(200, { credits: 10, attribution: { state: 'not_attributed', message: 'Credits added. The referral could not be credited — that code is not linked to an active account.' } }) });
   await p.settle();
-  assert.strictEqual(p.sent.length, 0, 'still nothing before the tap');
+  assert.strictEqual(p.sent.length, 1, 'nothing redeemed before the tap');
   assert.strictEqual(p.els.redeemBtn.disabled, false);
   assert.match(p.els.whoText.textContent, /person@example\.invalid/);
   await p.els.redeemBtn.handlers.click();
-  assert.strictEqual(p.sent.length, 1);
-  assert.strictEqual(p.sent[0].url, '/api/v1/redeem');
-  assert.strictEqual(p.sent[0].opts.headers.Authorization, 'Bearer tok-123');
-  assert.deepStrictEqual(JSON.parse(p.sent[0].opts.body), { code: 'WELCOME25' });
+  assert.strictEqual(p.sent.length, 2);
+  assert.strictEqual(p.sent[1].url, '/api/v1/redeem');
+  assert.strictEqual(p.sent[1].opts.headers.Authorization, 'Bearer tok-123');
+  assert.deepStrictEqual(JSON.parse(p.sent[1].opts.body), { code: 'WELCOME25', src: null });
   assert.strictEqual(p.els.status.textContent, '✅ 10 credits added to your account.');
   assert.match(p.els.status.children[0].textContent, /referral could not be credited/);
   assert.ok(!p.els.done.classList.contains('hidden'), 'return-to-app shown');
+});
+
+test('the src the app appended rides the open and the redemption, and a hostile one is dropped', async () => {
+  const p = load({ query: '?code=WELCOME25&src=ios-onboarding', session: SESSION, respond: reply(200, { credits: 1 }) });
+  await p.settle();
+  assert.deepStrictEqual(JSON.parse(p.sent[0].opts.body), { src: 'ios-onboarding' });
+  await p.els.redeemBtn.handlers.click();
+  assert.deepStrictEqual(JSON.parse(p.sent[1].opts.body), { code: 'WELCOME25', src: 'ios-onboarding' });
+
+  const bad = load({ query: '?code=WELCOME25&src=%3Cscript%3E', session: null, respond: reply(200, {}) });
+  await bad.settle();
+  assert.deepStrictEqual(JSON.parse(bad.sent[0].opts.body), { src: null });
 });
 
 test('the endpoint\'s own message is shown on a refusal, and on the rate limit', async () => {
@@ -87,6 +101,6 @@ test('a malformed code is refused before any request', async () => {
   await p.settle();
   p.els.code.value = 'ab';
   await p.els.redeemBtn.handlers.click();
-  assert.strictEqual(p.sent.length, 0);
+  assert.strictEqual(p.sent.length, 1, 'only the open beacon');
   assert.strictEqual(p.els.status.textContent, 'Enter the code exactly as it was given to you.');
 });

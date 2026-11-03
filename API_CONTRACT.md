@@ -2747,6 +2747,77 @@ opens this page in Safari instead. The page:
 When the app comes back to the foreground after this, it should re-read
 `/me`: the balance changed server-side, and nothing pushes that to the app.
 
+**Since iOS build 25 (2026-11-03) the app has no code entry at all.** It
+opens this page with **no `code` in the query** — the person types the code
+here — from two places: the onboarding step "Did a partner office give you
+a promo code?" (Yes opens this page in the default browser; No continues)
+and a one-line pointer on Account. The page's behaviour is unchanged: an
+empty query leaves the field empty, the Back to ProbationCall links are the
+same `probationcall://return?to=credits`, and the app treats that return
+exactly like a checkout return. **The app's proof that a code landed is
+`/me.promo[]`, never the return link and never the balance:** it keeps the
+codes `/me` listed at the moment of leaving and counts the code as applied
+only when `promo[]` afterwards lists one that was not there (with no
+baseline, only a `redeemedAt` after it left). So `promo[]` must keep
+reporting every redemption of this account, newest first, with
+`redeemedAt` from the ledger row — the app's success line is built from
+that record and nothing else. A person who signs in here as a different
+account, or hits an error, gets "No code landed on your account" in the
+app and can try again or continue without one; the app's own setup is
+saved before it leaves and restored when it comes back, including after
+iOS terminates it on the website.
+
+The app appends **`&src=ios-onboarding`** (or `ios-account`) to the page
+URL. It is attribution only — §4.14c — and the page never branches on it.
+
+### 4.14c Funnel events — `POST /events` · `POST /events/open`
+
+Build 25 removes the code field from the app, so the app can no longer say
+which office a person came from — the referral ID on the website does that.
+What only the app can see is whether the step works, and that is what these
+two endpoints report. **They are measurement, never entitlement:** nothing
+in the app branches on an event, and a dropped event changes no behaviour.
+
+`POST /events` (bearer, app only) — `{ name, props? }`:
+
+| name | props |
+|---|---|
+| `onboarding_partner_asked` | — |
+| `onboarding_partner_answered` | `answer` = `yes` \| `no` |
+| `onboarding_partner_left` | — |
+| `onboarding_partner_returned` | — |
+| `onboarding_partner_applied` | `credits` |
+| `onboarding_partner_not_applied` | `phase` = `not_applied` \| `unconfirmed` |
+| `onboarding_partner_abandoned` | — |
+
+`POST /events/open` (no bearer) — `{ src }`. Sent by `/redeem` on load,
+once. Unauthenticated because the page usually opens signed out on the
+website and the account is not known until sign-in; the row therefore has
+no `user_id`, and pairing it to an account is the redemption's job.
+
+Both answer `201 { recorded: true|false }` (`204` for the open). **An
+unknown name is `recorded: false`, not an error** — the client ignores the
+body, so adding an event to a client before the server is harmless. Only
+the names above are stored; a `redeem_`-prefixed name sent by the app is
+refused so a client cannot forge a redemption outcome. Props are
+whitelisted per name and cut at 40 characters.
+
+`src` is the app surface that opened the page — `ios-onboarding`,
+`ios-account`, `ios-buy`. Any other value is stored as null. It is
+attribution only: the website logs it and never branches on it. It rides
+`/redeem?src=` and is carried through `/login` (`?next=/redeem?code=…&src=…`,
+re-validated there) and into the `POST /redeem` body, so a sign-in round
+trip does not lose it.
+
+The server writes `redeem_page_open` itself on that endpoint, and
+`redeem_success` / `redeem_failed` (with `reason` = the v1 error code) from
+`POST /redeem`. Those three are server-only.
+
+Storage is `funnel_events` (migration 078): `user_id` nullable,
+`name`, `src`, `props` jsonb, `created_at`. Admin summary:
+`GET /api/admin/funnel?days=1..90` — raw counts per name, per `src`, per
+refusal reason and per day, plus rates as a percentage of the people asked.
+
 ### 4.15 `DELETE /account`
 
 App Store guideline 5.1.1(v) — hard requirement, not optional. Shipped
