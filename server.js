@@ -1753,7 +1753,9 @@ var AUTH_PROFILE_COLUMNS = [
   'referral_code', 'referred_by', 'affiliate_balance_cents', 'payout_email',
   'onboarding_complete', 'probation_end_date', 'terms_accepted_at', 'user_color',
   'subscription_status', 'subscription_cancel_at', 'subscription_cancel_at_period_end',
-  'stripe_customer_id', 'stripe_subscription_id', 'stripe_connect_id'
+  'stripe_customer_id', 'stripe_subscription_id', 'stripe_connect_id',
+  // The dashboard hides its iPhone-app line once the app has signed in (051).
+  'last_app_build'
 ].join(', ');
 
 // Truncate anything before it reaches a log line. Supabase behind Cloudflare
@@ -11000,6 +11002,7 @@ async function sendWelcomeEmail(email, credits, callId) {
     '\n1. Set up your daily schedule' +
     '\n2. Enter your PIN and notification preferences' +
     '\n3. We handle the rest - you get notified only when you need to test' +
+    '\n4. Have an iPhone? Get the app and results arrive as push notifications: https://apps.apple.com/us/app/probationcall/id6808042062' +
     '\n\nQuestions? Reply to this email anytime.' +
     '\n\n- The ProbationCall Team' +
     '\nhttps://probationcall.com';

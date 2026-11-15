@@ -31,6 +31,9 @@ input{width:100%;padding:14px;border-radius:8px;border:1px solid rgba(255,255,25
 .hint{color:#c7d3e8;font-size:0.9rem;margin:10px 0 0}
 .back{display:inline-block;color:#8892b0;font-size:0.9rem;margin-top:22px}
 .hidden{display:none}
+/* Apple's badge, served unmodified: 40px tall (the minimum), 10px clear space. */
+.store-badge{display:inline-block;margin:10px;line-height:0}
+.store-badge img{height:40px;width:auto;display:block}
 </style>
 </head>
 <body>
@@ -55,6 +58,10 @@ input{width:100%;padding:14px;border-radius:8px;border:1px solid rgba(255,255,25
   <div class="hidden" id="done">
     <a class="btn" href="probationcall://return?to=credits" style="margin-top:16px">Back to ProbationCall</a>
     <p class="hint">Tap <b>Open</b> when your phone asks.</p>
+    <!-- Someone who opened a shared code without the app: the credits are
+         theirs now, and the app is where they land best. -->
+    <p class="hint" style="margin-top:22px">Don't have the app yet?</p>
+    <a class="store-badge" href="https://apps.apple.com/us/app/probationcall/id6808042062" aria-label="Download on the App Store"><img src="/Download_on_the_App_Store_Badge_US-UK_RGB_blk_092917.svg" alt="Download on the App Store" width="120" height="40"></a>
     <a class="btn secondary" href="/dashboard">No app on this device? Go to your dashboard</a>
   </div>
 </div>

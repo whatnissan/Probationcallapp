@@ -6,6 +6,7 @@
 <title>Dashboard - ProbationCall</title>
 <link rel="icon" type="image/png" href="/favicon.png">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="apple-itunes-app" content="app-id=6808042062">
 <meta property="og:image" content="https://www.probationcall.com/brand-hero.png">
 <meta property="og:image:width" content="1136">
 <meta property="og:image:height" content="896">
@@ -178,6 +179,13 @@ small{color:#666;font-size:0.75rem}
 .agree-btn:disabled{background:#666;cursor:not-allowed}
 .decline-btn{width:100%;padding:12px;border-radius:8px;border:1px solid rgba(255,255,255,0.2);background:transparent;color:#8892b0;font-size:0.9rem;cursor:pointer;margin-top:10px}
 .warning-strip{background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.3);border-radius:8px;padding:10px 15px;margin-bottom:15px;font-size:0.8rem;color:#ef4444}
+/* The iPhone-app line for web-only accounts. Apple's badge served unmodified,
+   40px tall (the minimum) with 10px clear space (a quarter of its height). */
+.app-nudge{display:none;align-items:center;gap:8px;flex-wrap:wrap;background:rgba(0,217,255,0.08);border:1px solid rgba(0,217,255,0.3);border-radius:8px;padding:8px 14px;margin-bottom:15px;font-size:0.85rem;color:#cbd5e1}
+.app-nudge>div{flex:1 1 220px}
+.app-nudge .store-badge{display:inline-block;margin:10px;line-height:0}
+.app-nudge .store-badge img{height:40px;width:auto;display:block}
+.app-nudge-close{background:none;border:none;color:#8892b0;font-size:1.4rem;line-height:1;cursor:pointer;padding:0 4px}
 /* Affiliate Styles */
 .affiliate-balance{background:linear-gradient(135deg,#22c55e,#16a34a);border-radius:12px;padding:20px;margin-bottom:20px;text-align:center}
 .affiliate-balance .amount{font-size:2.5rem;font-weight:700;color:#000}
@@ -326,6 +334,16 @@ select option { background: #1a1a2e; color: #fff; }
   </nav>
   
   <div class="warning-strip">⚠️ <strong>Reminder:</strong> Always verify your status by calling the hotline yourself. This service is not guaranteed.</div>
+
+  <!-- Web-only accounts (2026-11-14): the app is on the App Store, and the
+       people on this page are the ones who have not heard. Hidden once the
+       profile shows a sign-in from the app (last_app_build), and after a
+       dismissal, so it nags nobody. -->
+  <div id="appNudge" class="app-nudge">
+    <div>📱 <strong>Get the iPhone app.</strong> Results arrive as push notifications, and your schedule, PIN and call history are on your phone.</div>
+    <a class="store-badge" href="https://apps.apple.com/us/app/probationcall/id6808042062" aria-label="Download on the App Store"><img src="/Download_on_the_App_Store_Badge_US-UK_RGB_blk_092917.svg" alt="Download on the App Store" width="120" height="40"></a>
+    <button type="button" class="app-nudge-close" onclick="dismissAppNudge()" aria-label="Dismiss">&times;</button>
+  </div>
 
   <!-- Shown when /api/user fails. Before this existed the page kept its
        hardcoded defaults on failure — 0 credits, no Admin button — which read
@@ -858,6 +876,23 @@ function acceptTerms() {
 
 function declineTerms() { window.location.href = '/'; }
 
+// The iPhone-app line: shown to accounts that have never signed in from the
+// app (profiles.last_app_build is set by the app's own requests) and have
+// not dismissed it. localStorage, like pb_token: a dismissal is per browser.
+function showAppNudgeIfWebOnly(profile) {
+  var el = document.getElementById('appNudge');
+  if (!el) return;
+  var dismissed = false;
+  try { dismissed = localStorage.getItem('pb_app_nudge_dismissed') === '1'; } catch (e) {}
+  var hasApp = !!(profile && profile.last_app_build);
+  el.style.display = (dismissed || hasApp) ? 'none' : 'flex';
+}
+function dismissAppNudge() {
+  try { localStorage.setItem('pb_app_nudge_dismissed', '1'); } catch (e) {}
+  var el = document.getElementById('appNudge');
+  if (el) el.style.display = 'none';
+}
+
 function showDisclaimerIfNeeded() {
   if (!termsAccepted) document.getElementById('disclaimerModal').classList.add('active');
 }
@@ -1290,6 +1325,7 @@ function loadUser() {
       document.getElementById('credits').textContent = d.isDev ? '∞' : d.profile.credits;
       updateCoveredUntil(d.profile.credits);
       renderSubscriptionStatus(d.profile);
+      showAppNudgeIfWebOnly(d.profile);
       lastLoadedCredits = d.profile.credits;
       lastLoadedSubStatus = d.profile.subscription_status || null;
       
