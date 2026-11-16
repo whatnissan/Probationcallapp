@@ -34,11 +34,41 @@ nav{display:flex;justify-content:space-between;align-items:center;margin-bottom:
 .credits-num{font-size:2.2rem;font-weight:700;color:#000}
 .credits-label{color:rgba(0,0,0,0.6);font-size:0.85rem}
 .buy-btn{background:#000;color:#fff;border:none;padding:12px 20px;border-radius:8px;font-weight:600;cursor:pointer}
-.schedule-banner{background:linear-gradient(135deg,#22c55e,#16a34a);border-radius:12px;padding:15px 20px;margin-bottom:20px;display:none}
-.schedule-banner.active{display:flex;justify-content:space-between;align-items:center}
-.schedule-banner h3{color:#000;font-size:1rem;margin-bottom:3px}
-.schedule-banner p{color:rgba(0,0,0,0.7);font-size:0.85rem}
-.schedule-banner .time{font-size:1.5rem;font-weight:700;color:#000}
+/* This morning's answer (GET /api/v1/today). Calm by design: no motion,
+   one tint per state carried by the mark, the edge and a light wash. The
+   wash is deliberately unequal, as in the app: must-test is the loudest
+   thing on the page, the common no-test morning about half of it. Green
+   is the confirmed no-test fact and nothing else. */
+.today{--tc:#7dd3fc;--tc-wash:rgba(125,211,252,0.05);--tc-line:rgba(125,211,252,0.3);
+  background:linear-gradient(var(--tc-wash),var(--tc-wash)),#0c1d30;border:1px solid var(--tc-line);border-left:4px solid var(--tc);
+  border-radius:12px;padding:16px 18px;margin-bottom:15px;min-height:92px}
+.today[hidden]{display:none}
+.today.t-must{--tc:#ef4444;--tc-wash:rgba(239,68,68,0.16);--tc-line:rgba(239,68,68,0.55)}
+.today.t-expired{--tc:#ef4444;--tc-wash:rgba(239,68,68,0.11);--tc-line:rgba(239,68,68,0.45)}
+.today.t-clear{--tc:#22c55e;--tc-wash:rgba(34,197,94,0.08);--tc-line:rgba(34,197,94,0.38)}
+.today.t-warn{--tc:#f59e0b;--tc-wash:rgba(245,158,11,0.09);--tc-line:rgba(245,158,11,0.42)}
+.today.t-muted{--tc:#94a3b8;--tc-wash:rgba(148,163,184,0.05);--tc-line:rgba(148,163,184,0.3)}
+.today.t-loading{--tc:#334155;--tc-wash:rgba(255,255,255,0.02);--tc-line:rgba(255,255,255,0.08)}
+.today-head{display:flex;gap:14px;align-items:center}
+.today-mark{flex:0 0 auto;width:40px;height:40px;color:var(--tc)}
+.today-mark svg{width:100%;height:100%;display:block;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.today-date{font-size:0.78rem;color:#94a3b8;letter-spacing:0.02em;margin-bottom:2px}
+.today-verdict{font-size:1.65rem;line-height:1.15;font-weight:800;color:#f1f5f9;margin:0}
+.t-loading .today-verdict{font-size:1rem;font-weight:600;color:#94a3b8}
+.today-detail{margin-top:10px;font-size:0.95rem;color:#e2e8f0;line-height:1.5}
+.today-fact{margin-top:6px;font-size:0.88rem;color:#cbd5e1;line-height:1.5}
+.today-note{margin-top:6px;font-size:0.82rem;color:#94a3b8;line-height:1.5}
+.today-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;align-items:center}
+.today-actions a,.today-actions button{display:inline-flex;align-items:center;gap:7px;padding:9px 14px;border-radius:8px;
+  border:1px solid rgba(255,255,255,0.18);background:rgba(255,255,255,0.06);color:#f1f5f9;
+  font:600 0.88rem -apple-system,sans-serif;text-decoration:none;cursor:pointer}
+.today-actions .primary{background:#7dd3fc;border-color:#7dd3fc;color:#0a1929}
+.today-actions button:disabled{opacity:0.6;cursor:default}
+.today-actions svg{width:14px;height:14px;fill:currentColor;flex:0 0 auto}
+.today-actions audio{width:100%;max-width:360px;height:36px}
+.today-meta{margin-top:10px;font-size:0.8rem;color:#94a3b8}
+.today-sched{margin-top:12px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.08);font-size:0.8rem;color:#94a3b8}
+@media (max-width: 600px){.today{padding:14px 14px 14px 15px}.today-mark{width:34px;height:34px}.today-verdict{font-size:1.45rem}}
 .no-schedule{background:rgba(245,158,11,0.2);border:1px solid rgba(245,158,11,0.4);border-radius:12px;padding:15px;margin-bottom:20px;color:#f59e0b;display:none}
 .no-schedule.active{display:block}
 .card{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:20px;margin-bottom:15px}
@@ -333,6 +363,23 @@ select option { background: #1a1a2e; color: #fff; }
     </div>
   </nav>
   
+  <!-- This morning's answer, first on the page. Filled from GET
+       /api/v1/today, the same response the app's Today screen renders, so
+       the site and the app can never give two different answers. It never
+       falls back to an older result. Hidden only when there is no schedule
+       (the "No schedule set" strip below says so). -->
+  <section class="today t-loading" id="todayCard" aria-live="polite" aria-labelledby="todayVerdict">
+    <div class="today-head">
+      <span class="today-mark" id="todayMark" aria-hidden="true"></span>
+      <div>
+        <div class="today-date" id="todayDate"></div>
+        <h2 class="today-verdict" id="todayVerdict">Checking this morning&rsquo;s answer&hellip;</h2>
+      </div>
+    </div>
+    <div id="todayBody"></div>
+    <div class="today-sched" id="todaySched" hidden></div>
+  </section>
+
   <div class="warning-strip">⚠️ <strong>Reminder:</strong> Always verify your status by calling the hotline yourself. This service is not guaranteed.</div>
 
   <!-- Web-only accounts (2026-11-14): the app is on the App Store, and the
@@ -361,10 +408,6 @@ select option { background: #1a1a2e; color: #fff; }
     <button type="button" class="btn btn-secondary" onclick="loadUser()">Try again</button>
   </div>
   
-  <div class="schedule-banner" id="scheduleBanner">
-    <div><h3>✅ Auto-Call Active</h3><p id="scheduleBannerText"></p></div>
-    <div class="time" id="scheduleBannerTime"></div>
-  </div>
   <div class="no-schedule" id="noSchedule">⚠️ No schedule set. Set up daily auto-calls in the Schedule tab.</div>
   
   <div class="credits-card">
@@ -1259,6 +1302,474 @@ function updateCoveredUntil(credits) {
   el.textContent = '✓ Covered until ' + coveredDate.toLocaleDateString('en-US', options);
 }
 
+// ---------------------------------------------------------------------------
+// THIS MORNING'S ANSWER — GET /api/v1/today (API_CONTRACT §4.1)
+//
+// The page renders the server's answer and never works one out itself. The
+// app's Today screen reads the same response, and a second implementation
+// here (from the history rows, say) is how the two would start to disagree:
+// a retry in flight, a paused schedule, the county's day boundary and the
+// Fort Bend office board are all things the server already knows.
+//
+// Rules this card keeps:
+// - Never an older answer. A failed load says so; it does not reach for the
+//   last history row. A page left open past midnight refetches.
+// - No motion. The answer appears when it arrives and is not animated in.
+// - Words follow the app's Today screen, state by state.
+// - Green is the confirmed no-test fact only.
+// ---------------------------------------------------------------------------
+var TODAY_TZ = 'America/Chicago';   // both counties' clock (§1)
+// Public hotline numbers, as dialled by the server (COUNTIES / FTBEND_OFFICES).
+var TODAY_LINES = {
+  montgomery: { tel: '+19362834848', label: '(936) 283-4848' },
+  missouri:   { tel: '+12812383668', label: '(281) 238-3668' },
+  rosenberg:  { tel: '+12812383669', label: '(281) 238-3669' },
+  rosenberg2: { tel: '+12812383671', label: '(281) 238-3671' }
+};
+var TODAY_OFFICES = { missouri: 'Missouri City', rosenberg: 'Rosenberg', rosenberg2: 'Rosenberg 2' };
+var TODAY_ICONS = {
+  must:     '<path d="M12 3.5 2.5 20h19L12 3.5z"/><path d="M12 10v4.5"/><path d="M12 17.3v.2"/>',
+  clear:    '<circle cx="12" cy="12" r="9"/><path d="m8 12.3 2.7 2.7 5.5-5.5"/>',
+  clock:    '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 2"/>',
+  phone:    '<path d="M5 4h3.5l1.7 4.3-2.2 1.4a11 11 0 0 0 6.3 6.3l1.4-2.2 4.3 1.7V19a1.5 1.5 0 0 1-1.6 1.5A16.5 16.5 0 0 1 3.5 5.6 1.5 1.5 0 0 1 5 4z"/>',
+  pause:    '<circle cx="12" cy="12" r="9"/><path d="M10 9v6M14 9v6"/>',
+  key:      '<circle cx="8" cy="15" r="4"/><path d="m10.8 12.2 8.2-8.2M16 7l2.5 2.5M14 9l1.8 1.8"/>',
+  palette:  '<path d="M12 3a9 9 0 1 0 0 18c1.2 0 1.8-.8 1.8-1.7 0-1.3-1-1.6-1-2.6s.8-1.7 1.8-1.7H17a4 4 0 0 0 4-4C21 6.5 17 3 12 3z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7.2" r="1"/><circle cx="14.5" cy="7.2" r="1"/>',
+  question: '<circle cx="12" cy="12" r="9"/><path d="M9.6 9.3a2.5 2.5 0 0 1 4.8.9c0 1.7-2.4 2.1-2.4 3.6"/><path d="M12 17v.2"/>'
+};
+var TODAY_PLAY = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l12-7.5z"/></svg>';
+
+var todayState = { payload: null, etag: null, fetchedDay: null, failed: false, missing: false,
+                   seq: 0, timer: null, lastAt: 0, sig: null };
+var todaySched = null;   // { hour, minute, county, office, enabled } from /api/user
+
+// Calendar parts on the county's clock. Shared with the probation end date.
+function countyParts(date) {
+  var when = date || new Date();
+  var fmt = new Intl.DateTimeFormat('en-US', { timeZone: TODAY_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false });
+  if (!fmt.formatToParts) {
+    // Browsers before formatToParts (Chrome 57): the same reading
+    // firstCheckWhen has always used.
+    var c = new Date(when.toLocaleString('en-US', { timeZone: TODAY_TZ }));
+    return { y: c.getFullYear(), m: c.getMonth() + 1, d: c.getDate(), h: c.getHours(), min: c.getMinutes() };
+  }
+  var o = {};
+  fmt.formatToParts(when).forEach(function(p) { o[p.type] = p.value; });
+  return { y: +o.year, m: +o.month, d: +o.day, h: (+o.hour) % 24, min: +o.minute };
+}
+function countyTodayISO() { var p = countyParts(); return p.y + '-' + pad2(p.m) + '-' + pad2(p.d); }
+// A date-only string ('2027-01-02') is a calendar day, not an instant.
+// new Date('2027-01-02') reads it as UTC midnight, which is 6 PM the day
+// before in Texas; reading it as local midnight instead miscounts by a day
+// across the November clock change. Count calendar days, in UTC, on both
+// sides.
+function isoDateParts(s) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s || ''));
+  return m ? { y: +m[1], m: +m[2], d: +m[3] } : null;
+}
+function calendarDaysFromToday(iso) {
+  var e = isoDateParts(iso);
+  if (!e) return null;
+  var t = countyParts();
+  return Math.round((Date.UTC(e.y, e.m - 1, e.d) - Date.UTC(t.y, t.m - 1, t.d)) / 86400000);
+}
+function formatIsoDate(iso, opts, locale) {
+  var e = isoDateParts(iso);
+  if (!e) return String(iso || '');
+  var o = { timeZone: 'UTC' };
+  for (var k in (opts || {})) o[k] = opts[k];
+  return new Date(Date.UTC(e.y, e.m - 1, e.d)).toLocaleDateString(locale, o);
+}
+function countyClock(ts) {
+  var d = new Date(ts);
+  return ts && !isNaN(d) ? d.toLocaleTimeString('en-US', { timeZone: TODAY_TZ, hour: 'numeric', minute: '2-digit' }) : '';
+}
+
+function setTodaySchedule(s) {
+  todaySched = s ? {
+    // Fort Bend's stored time is when the result is sent; a missing value
+    // takes the same default the Schedule tab shows.
+    hour: s.hour == null ? (s.county === 'ftbend' ? 5 : 6) : +s.hour,
+    minute: s.minute == null ? (s.county === 'ftbend' ? 10 : 0) : +s.minute,
+    county: s.county === 'ftbend' ? 'ftbend' : 'montgomery',
+    office: s.ftbend_office || 'missouri',
+    enabled: s.enabled !== false
+  } : null;
+  renderTodayCard();
+  scheduleTodayRefresh();
+}
+
+function loadToday() {
+  if (!token) return;
+  var seq = ++todayState.seq;
+  todayState.lastAt = Date.now();
+  renderTodayCard();   // an answer from an earlier day comes off the screen now
+  var headers = { Authorization: 'Bearer ' + token };
+  // Revalidate only an answer fetched on this same day; a new day starts clean.
+  if (todayState.etag && todayState.payload && todayState.fetchedDay === countyTodayISO()) {
+    headers['If-None-Match'] = todayState.etag;
+  }
+  fetch('/api/v1/today', { headers: headers, cache: 'no-store' })
+    .then(function(r) {
+      if (seq !== todayState.seq) return;
+      if (r.status === 304) { todayState.failed = false; return; }
+      // 404 schedule_missing: no schedule, so no morning. The strip below
+      // the card already says so.
+      if (r.status === 404) { todayState.missing = true; todayState.payload = null; todayState.failed = false; return; }
+      if (r.status === 401) return;   // loadUser owns the sign-in redirect
+      if (!r.ok) throw new Error('status ' + r.status);
+      var etag = r.headers.get('ETag');
+      return r.json().then(function(p) {
+        if (seq !== todayState.seq) return;
+        if (!p || typeof p.result !== 'string') throw new Error('incomplete response');
+        todayState.payload = p;
+        todayState.etag = etag;
+        todayState.fetchedDay = countyTodayISO();
+        todayState.failed = false;
+        todayState.missing = false;
+      });
+    })
+    .catch(function(e) {
+      if (seq !== todayState.seq) return;
+      console.warn('[today] load failed:', e && e.message ? e.message : e);
+      todayState.failed = true;
+    })
+    .then(function() {
+      if (seq !== todayState.seq) return;
+      renderTodayCard();
+      scheduleTodayRefresh();
+    });
+}
+
+// Polling is narrow: from the call time until the morning resolves, once a
+// minute, only while the tab is visible, and never past the county's retry
+// cutoff. A resolved morning waits for the county's midnight, so a page
+// left open overnight never shows yesterday's answer as today's.
+function scheduleTodayRefresh() {
+  if (todayState.timer) { clearTimeout(todayState.timer); todayState.timer = null; }
+  if (document.hidden || todayState.missing || !token) return;
+  var now = countyParts();
+  var nowMin = now.h * 60 + now.min;
+  var toMidnight = (24 * 60 - nowMin) * 60000 + 60000;
+  var p = todayState.payload;
+  var county = (p && p.county) || (todaySched && todaySched.county) || 'montgomery';
+  var cutoff = county === 'ftbend' ? 9 * 60 + 30 : 14 * 60;
+  var delay = toMidnight;
+  if (todayState.failed) {
+    delay = 60000;
+  } else if (p && (p.result === 'IN_PROGRESS' || p.result === 'SCHEDULED') && nowMin < cutoff) {
+    var callMin = todaySched ? todaySched.hour * 60 + todaySched.minute : null;
+    delay = (p.result === 'SCHEDULED' && callMin !== null && nowMin < callMin)
+      ? (callMin - nowMin) * 60000 + 30000
+      : 60000;
+  }
+  todayState.timer = setTimeout(loadToday, Math.min(delay, toMidnight));
+}
+document.addEventListener('visibilitychange', function() {
+  if (document.hidden) {
+    if (todayState.timer) { clearTimeout(todayState.timer); todayState.timer = null; }
+    return;
+  }
+  // Coming back to the tab: revalidate (a 304 costs nothing to render),
+  // but not on every flick between tabs.
+  renderTodayCard();
+  if (token && Date.now() - todayState.lastAt > 20000) loadToday();
+  else scheduleTodayRefresh();
+});
+
+function todayLine(p) {
+  var county = (p && p.county) || (todaySched && todaySched.county);
+  if (!county) return null;
+  if (county === 'ftbend') {
+    var office = (p && p.fortBend && p.fortBend.yourOffice) || (todaySched && todaySched.office) || 'missouri';
+    return TODAY_LINES[office] || TODAY_LINES.missouri;
+  }
+  return TODAY_LINES.montgomery;
+}
+function todayCap(s) { s = String(s || ''); return s.charAt(0).toUpperCase() + s.slice(1); }
+function todayList(a) {
+  return a.length < 2 ? a.join('') : a.slice(0, -1).join(', ') + ' and ' + a[a.length - 1];
+}
+// What the person's own office announced, from the §4.1 board. The fact
+// under every Fort Bend verdict, so the colour behind it is always on screen.
+function todayOfficeFact(p) {
+  var fb = p && p.fortBend;
+  if (!fb || !fb.offices) return '';
+  var mine = null;
+  fb.offices.forEach(function(o) { if (o.office === fb.yourOffice) mine = o; });
+  if (!mine) return '';
+  var name = TODAY_OFFICES[mine.office] || mine.office;
+  var said;
+  if (mine.announced && mine.announced.length) said = name + ' announced ' + todayList(mine.announced.map(todayCap)) + '.';
+  else if (mine.phases && mine.phases.length) said = name + ' announced phase' + (mine.phases.length > 1 ? 's ' : ' ') + todayList(mine.phases) + '.';
+  else return '';
+  return said + (fb.yourColor ? ' Your color is ' + todayCap(fb.yourColor) + '.' : '');
+}
+function todayOfficeHeardAt(p) {
+  var fb = p && p.fortBend, out = null;
+  if (fb && fb.offices) fb.offices.forEach(function(o) { if (o.office === fb.yourOffice && o.heardAt) out = o.heardAt; });
+  return out;
+}
+function todayAnnouncedColor(p) {
+  var fb = p && p.fortBend, out = '';
+  if (fb && fb.offices) fb.offices.forEach(function(o) {
+    if (o.office === fb.yourOffice && o.announced && o.announced.length) out = todayList(o.announced.map(todayCap));
+  });
+  return out;
+}
+
+// One morning's state, in the app's words (TodayView / WrongPinCopy /
+// PinExpiredCopy). Returns plain strings and action descriptors; the
+// renderer builds the DOM with textContent only.
+function todayView(p) {
+  var ftb = p.county === 'ftbend';
+  var identity = ftb ? 'color' : 'PIN';
+  var call = { kind: 'call' };
+  var v = { cls: 't-warn', icon: 'question', verdict: '', detail: '', fact: '', note: '', actions: [], heard: false };
+  switch (p.result) {
+    case 'SCHEDULED':
+      v.cls = 't-wait'; v.icon = 'clock'; v.verdict = 'We haven’t called yet';
+      v.detail = 'Today’s call is scheduled. We dial the hotline at ' +
+        (todaySched ? formatTime(todaySched.hour, todaySched.minute) : 'your scheduled time') +
+        ' and the result lands here.';
+      v.note = 'Nothing to do right now.';
+      break;
+    case 'IN_PROGRESS':
+      v.cls = 't-wait'; v.icon = 'phone'; v.verdict = 'Checking right now';
+      v.detail = p.nextAttemptAt
+        ? 'No clear answer yet. We try again at ' + countyClock(p.nextAttemptAt) + '.'
+        : 'We’re on the line with the county right now.';
+      break;
+    case 'MUST_TEST':
+      v.cls = 't-must'; v.icon = 'must'; v.verdict = 'You test today'; v.heard = true;
+      v.detail = 'Your ' + identity + ' was called — report for testing today.';
+      v.fact = todayOfficeFact(p);
+      break;
+    case 'NO_TEST':
+      v.cls = 't-clear'; v.icon = 'clear'; v.verdict = 'No test today'; v.heard = true;
+      v.detail = 'Your ' + identity + ' was not called today.';
+      v.fact = todayOfficeFact(p);
+      break;
+    case 'NO_COLOR':
+      // §2: the fact plus the fix, never a failure, never a retry.
+      v.cls = 't-muted'; v.icon = 'palette'; v.verdict = 'No verdict today'; v.heard = true;
+      var c = todayAnnouncedColor(p);
+      v.detail = c ? 'Today’s color is ' + c + '. Set your color to get a verdict.'
+                   : 'There’s no color on your account, so we can’t match today’s announcement to you.';
+      v.actions = [{ kind: 'schedule', label: 'Set my color', focus: 'schedColor', primary: true }];
+      break;
+    case 'UNKNOWN':
+      // Final for the morning (§2). The app's headline says "yet"; nothing
+      // more is coming today, so this one doesn't.
+      v.icon = 'question'; v.verdict = 'No clear answer today';
+      v.detail = 'The recording couldn’t be read clearly. Check the county line yourself to be safe.';
+      v.actions = [call];
+      break;
+    case 'HOTLINE_DOWN':
+      v.icon = 'phone'; v.verdict = 'Hotline unreachable';
+      v.detail = 'The county line didn’t answer, so nobody has checked today. Call the county line yourself.';
+      v.actions = [call];
+      break;
+    case 'CALL_FAILED':
+      v.icon = 'phone'; v.verdict = 'Call didn’t connect';
+      v.detail = 'The call didn’t connect, so nobody has checked today. Call the county line yourself.';
+      v.actions = [call];
+      break;
+    case 'WRONG_PIN':
+      v.icon = 'key'; v.verdict = 'PIN not accepted';
+      v.detail = 'There’s no answer today: the hotline didn’t accept the PIN we have on file. Call the county line yourself for today. If the PIN has a typo, correct it — we’ll use it from tomorrow morning.';
+      v.actions = [call, { kind: 'schedule', label: 'Update my PIN', focus: 'schedPin' }];
+      break;
+    case 'PIN_EXPIRED':
+      v.cls = 't-expired'; v.icon = 'key'; v.verdict = 'Your PIN has expired';
+      v.detail = 'There’s no answer today: the hotline said your PIN has expired. Call the county line yourself for today. There’s nothing to retype — get the new PIN from your probation officer and save it here; we’ll use it from tomorrow morning.';
+      v.actions = [call, { kind: 'schedule', label: 'Enter the new PIN', focus: 'schedPin' }];
+      break;
+    case 'NOT_CALLED':
+      v.icon = 'pause'; v.verdict = 'Calls are paused';
+      todayPausedView(v, p.pauseReason, call);
+      break;
+    default:
+      // §1: an enum value this page doesn't know. Show it, offer support,
+      // never guess what it means.
+      v.cls = 't-muted'; v.icon = 'question'; v.verdict = 'Unrecognized result';
+      v.detail = 'This page doesn’t recognize today’s result (“' + p.result + '”). Call the county line yourself to be safe, and let us know so we can fix it.';
+      v.actions = [call, { kind: 'help', label: 'Contact support' }];
+  }
+  return v;
+}
+function todayPausedView(v, reason, call) {
+  switch (reason) {
+    case 'no_credits':
+      v.detail = 'You ran out of credits, so the hotline is not being called for you.';
+      v.note = 'Calls resume automatically as soon as credits are added.';
+      v.actions = [{ kind: 'buy', label: 'Buy credits', primary: true }, call];
+      break;
+    case 'unknown_streak':
+      v.detail = 'Your last few calls came back with no result, so we paused the schedule instead of burning through attempts.';
+      v.note = 'Call the hotline yourself to verify your status, and check whether your PIN changed. Saving your schedule turns the calls back on.';
+      v.actions = [call, { kind: 'schedule', label: 'Open my schedule', focus: 'schedPin' }];
+      break;
+    case 'wrong_pin':
+      // The app's sentence without its "Calls are paused:" lead; the
+      // headline already says it.
+      v.detail = 'The hotline didn’t accept your PIN two mornings in a row. Nobody is checking the line for you — call the county line yourself each morning until it’s fixed. Resuming won’t restart the calls; only saving a different PIN does.';
+      v.actions = [call, { kind: 'schedule', label: 'Update my PIN', focus: 'schedPin' }];
+      break;
+    case 'pin_expired':
+      v.cls = 't-expired';
+      v.detail = 'The hotline said your PIN has expired two mornings in a row. Nobody is checking the line for you — call the county line yourself each morning until you have the new PIN from your probation officer. Resuming won’t restart the calls; saving the new PIN does.';
+      v.actions = [call, { kind: 'schedule', label: 'Enter the new PIN', focus: 'schedPin' }];
+      break;
+    case 'sms_opted_out':
+      v.detail = 'Texts to your number were turned off — a STOP reply reached us — and there’s no email on your account, so there was nowhere to send your result. The hotline is not being called for you until there is.';
+      v.note = 'Switch to email and calls start again. Or reply START to a ProbationCall text to turn texts back on.';
+      v.actions = [{ kind: 'schedule', label: 'Switch to email', focus: 'schedEmail', primary: true }, call];
+      break;
+    case 'user':
+    case null:
+    case undefined:
+      // §4.1 hides today's calls once a schedule is paused, so a result
+      // from before the pause may exist. Say where it is.
+      v.detail = reason === 'user'
+        ? 'You paused your daily calls in the app, so nobody is checking the line for you. Resume them there.'
+        : 'Your daily calls are paused, so nobody is checking the line for you.';
+      v.note = 'If this morning’s call finished before the pause, its result is in History.';
+      v.actions = [call];
+      break;
+    default:
+      v.cls = 't-muted';
+      v.detail = 'Your schedule is paused for a reason this page doesn’t recognize (“' + reason + '”).';
+      v.actions = [call, { kind: 'help', label: 'Contact support' }];
+  }
+}
+
+function todayEl(tag, cls, text) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text) e.textContent = text;
+  return e;
+}
+function openTodaySchedule(focusId) {
+  var tab = null;
+  document.querySelectorAll('.tab').forEach(function(t) {
+    if ((t.getAttribute('onclick') || '').indexOf("showTab('schedule')") >= 0) tab = t;
+  });
+  if (tab) tab.click();
+  var target = document.getElementById(focusId) || document.getElementById('scheduleTab');
+  if (target && target.scrollIntoView) target.scrollIntoView({ block: 'center' });
+  if (target && target.focus) { try { target.focus({ preventScroll: true }); } catch (e) { target.focus(); } }
+}
+function playTodayRecording(btn, callId) {
+  btn.disabled = true;
+  btn.textContent = 'Loading…';
+  fetch('/api/v1/calls/' + encodeURIComponent(callId) + '/recording', { headers: { Authorization: 'Bearer ' + token } })
+    .then(function(r) { return r.ok ? r.json() : null; })
+    .catch(function() { return null; })
+    .then(function(j) {
+      if (!j || !j.url) { btn.disabled = false; btn.textContent = 'Recording unavailable — try again'; return; }
+      var a = document.createElement('audio');
+      a.controls = true;
+      a.src = j.url;
+      btn.parentNode.replaceChild(a, btn);
+      a.play().catch(function() { /* the person can press play */ });
+    });
+}
+
+function renderTodayCard() {
+  var card = document.getElementById('todayCard');
+  if (!card) return;
+  var p = todayState.payload;
+  // A payload fetched on an earlier day is never shown; the refetch that
+  // replaces it is already on its way (or failed, and says so).
+  var stale = !!(p && todayState.fetchedDay !== countyTodayISO());
+  var sig = JSON.stringify([todayState.missing, todayState.failed, stale, todayState.etag, p && p.result, todaySched]);
+  if (sig === todayState.sig) return;   // unchanged: leave a playing recording alone
+  todayState.sig = sig;
+
+  if (todayState.missing) { card.hidden = true; return; }
+  card.hidden = false;
+
+  var v;
+  if (p && !stale) {
+    v = todayView(p);
+  } else if (todayState.failed) {
+    v = { cls: 't-muted', icon: 'question', verdict: 'Couldn’t load today’s answer',
+          detail: 'This is a problem showing the page, not a change to your schedule. Try again, or call the county line yourself.',
+          fact: '', note: '', heard: false,
+          actions: [{ kind: 'retry', label: 'Try again', primary: true }].concat(todayLine(null) ? [{ kind: 'call' }] : []) };
+  } else {
+    v = { cls: 't-loading', icon: null, verdict: 'Checking this morning’s answer…', detail: '', fact: '', note: '', actions: [], heard: false };
+  }
+
+  card.className = 'today ' + v.cls;
+  document.getElementById('todayMark').innerHTML = v.icon
+    ? '<svg viewBox="0 0 24 24" focusable="false">' + TODAY_ICONS[v.icon] + '</svg>' : '';
+  var dayIso = p && !stale ? p.date : countyTodayISO();
+  var countyName = (p && !stale ? p.county : (todaySched && todaySched.county)) === 'ftbend' ? 'Fort Bend County'
+    : (p || todaySched) ? 'Montgomery County' : '';
+  document.getElementById('todayDate').textContent =
+    formatIsoDate(dayIso, { weekday: 'long', month: 'long', day: 'numeric' }, 'en-US') + (countyName ? ' · ' + countyName : '');
+  document.getElementById('todayVerdict').textContent = v.verdict;
+
+  var body = document.getElementById('todayBody');
+  body.textContent = '';
+  if (v.detail) body.appendChild(todayEl('p', 'today-detail', v.detail));
+  if (v.fact) body.appendChild(todayEl('p', 'today-fact', v.fact));
+  if (v.note) body.appendChild(todayEl('p', 'today-note', v.note));
+
+  var acts = todayEl('div', 'today-actions');
+  var line = todayLine(p && !stale ? p : null);
+  v.actions.forEach(function(a) {
+    var el;
+    if (a.kind === 'call') {
+      if (!line) return;
+      el = todayEl('a', a.primary ? 'primary' : '', 'Call ' + line.label);
+      el.href = 'tel:' + line.tel;
+    } else {
+      el = todayEl('button', a.primary ? 'primary' : '', a.label);
+      el.type = 'button';
+      if (a.kind === 'schedule') el.onclick = function() { openTodaySchedule(a.focus); };
+      else if (a.kind === 'buy') el.onclick = function() { showBuyModal(); };
+      else if (a.kind === 'help') el.onclick = function() { openSupport(); };
+      else if (a.kind === 'retry') el.onclick = function() { todayState.sig = null; loadToday(); };
+    }
+    acts.appendChild(el);
+  });
+  if (p && !stale && p.recordingStatus === 'available' && p.recording && p.recording.callId) {
+    var rb = todayEl('button', '', '');
+    rb.type = 'button';
+    rb.innerHTML = TODAY_PLAY;
+    rb.appendChild(document.createTextNode('Play the recording'));
+    var callId = p.recording.callId;
+    rb.onclick = function() { playTodayRecording(rb, callId); };
+    acts.appendChild(rb);
+  }
+  if (acts.children.length) body.appendChild(acts);
+
+  if (p && !stale) {
+    var meta = [];
+    // Fort Bend's row is written when the result is sent; the office was
+    // heard earlier, and the board has that time.
+    var heardAt = v.heard ? (todayOfficeHeardAt(p) || p.resolvedAt) : p.resolvedAt;
+    if (heardAt && p.result !== 'NOT_CALLED') meta.push((v.heard ? 'Heard at ' : 'Finished at ') + countyClock(heardAt));
+    // §2: "not charged" only from billed === false, never inferred.
+    if (p.billed === false) meta.push('You were not charged.');
+    if (meta.length) body.appendChild(todayEl('p', 'today-meta', meta.join(' · ')));
+  }
+
+  var sched = document.getElementById('todaySched');
+  if (todaySched) {
+    sched.textContent = 'Daily check at ' + formatTime(todaySched.hour, todaySched.minute) + ' · ' +
+      (todaySched.county === 'ftbend' ? 'Fort Bend County, ' + (TODAY_OFFICES[todaySched.office] || 'Missouri City') : 'Montgomery County') +
+      (todaySched.enabled ? '' : ' · paused');
+    sched.hidden = false;
+  } else {
+    sched.hidden = true;
+  }
+}
+
 function loadUser() {
   // Check if we have a valid token
   if (!token) {
@@ -1267,7 +1778,12 @@ function loadUser() {
     window.location.href = '/login?logout=true';
     return;
   }
-  
+
+  // This morning's answer goes out first and on its own: it needs only the
+  // token, so it never waits behind /api/user. Nothing it does can stop the
+  // account from loading.
+  try { loadToday(); } catch (e) { console.warn('[today] could not start:', e && e.message ? e.message : e); }
+
   // Apply saved referral code if present
   var savedRef = localStorage.getItem('referralCode');
   if (savedRef) {
@@ -1405,15 +1921,10 @@ function loadUser() {
       
       if (d.schedule) {
         var t = formatTime(d.schedule.hour, d.schedule.minute);
-        // "Daily at 6:30 AM" leaves the new user's actual question unanswered:
-        // is anyone checking for me next? State which morning is next, and
-        // only while the schedule is genuinely running.
-        var bannerRunning = d.schedule.enabled !== false;
-        document.getElementById('scheduleBannerText').textContent = bannerRunning
-          ? 'Daily at ' + t + ' — next check ' + firstCheckWhen(d.schedule.hour, d.schedule.minute)
-          : 'Daily at ' + t + ' — paused';
-        document.getElementById('scheduleBannerTime').textContent = t;
-        document.getElementById('scheduleBanner').classList.add('active');
+        // The green "Auto-Call Active" banner that stood here was the
+        // biggest thing on the page on every morning, must-test included.
+        // The schedule is now the last line of today's card.
+        setTodaySchedule(d.schedule);
         document.getElementById('noSchedule').classList.remove('active');
         document.getElementById('schedDisplayTime').textContent = t;
         document.getElementById('schedDisplayTZ').textContent = d.schedule.timezone;
@@ -1491,7 +2002,7 @@ function loadUser() {
         }
         updateCountyUI('schedCounty', 'schedPin');
       } else {
-        document.getElementById('scheduleBanner').classList.remove('active');
+        setTodaySchedule(null);
         document.getElementById('noSchedule').classList.add('active');
         document.getElementById('scheduleDetails').style.display = 'none';
         document.getElementById('noSchedInfo').style.display = 'block';
@@ -2368,24 +2879,32 @@ function updateProbationDisplay() {
   document.getElementById('noProbationCard').style.display = 'none';
   document.getElementById('probationCard').style.display = 'block';
   
-  var end = new Date(probationEndDate);
-  var today = new Date();
-  today.setHours(0, 0, 0, 0);
-  var days = Math.ceil((end - today) / (1000 * 60 * 60 * 24));
-  
-  if (days <= 0) {
+  // The end date is the LAST day of probation (§3 daysRemaining: 0 means
+  // "today is the last day"). This used to parse '2027-01-02' with
+  // new Date(), which is UTC midnight, 6 PM the evening before in Texas: the
+  // card showed the date a day early and said "Complete!" on the last day,
+  // a day the person may still have to test. Calendar days on the county's
+  // clock now (calendarDaysFromToday).
+  var days = calendarDaysFromToday(probationEndDate);
+  var countdown = document.getElementById('probationCountdown');
+
+  if (days === null) {
+    countdown.textContent = '';
+  } else if (days < 0) {
     // A past date is ambiguous: genuinely finished, or entered wrong /
-    // extended. Celebrate (it's usually true) but add the quiet nudge —
-    // a stale past date used to surface only by breaking the buy modal.
-    document.getElementById('probationCountdown').innerHTML = '<span style="color:#22c55e">🎉 Complete!</span>' +
+    // extended. Say it ended, with the quiet nudge — a stale past date used
+    // to surface only by breaking the buy modal.
+    countdown.innerHTML = '<span style="color:#cbd5e1">Ended</span>' +
       '<div style="color:#8892b0;font-size:0.8rem;margin-top:4px;font-weight:normal">Probation over? You can disable your daily schedule — or update the date if it changed.</div>';
+  } else if (days === 0) {
+    countdown.innerHTML = '<span style="color:#f1f5f9">Last day today</span>';
   } else if (days <= 7) {
-    document.getElementById('probationCountdown').innerHTML = '<span style="color:#22c55e">' + days + ' days left!</span>';
+    countdown.innerHTML = '<span style="color:#22c55e">' + days + (days === 1 ? ' day' : ' days') + ' left!</span>';
   } else {
-    document.getElementById('probationCountdown').textContent = days + ' days left';
+    countdown.textContent = days + ' days left';
   }
-  
-  document.getElementById('probationEndDisplay').textContent = 'Ends: ' + end.toLocaleDateString();
+
+  document.getElementById('probationEndDisplay').textContent = 'Ends: ' + formatIsoDate(probationEndDate);
 }
 
 // Onboarding functions
@@ -2683,18 +3202,24 @@ function calculateExactCredits(silentPrefill) {
     return;
   }
 
-  var end = new Date(endDate);
-  var today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  var days = Math.ceil((end - today) / (1000 * 60 * 60 * 24));
-  if (days < 1) {
+  // Calendar days on the county's clock — the same reading as the countdown
+  // card (updateProbationDisplay). The old UTC parse showed the saved date a
+  // day early here and called the last day "in the past". For any later
+  // date the count is unchanged.
+  var days = calendarDaysFromToday(endDate);
+  if (days === null || days < 1) {
     document.getElementById('exactCalc').style.display = 'none';
     window.exactPurchase = null;
     if (warn) {
-      warn.textContent = silentPrefill
-        ? '⚠️ Your saved probation end date (' + end.toLocaleDateString() + ') is in the past. Pick a new date to buy exact credits — subscribing or buying a month works regardless.'
-        : '⚠️ That date is in the past — pick a future date.';
+      if (days === 0) {
+        warn.textContent = silentPrefill
+          ? '⚠️ Your saved probation end date is today. Pick a later date to buy exact credits — subscribing or buying a month works regardless.'
+          : '⚠️ That date is today — pick a later date.';
+      } else {
+        warn.textContent = silentPrefill
+          ? '⚠️ Your saved probation end date (' + formatIsoDate(endDate) + ') is in the past. Pick a new date to buy exact credits — subscribing or buying a month works regardless.'
+          : '⚠️ That date is in the past — pick a future date.';
+      }
       warn.style.display = 'block';
     }
     return;
