@@ -151,6 +151,34 @@ test('no-result mornings point at the county line; every pause does too', () => 
   }
 });
 
+// 2026-11-17, the app's 092660b: "check the county line to be safe" reads as
+// "look at the app", which is the thing that failed. UNKNOWN states the
+// fact, that nobody checked, and the one action; anywhere the card sends
+// someone to the hotline, the word is "call".
+test('UNKNOWN says nobody checked and to call the county line; no hotline line says "check" or hedges', () => {
+  const { ctx } = page(at6);
+  const unknown = ctx.todayView(Object.assign({}, BASE, { result: 'UNKNOWN' }));
+  assert.strictEqual(unknown.verdict, 'No clear answer today', 'the app’s headline');
+  assert.strictEqual(unknown.detail,
+    'The recording couldn’t be read clearly, so nobody has checked whether you test today. Call the county line yourself.',
+    'the app’s sentence, word for word');
+  const surfaces = ['UNKNOWN', 'HOTLINE_DOWN', 'CALL_FAILED', 'WRONG_PIN', 'PIN_EXPIRED', 'SOMETHING_NEW']
+    .map((r) => [r, ctx.todayView(Object.assign({}, BASE, { result: r }))])
+    .concat(['no_credits', 'unknown_streak', 'wrong_pin', 'pin_expired', 'sms_opted_out', 'user', null, 'new_reason']
+      .map((reason) => ['paused ' + reason, ctx.todayView(Object.assign({}, BASE, { result: 'NOT_CALLED', pauseReason: reason }))]));
+  for (const [name, v] of surfaces) {
+    const text = [v.verdict, v.detail, v.note].join(' ');
+    for (const hedge of ['check the', 'to be safe', 'to be sure']) {
+      assert.ok(!text.toLowerCase().includes(hedge), name + ': "' + hedge + '" in ' + text);
+    }
+  }
+  for (const r of ['UNKNOWN', 'HOTLINE_DOWN', 'CALL_FAILED', 'WRONG_PIN', 'PIN_EXPIRED', 'SOMETHING_NEW']) {
+    const v = ctx.todayView(Object.assign({}, BASE, { result: r }));
+    assert.ok(/call the county line/i.test(v.detail), r + ' says to call the county line');
+  }
+  assert.ok(!/\byet\b/i.test(unknown.verdict + ' ' + unknown.detail), 'nothing more is coming today');
+});
+
 test('Fort Bend shows what the office announced, and NO_COLOR is the fact plus the fix', () => {
   const { ctx } = page(at6);
   const board = { yourOffice: 'missouri', yourColor: 'zinc', offices: [

@@ -1560,10 +1560,12 @@ function todayView(p) {
       v.actions = [{ kind: 'schedule', label: 'Set my color', focus: 'schedColor', primary: true }];
       break;
     case 'UNKNOWN':
-      // Final for the morning (§2). The app's headline says "yet"; nothing
-      // more is coming today, so this one doesn't.
+      // Final for the morning (§2): the fact, that nobody checked, then the
+      // one action. The app's words since its 092660b. "Check the county
+      // line to be safe" read as a double-check of a check that never
+      // happened; the word is "call".
       v.icon = 'question'; v.verdict = 'No clear answer today';
-      v.detail = 'The recording couldn’t be read clearly. Check the county line yourself to be safe.';
+      v.detail = 'The recording couldn’t be read clearly, so nobody has checked whether you test today. Call the county line yourself.';
       v.actions = [call];
       break;
     case 'HOTLINE_DOWN':
@@ -1594,7 +1596,7 @@ function todayView(p) {
       // §1: an enum value this page doesn't know. Show it, offer support,
       // never guess what it means.
       v.cls = 't-muted'; v.icon = 'question'; v.verdict = 'Unrecognized result';
-      v.detail = 'This page doesn’t recognize today’s result (“' + p.result + '”). Call the county line yourself to be safe, and let us know so we can fix it.';
+      v.detail = 'This page doesn’t recognize today’s result (“' + p.result + '”). Call the county line yourself, and let us know so we can fix it.';
       v.actions = [call, { kind: 'help', label: 'Contact support' }];
   }
   return v;
